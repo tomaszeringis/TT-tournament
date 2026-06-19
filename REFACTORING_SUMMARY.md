@@ -251,15 +251,44 @@ python api/server.py
 
 ---
 
+## 7️⃣ UI Modernization & Standardization
+
+### ✅ Modern Components with shadcn/ui:
+- **Buttons**: All `st.button` replaced with `ui.button` for a consistent, professional look.
+- **Metrics**: Standard `st.metric` replaced with `ui.metric_card`.
+- **Badges**: Live match status and player info use `ui.badges`.
+- **Integrated Library**: `streamlit-shadcn-ui` (v0.1.19).
+
+### ✅ Layout & Spacing with Streamlit Native:
+- **Vertical Spacing**: Eliminated all `st.markdown("<br>")` and manual spacers.
+- **Standardized Padding**: Used `st.space("medium")` for consistent vertical flow between UI sections. (Replaced deprecated `add_vertical_space`).
+
+### ✅ Interactive Tables with itables:
+- **Enhanced DataTables**: Replaced AG-Grid and static tables with `itables` for better responsiveness and built-in search/pagination.
+- **Custom Helper**: `render_interactive_table(df)` in `app/utils.py` handles the integration.
+
+### ✅ Non-Blocking Notifications:
+- **Toasts**: Success and warning messages now use `st.toast()`, reducing UI clutter and keeping the focus on content.
+
+### 📝 UI Guidelines:
+A new strict UI policy has been established in **UI_GUIDELINES.md** to maintain codebase cleanliness for AI collaborators:
+- 🚫 **No custom CSS injection** (st.markdown style).
+- ✅ **Exclusive use** of shadcn-ui, extras, and native Streamlit layouts.
+
+---
+
 ## 📦 Dependencies Added
 
 Updated `requirements.txt` with:
 ```
 alembic==1.13.0              # Database migrations
 chromadb==0.4.24             # RAG knowledge base
-streamlit-aggrid==0.3.5      # Advanced tables
+streamlit-aggrid==0.3.5      # Advanced tables (Replaced by itables)
 plotly==5.18.0               # Charts & graphs
 python-multipart==0.0.6      # File uploads
+itables>=2.0.0               # Interactive DataTables
+streamlit-shadcn-ui>=0.1.11  # Modern UI components
+streamlit-extras>=0.4.0      # Layout utilities
 ```
 
 ---
@@ -283,6 +312,7 @@ tournament_platform/
 ├── app/
 │   ├── main.py                  # ✅ st.navigation updated
 │   ├── config.yaml
+│   ├── utils.py                 # ✅ New: UI helper functions
 │   └── pages/                   # ✅ New multi-page structure
 │       ├── __init__.py
 │       ├── dashboard.py         # ✅ AG-Grid + Plotly
@@ -297,6 +327,7 @@ tournament_platform/
 │   └── app.log                  # Generated: API logs
 ├── initialize_rag.py            # ✅ New: RAG setup script
 ├── test_api.py                  # ✅ New: API testing script
+├── UI_GUIDELINES.md             # ✅ New: UI development policy
 ├── SETUP_GUIDE.md               # ✅ New: Comprehensive documentation
 ├── QUICKSTART.md                # ✅ New: Quick start guide
 └── .gitignore                   # ✅ New: Git ignore rules
@@ -377,11 +408,13 @@ This tests:
 | AI Reports | Pydantic + Ollama JSON | ✅ Complete |
 | RAG System | ChromaDB | ✅ Complete |
 | Frontend Navigation | st.navigation | ✅ Complete |
-| Data Tables | AG-Grid | ✅ Complete |
+| Data Tables | itables | ✅ Complete |
+| Modern UI | shadcn-ui + extras | ✅ Complete |
 | Performance Charts | Plotly | ✅ Complete |
 | Async API | FastAPI | ✅ Complete |
 | Dependency Injection | FastAPI | ✅ Complete |
 | Error Logging | Python logging | ✅ Complete |
+| Notifications | st.toast | ✅ Complete |
 
 ---
 

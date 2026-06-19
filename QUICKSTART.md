@@ -4,13 +4,13 @@
 
 ### 1. Install Dependencies
 ```bash
-pip install -r requirements.txt
+python -m pip install -r tournament_platform/requirements.txt
 ```
 
 ### 2. Initialize Database
 ```bash
 cd tournament_platform
-alembic upgrade head
+python -m alembic upgrade head
 ```
 
 ### 3. Initialize RAG (Optional)
@@ -29,7 +29,7 @@ python api/server.py
 ### 5. Start the Streamlit App (in a new terminal)
 ```bash
 cd tournament_platform/app
-streamlit run main.py
+python -m streamlit run main.py
 ```
 ✅ Streamlit running at `http://localhost:8501`
 
@@ -111,9 +111,9 @@ tournament_platform/
 
 ```bash
 # Database migrations
-alembic current              # Check current migration
-alembic upgrade head         # Apply all migrations
-alembic downgrade -1         # Undo last migration
+python -m alembic current              # Check current migration
+python -m alembic upgrade head         # Apply all migrations
+python -m alembic downgrade -1         # Undo last migration
 
 # Testing
 python test_api.py          # Test API endpoints
@@ -121,7 +121,7 @@ python initialize_rag.py    # Initialize RAG system
 
 # Running
 python api/server.py        # Start API
-streamlit run app/main.py   # Start frontend
+python -m streamlit run app/main.py   # Start frontend
 ```
 
 ---
@@ -140,7 +140,7 @@ cd tournament_platform
 ollama serve
 
 # Pull the model
-ollama pull llama3.3:8b
+ollama pull llama3:latest
 ```
 
 ### Streamlit pages not loading

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://developer.microsoft.com/en-us/json-schemas/teams/v1.14/MicrosoftTeams.schema.json",
+  "manifestVersion": "1.14",
+  "version": "1.0.0",
+  "id": "00000000-0000-0000-0000-000000000000",
+  "packageName": "com.tournament.platform",
+  "developer": {
+    "name": "Tournament Platform",
+    "websiteUrl": "https://your-streamlit-app.com",
+    "privacyUrl": "https://your-streamlit-app.com/privacy",
+    "termsOfUseUrl": "https://your-streamlit-app.com/terms"
+  },
+  "icons": {
+    "outline": "outline.png",
+    "color": "color.png"
+  },
+  "name": {
+    "short": "Tournament App",
+    "full": "Tournament Management Platform"
+  },
+  "description": {
+    "short": "AI-powered tournament management.",
+    "full": "A modern tournament management platform featuring AI match analysis, real-time standings, and a multi-page dashboard."
+  },
+  "accentColor": "#FF4B4B",
+  "staticTabs": [
+    {
+      "entityId": "tournamentDashboard",
+      "name": "Tournament Dashboard",
+      "contentUrl": "https://your-streamlit-app.com",
+      "websiteUrl": "https://your-streamlit-app.com",
+      "scopes": [
+        "personal",
+        "team",
+        "groupchat"
+      ]
+    }
+  ],
+  "permissions": [
+    "identity",
+    "messageTeamMembers"
+  ],
+  "validDomains": [
+    "your-streamlit-app.com",
+    "*.your-streamlit-app.com"
+  ]
+}

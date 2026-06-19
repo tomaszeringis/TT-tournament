@@ -11,10 +11,10 @@
 **Solution:**
 ```bash
 # Reinstall all requirements
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 
 # Or install specifically
-pip install ollama chromadb streamlit-aggrid
+python -m pip install ollama chromadb streamlit-aggrid
 ```
 
 ---
@@ -23,7 +23,7 @@ pip install ollama chromadb streamlit-aggrid
 
 **Solution:**
 ```bash
-pip install alembic==1.13.0
+python -m pip install alembic==1.13.0
 ```
 
 ---
@@ -32,7 +32,7 @@ pip install alembic==1.13.0
 
 **Solution:**
 ```bash
-pip install streamlit-aggrid==0.3.5.post1
+python -m pip install streamlit-aggrid==0.3.5.post1
 ```
 
 ---
@@ -62,7 +62,7 @@ pip install streamlit-aggrid==0.3.5.post1
 **Solution:**
 ```bash
 cd tournament_platform
-alembic upgrade head
+python -m alembic upgrade head
 ```
 
 Make sure you see output like:
@@ -82,7 +82,7 @@ INFO [alembic.runtime.migration] Running upgrade 001_initial
 mv data/tournament.db data/tournament.db.backup
 
 # Run migration fresh
-alembic upgrade head
+python -m alembic upgrade head
 ```
 
 ---
@@ -171,7 +171,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 **Solution:**
 ```bash
-pip install streamlit-aggrid==0.3.5.post1
+python -m pip install streamlit-aggrid==0.3.5.post1
 ```
 
 ---
@@ -222,7 +222,7 @@ print(stauth.Hasher.hash("your_password"))
 ollama serve
 
 # In another terminal, pull the model
-ollama pull llama3.3:8b
+ollama pull llama3:latest
 ```
 
 ---
@@ -281,11 +281,11 @@ print(context)
 **Solution:**
 ```bash
 # Check what migrations exist
-alembic history
+python -m alembic history
 
 # Reset to initial migration
-alembic downgrade -1
-alembic upgrade 001_initial
+python -m alembic downgrade -1
+python -m alembic upgrade 001_initial
 ```
 
 ---
@@ -297,13 +297,13 @@ alembic upgrade 001_initial
 **Solution:**
 ```bash
 # Create new migration
-alembic revision --autogenerate -m "Add new column"
+python -m alembic revision --autogenerate -m "Add new column"
 
 # Review the migration file
 cat alembic/versions/002_add_new_column.py
 
 # Apply
-alembic upgrade head
+python -m alembic upgrade head
 ```
 
 ---
@@ -322,7 +322,7 @@ rm alembic/versions/*.py  # Keep __init__.py
 rm data/tournament.db
 
 # Reinitialize
-alembic upgrade head
+python -m alembic upgrade head
 ```
 
 ---
@@ -343,7 +343,7 @@ taskkill /PID <PID> /F
 
 # Or use different ports
 python api/server.py --port 8001
-streamlit run app/main.py --server.port 8502
+python -m streamlit run app/main.py --server.port 8502
 ```
 
 ---
@@ -468,13 +468,13 @@ Run through this checklist to verify everything works:
 python --version  # Should be 3.7+
 
 # 2. Verify dependencies
-pip list | grep -E "sqlalchemy|fastapi|streamlit|ollama|chromadb"
+python -m pip list | grep -E "sqlalchemy|fastapi|streamlit|ollama|chromadb"
 
 # 3. Check database
 ls -la data/tournament.db
 
 # 4. Check migrations
-alembic current
+python -m alembic current
 
 # 5. Test API
 curl http://localhost:8000/health

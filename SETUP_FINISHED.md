@@ -94,7 +94,7 @@ python api/server.py
 ### Start Streamlit Frontend
 ```powershell
 cd tournament_platform
-streamlit run app/main.py
+python -m streamlit run app/main.py
 ```
 - Opens at: `http://localhost:8501`
 
@@ -285,7 +285,7 @@ Health check endpoint
 python api/server.py --port 8001
 
 # Streamlit on different port
-streamlit run app/main.py --server.port 8502
+python -m streamlit run app/main.py --server.port 8502
 ```
 
 ### Issue: Database Not Initialized
@@ -305,7 +305,7 @@ python initialize_rag.py
 **Solution**: Start Ollama
 ```powershell
 ollama serve            # In another terminal
-ollama pull llama3.3:8b
+ollama pull llama3:latest
 ```
 
 ---
@@ -318,7 +318,7 @@ ollama pull llama3.3:8b
 
 2. **Start the Application**
    - Terminal 1: `cd tournament_platform && python api/server.py`
-   - Terminal 2: `cd tournament_platform && streamlit run app/main.py`
+   - Terminal 2: `cd tournament_platform && python -m streamlit run app/main.py`
 
 3. **Create a Tournament**
    - Go to "Tournament Setup" page

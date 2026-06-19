@@ -16,7 +16,7 @@ This document provides step-by-step instructions for setting up and using the re
 ### 1. Install Dependencies
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ### 2. Initialize Database with Alembic
@@ -28,7 +28,7 @@ If you're starting fresh, initialize the database:
 cd tournament_platform
 
 # Create the database and apply initial migration
-alembic upgrade head
+python -m alembic upgrade head
 ```
 
 **What this does:**
@@ -43,7 +43,7 @@ alembic upgrade head
 If you need to reinitialize Alembic:
 
 ```bash
-alembic init alembic
+python -m alembic init alembic
 ```
 
 Then configure `alembic.ini` and `alembic/env.py` with the provided files.
@@ -61,7 +61,7 @@ Alembic is a lightweight database migration tool. All migrations live in `alembi
 After modifying `models.py`, create a new migration:
 
 ```bash
-alembic revision --autogenerate -m "Description of your change"
+python -m alembic revision --autogenerate -m "Description of your change"
 ```
 
 This creates a new file in `alembic/versions/` with up/down functions.
@@ -70,13 +70,13 @@ This creates a new file in `alembic/versions/` with up/down functions.
 
 ```bash
 # Apply all pending migrations
-alembic upgrade head
+python -m alembic upgrade head
 
 # Downgrade one migration
-alembic downgrade -1
+python -m alembic downgrade -1
 
 # View current migration status
-alembic current
+python -m alembic current
 ```
 
 ### Current Models
@@ -136,7 +136,7 @@ The AIEngine uses Ollama's JSON mode to ensure structured responses:
 ```python
 from services.ai_engine import AIEngine
 
-ai = AIEngine(model="llama3.3:8b")
+ai = AIEngine(model="llama3:latest")
 
 match_data = {
     "player1": "Alice",
@@ -215,7 +215,7 @@ app/
 
 ```bash
 cd app
-streamlit run main.py
+python -m streamlit run main.py
 ```
 
 ### Pages Overview
@@ -384,7 +384,7 @@ Create a `.env` file (optional):
 
 ```env
 DATABASE_URL=sqlite:///./data/tournament.db
-OLLAMA_MODEL=llama3.3:8b
+OLLAMA_MODEL=llama3:latest
 TEAMS_WEBHOOK_URL=https://your-webhook-url
 LOG_LEVEL=INFO
 ```
@@ -400,7 +400,7 @@ ollama serve
 Then pull the model:
 
 ```bash
-ollama pull llama3.3:8b
+ollama pull llama3:latest
 ```
 
 ---
@@ -476,9 +476,9 @@ curl http://localhost:8000/health
 
 1. **Configure Auth**: Update `app/config.yaml` with your credentials
 2. **Add Tournament Rules**: Initialize RAG with your rules
-3. **Run Migrations**: `alembic upgrade head`
+3. **Run Migrations**: `python -m alembic upgrade head`
 4. **Start API**: `python api/server.py`
-5. **Start Frontend**: `streamlit run app/main.py`
+5. **Start Frontend**: `python -m streamlit run app/main.py`
 6. **Create Tournaments**: Use the Tournament Setup page
 
 ---

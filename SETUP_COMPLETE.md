@@ -45,7 +45,7 @@ API Docs: `http://localhost:8000/docs`
 
 ```powershell
 cd tournament_platform/app
-streamlit run main.py
+python -m streamlit run main.py
 ```
 
 Frontend will open at: `http://localhost:8501`
@@ -222,7 +222,7 @@ curl http://localhost:8000/health
 **Solution**: Run from the correct directory:
 ```powershell
 cd tournament_platform/app
-streamlit run main.py
+python -m streamlit run main.py
 ```
 
 ### Issue: Database "no such table"
@@ -241,7 +241,7 @@ python -m alembic upgrade head
 python api/server.py --port 8001
 
 # Change Streamlit port
-streamlit run app/main.py --server.port 8502
+python -m streamlit run app/main.py --server.port 8502
 ```
 
 ### Issue: RAG not working
@@ -260,7 +260,7 @@ ollama serve
 
 Then pull the model:
 ```powershell
-ollama pull llama3.3:8b
+ollama pull llama3:latest
 ```
 
 ## 📚 Documentation

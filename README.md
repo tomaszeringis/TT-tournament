@@ -15,7 +15,7 @@ python api/server.py
 ### Terminal 2: Start Frontend
 ```powershell
 cd tournament_platform
-streamlit run app/main.py
+python -m streamlit run app/main.py
 ```
 
 Then open your browser to `http://localhost:8501`
@@ -250,7 +250,7 @@ python initialize_rag.py
 ### Ollama connection error?
 ```powershell
 ollama serve                # In another terminal
-ollama pull llama3.3:8b
+ollama pull llama3:latest
 ```
 
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for more solutions.
@@ -310,7 +310,7 @@ Your tournament platform is fully configured and ready to use.
 
 **Next Steps:**
 1. Start the API: `cd tournament_platform && python api/server.py`
-2. Start frontend: `streamlit run tournament_platform/app/main.py`
+2. Start frontend: `python -m streamlit run tournament_platform/app/main.py`
 3. Open browser: `http://localhost:8501`
 4. Register players and create tournaments!
 
