@@ -1,15 +1,23 @@
 import streamlit as st
+import streamlit_shadcn_ui as ui
 import pandas as pd
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 import sys
 import os
+from app.utils import render_interactive_table
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from models import SessionLocal, Player, Match, Tournament, MatchStatus
+from models import SessionLocal, Player, Match, Tournament, MatchStatus, DATABASE_PATH
+from services.ai_engine import AIEngine
 
 st.title("👨‍💼 Admin Panel")
+st.space("medium")
 
-db = SessionLocal()
+try:
+    db = SessionLocal()
+except Exception as e:
+    st.error(f"❌ Database connection error: {e}")
+    st.info("Please ensure the database file is accessible and not locked by another process.")
+    st.stop()
 
 # Admin dashboard tabs
 admin_tabs = st.tabs(["Database Overview", "Match Management", "System Health"])
@@ -22,21 +30,21 @@ with admin_tabs[0]:
 
     with col1:
         player_count = db.query(Player).count()
-        st.metric("Total Players", player_count)
+        ui.metric_card(title="Total Players", content=str(player_count), key="admin_p_count")
 
     with col2:
         match_count = db.query(Match).count()
-        st.metric("Total Matches", match_count)
+        ui.metric_card(title="Total Matches", content=str(match_count), key="admin_m_count")
 
     with col3:
         tournament_count = db.query(Tournament).count()
-        st.metric("Total Tournaments", tournament_count)
+        ui.metric_card(title="Total Tournaments", content=str(tournament_count), key="admin_t_count")
 
     with col4:
         completed_matches = db.query(Match).filter(Match.status == MatchStatus.completed).count()
-        st.metric("Completed Matches", completed_matches)
+        ui.metric_card(title="Completed Matches", content=str(completed_matches), key="admin_c_count")
 
-    st.divider()
+    st.space("medium")
 
     # Detailed statistics
     st.write("**Detailed Player Statistics:**")
@@ -62,21 +70,8 @@ with admin_tabs[0]:
 
         player_df = pd.DataFrame(player_data)
 
-        gb = GridOptionsBuilder.from_dataframe(player_df)
-        gb.configure_pagination(paginationAutoPageSize=True)
-        gb.configure_columns({
-            "Name": {"width": 150},
-            "Email": {"width": 150},
-            "Rating": {"width": 100},
-            "Win Rate": {"width": 100}
-        })
-
-        AgGrid(
-            player_df,
-            gridOptions=gb.build(),
-            allow_unsafe_jscode=True,
-            height=400
-        )
+        # itables for player stats
+        render_interactive_table(player_df.drop(columns=["ID"]))
 
 # Tab 2: Match Management
 with admin_tabs[1]:
@@ -112,6 +107,21 @@ with admin_tabs[1]:
 
     if matches:
         match_data = []
+        st.write("**Recent Activity:**")
+        # Show top 10 matches with badges for status
+        for m in matches[:10]:
+            m_cols = st.columns([4, 1])
+            with m_cols[0]:
+                st.write(f"{m.player1} vs {m.player2} | Tournament: {m.tournament.name if m.tournament else 'N/A'}")
+            with m_cols[1]:
+                variant = "secondary"
+                if m.status == MatchStatus.completed:
+                    variant = "default"
+                elif m.status == MatchStatus.active:
+                    variant = "outline"
+                ui.badges(badge_list=[(m.status.value, variant)], key=f"admin_status_{m.id}")
+        
+        st.space("medium")
         for m in matches:
             match_data.append({
                 "ID": m.id,
@@ -125,39 +135,25 @@ with admin_tabs[1]:
 
         match_df = pd.DataFrame(match_data)
 
-        gb_matches = GridOptionsBuilder.from_dataframe(match_df)
-        gb_matches.configure_pagination(paginationAutoPageSize=True)
-        gb_matches.configure_columns({
-            "Player 1": {"width": 120},
-            "Player 2": {"width": 120},
-            "Winner": {"width": 100},
-            "Score": {"width": 80},
-            "Status": {"width": 100}
-        })
-
-        AgGrid(
-            match_df,
-            gridOptions=gb_matches.build(),
-            allow_unsafe_jscode=True,
-            height=500
-        )
+        # itables for matches
+        render_interactive_table(match_df.drop(columns=["ID"]))
     else:
         st.info("No matches found with current filters")
 
     # Actions
-    st.divider()
+    st.space("medium")
     st.write("**Quick Actions:**")
 
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        if st.button("🔄 Refresh Data"):
+        if ui.button("🔄 Refresh Data", key="admin_refresh_btn"):
             st.rerun()
 
     with col2:
-        if st.button("🗑️ Clear All Cache"):
+        if ui.button("🗑️ Clear All Cache", key="admin_clear_btn"):
             st.cache_data.clear()
-            st.success("Cache cleared!")
+            st.toast("Cache cleared!", icon="✅")
 
 # Tab 3: System Health
 with admin_tabs[2]:
@@ -173,13 +169,20 @@ with admin_tabs[2]:
         st.metric("Last Updated", "Just now", delta="+0s")
         st.metric("Active Sessions", "1", delta="+1")
 
-    st.divider()
+    st.space("medium")
     st.write("**System Information**")
+
+    # Get current AI engine to show actual model
+    try:
+        engine = AIEngine()
+        current_model = engine.model
+    except Exception:
+        current_model = os.environ.get("OLLAMA_MODEL", "llama3:latest")
 
     system_info = {
         "Database Type": "SQLite",
-        "Database Path": "./data/tournament.db",
-        "AI Model": "llama3.3:8b",
+        "Database Path": DATABASE_PATH,
+        "AI Model": current_model,
         "Streamlit Version": "1.35.0",
         "FastAPI Version": "0.110.0"
     }
@@ -187,13 +190,10 @@ with admin_tabs[2]:
     info_df = pd.DataFrame(list(system_info.items()), columns=["Parameter", "Value"])
     st.table(info_df)
 
-    st.divider()
+    st.space("medium")
     st.write("**Recent Events**")
 
-    with st.info():
-        st.write("- ✅ System started successfully")
-        st.write("- 🎾 Last match recorded: 5 minutes ago")
-        st.write("- 👥 Last player registration: 2 hours ago")
+    st.info("- ✅ System started successfully\n- 🎾 Last match recorded: 5 minutes ago\n- 👥 Last player registration: 2 hours ago")
 
 db.close()
 

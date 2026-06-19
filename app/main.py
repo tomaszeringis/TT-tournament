@@ -14,7 +14,8 @@ from models import SessionLocal, Player, Match, Tournament, MatchStatus
 st.set_page_config(page_title="TT Platform", layout="wide")
 
 # Auth Load
-with open('app/config.yaml') as file:
+config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
+with open(config_path) as file:
     config = yaml.load(file, Loader=yaml.SafeLoader)
 
 authenticator = stauth.Authenticate(
@@ -27,14 +28,16 @@ authenticator = stauth.Authenticate(
 name, authentication_status, username = authenticator.login('main')
 
 if authentication_status:
-    st.title("🏓 Corporate Tournament Dashboard")
+    st.title("🏓 Company Tournament Dashboard")
+    st.space("medium")
     
     # Multi-page navigation using st.navigation (Streamlit 1.35+)
     page_dashboard = st.Page("pages/dashboard.py", title="Dashboard", icon="📊")
+    page_rankings = st.Page("pages/rankings.py", title="Rankings", icon="🏆")
     page_tournament = st.Page("pages/tournament_setup.py", title="Tournament Setup", icon="⚙️")
     page_admin = st.Page("pages/admin.py", title="Admin", icon="👨‍💼")
 
-    navigation = st.navigation([page_dashboard, page_tournament, page_admin])
+    navigation = st.navigation([page_dashboard, page_rankings, page_tournament, page_admin])
     navigation.run()
 
     # Show logout button in sidebar

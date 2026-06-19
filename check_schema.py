@@ -1,5 +1,8 @@
 import sqlite3
-conn = sqlite3.connect('data/tournament.db')
+import os
+
+db_path = os.path.join(os.path.dirname(__file__), 'data', 'tournament.db')
+conn = sqlite3.connect(db_path)
 cursor = conn.cursor()
 
 # Check alembic_version

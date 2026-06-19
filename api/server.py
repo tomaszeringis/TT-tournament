@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, Depends, HTTPException
 from sqlalchemy.orm import Session
 import uvicorn
 import httpx
+import re
 import json
 import logging
 import os
@@ -11,10 +12,13 @@ from contextlib import asynccontextmanager
 # Import models and database
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from models import SessionLocal, Match, MatchStatus
+from models import SessionLocal, Match, MatchStatus, Player
+from services.ai_engine import AIEngine
+from services.ranking_service import RatingManager
 
 # Configure logging
-LOG_DIR = "logs"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR, exist_ok=True)
 
@@ -29,6 +33,10 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TEAMS_WEBHOOK_URL = "YOUR_TEAMS_WEBHOOK_URL_HERE"
+
+# Initialize AI Engine and Rating Manager
+ai_engine = AIEngine()
+rating_manager = RatingManager()
 
 # Dependency: Get database session
 def get_db():
@@ -91,6 +99,28 @@ async def report_match(request: Request, db: Session = Depends(get_db)):
         db.refresh(match)
         logger.info(f"Match record created with ID: {match.id}")
 
+        # Update Ratings
+        logger.info(f"Attempting live ratings update for match {match.id}")
+        if match.winner and match.player1 and match.player2:
+            try:
+                winner_name = match.winner
+                loser_name = match.player2 if winner_name == match.player1 else match.player1
+                
+                logger.info(f"Winner: {winner_name}, Loser: {loser_name}")
+                winner = db.query(Player).filter(Player.name == winner_name).first()
+                loser = db.query(Player).filter(Player.name == loser_name).first()
+                
+                if winner and loser:
+                    logger.info(f"Found players in DB. IDs: {winner.id}, {loser.id}")
+                    rating_manager.update_ratings(winner.id, loser.id, db_session=db)
+                    logger.info(f"RatingManager.update_ratings called successfully")
+                else:
+                    logger.warning(f"Could not update ratings: Player(s) not found in DB. Winner: {winner_name}, Loser: {loser_name}")
+            except Exception as e:
+                logger.error(f"Failed to update live ratings: {e}", exc_info=True)
+        else:
+            logger.warning(f"Skipping ratings update: Missing match data. Winner={match.winner}, P1={match.player1}, P2={match.player2}")
+
         # Push to Teams webhook asynchronously
         msg = f"🎾 New Match Result: {data['player1']} vs {data['player2']} → Score: {data['score']}"
 
@@ -116,9 +146,60 @@ async def report_match(request: Request, db: Session = Depends(get_db)):
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in request: {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON format")
+    except (ValueError, ConnectionError) as e:
+        logger.error(f"AI Engine error: {e}")
+        raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error(f"Error processing match report: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Internal server error")
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
+@app.post("/api/rules/ask")
+async def ask_rules(request: Request):
+    """
+    Endpoint to ask questions about tournament rules.
+    - Uses RAG to get the answer
+    - Bolds rule citations
+    - Sends to Teams
+    """
+    try:
+        data = await request.json()
+        question = data.get('question')
+        if not question:
+            raise HTTPException(status_code=400, detail="Missing 'question' in request body")
+        
+        logger.info(f"Processing rules question: {question}")
+        answer = ai_engine.referee_answer(question)
+        
+        # Bold rule citations (e.g., Rule 1.2.3)
+        formatted_answer = re.sub(r"(Rule\s+\d+(?:\.\d+)*)", r"**\1**", answer)
+        
+        # Prepare Teams message
+        teams_msg = {
+            "text": f"🙋 **Question:** {question}\n\n⚖️ **Referee Answer:** {formatted_answer}"
+        }
+        
+        async with httpx.AsyncClient() as client:
+            try:
+                await client.post(
+                    TEAMS_WEBHOOK_URL,
+                    json=teams_msg,
+                    timeout=10.0
+                )
+                logger.info("Successfully sent rule answer to Teams")
+            except Exception as e:
+                logger.warning(f"Failed to send Teams notification: {e}")
+        
+        return {
+            "status": "success",
+            "question": question,
+            "answer": answer,
+            "formatted_answer": formatted_answer
+        }
+    except Exception as e:
+        logger.error(f"Error in ask_rules: {e}", exc_info=True)
+        if "Model" in str(e) or "connect" in str(e).lower():
+            raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/health")
 async def health_check():

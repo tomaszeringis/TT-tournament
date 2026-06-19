@@ -1,0 +1,138 @@
+{
+    "stages": [
+        {
+            "id": 0,
+            "tournamentId": 1,
+            "name": "Tournament 1",
+            "type": "single_elimination",
+            "number": 1,
+            "settings": {
+                "size": 8
+            }
+        }
+    ],
+    "participants": [
+        {
+            "id": 1,
+            "name": "Player 1"
+        },
+        {
+            "id": 2,
+            "name": "Player 2"
+        },
+        {
+            "id": 3,
+            "name": "Player 3"
+        },
+        {
+            "id": 4,
+            "name": "Player 4"
+        },
+        {
+            "id": 5,
+            "name": "Player 5"
+        },
+        {
+            "id": 6,
+            "name": "Player 6"
+        },
+        {
+            "id": 7,
+            "name": "Player 7"
+        },
+        {
+            "id": 8,
+            "name": "Player 8"
+        }
+    ],
+    "matches": [
+        {
+            "id": 1,
+            "stageId": 0,
+            "groupId": 0,
+            "roundId": 0,
+            "number": 1,
+            "opponent1": {
+                "id": 1,
+                "score": 3
+            },
+            "opponent2": {
+                "id": 2,
+                "score": 1
+            },
+            "status": 5
+        },
+        {
+            "id": 2,
+            "stageId": 0,
+            "groupId": 0,
+            "roundId": 0,
+            "number": 2,
+            "opponent1": {
+                "id": 3,
+                "score": 0
+            },
+            "opponent2": {
+                "id": 4,
+                "score": 2
+            },
+            "status": 5
+        },
+        {
+            "id": 3,
+            "stageId": 0,
+            "groupId": 0,
+            "roundId": 0,
+            "number": 3,
+            "opponent1": {
+                "id": 5,
+                "score": 1
+            },
+            "opponent2": {
+                "id": 6,
+                "score": 0
+            },
+            "status": 5
+        },
+        {
+            "id": 4,
+            "stageId": 0,
+            "groupId": 0,
+            "roundId": 0,
+            "number": 4,
+            "opponent1": {
+                "id": 7
+            },
+            "opponent2": {
+                "id": 8
+            },
+            "status": 2
+        },
+        {
+            "id": 5,
+            "stageId": 0,
+            "groupId": 0,
+            "roundId": 1,
+            "number": 1,
+            "opponent1": {
+                "id": 1
+            },
+            "opponent2": {
+                "id": 4
+            },
+            "status": 2
+        },
+        {
+            "id": 6,
+            "stageId": 0,
+            "groupId": 0,
+            "roundId": 1,
+            "number": 2,
+            "opponent1": {
+                "id": 5
+            },
+            "opponent2": null,
+            "status": 1
+        }
+    ]
+}

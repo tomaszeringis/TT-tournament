@@ -1,12 +1,13 @@
 import streamlit as st
+import streamlit_shadcn_ui as ui
 import pandas as pd
 import plotly.graph_objects as go
-from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode
 import sys
 import os
+from app.utils import render_interactive_table
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from models import SessionLocal, Player, Match
+from models import SessionLocal, Player, Match, Tournament, MatchStatus, DATABASE_URL, DATABASE_PATH
 
 def get_player_stats(player_name):
     """Get statistics for a player"""
@@ -65,12 +66,40 @@ def create_radar_chart(player_name):
 
     st.plotly_chart(fig, use_container_width=True)
 
-st.title("📊 Dashboard")
 
-db = SessionLocal()
+try:
+    db = SessionLocal()
+    # Fetch stats for cards
+    total_players = db.query(Player).count()
+    total_matches = db.query(Match).count()
+    active_tournaments = db.query(Tournament).count()
+    completed_matches = db.query(Match).filter(Match.status == MatchStatus.completed).count()
+    
+    # Render metric cards
+    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
+    with col_m1:
+        ui.metric_card(title="Total Players", content=str(total_players), description="Registered players", key="m1")
+    with col_m2:
+        ui.metric_card(title="Total Matches", content=str(total_matches), description="Matches played", key="m2")
+    with col_m3:
+        ui.metric_card(title="Tournaments", content=str(active_tournaments), description="Total events", key="m3")
+    with col_m4:
+        ui.metric_card(title="Completed", content=str(completed_matches), description="Finished matches", key="m4")
+    
+    st.space("medium")
 
-# Fetch players
-players = db.query(Player).all()
+    # Fetch players
+    players = db.query(Player).all()
+except Exception as e:
+    st.error(f"❌ Database connection error: {e}")
+    with st.expander("🔍 Debug Information"):
+        st.write(f"**Database URL:** `{DATABASE_URL}`")
+        st.write(f"**Database Path:** `{DATABASE_PATH}`")
+        st.write(f"**File Exists:** `{os.path.exists(DATABASE_PATH)}`")
+        st.write(f"**Current Working Directory:** `{os.getcwd()}`")
+    st.info("Please ensure the database file is accessible and not locked by another process.")
+    st.stop()
+
 player_df = pd.DataFrame([
     {
         "ID": p.id,
@@ -103,27 +132,8 @@ with col1:
     st.subheader("👥 Players")
 
     if not player_df.empty:
-        # Create AG-Grid for players
-        gb_players = GridOptionsBuilder.from_dataframe(player_df)
-        gb_players.configure_pagination(paginationAutoPageSize=True)
-        gb_players.configure_side_bar()
-        gb_players.configure_selection("single", use_checkbox=False)
-        gb_players.configure_columns(
-            {"Name": {"width": 150}, "Email": {"width": 150}, "Rating": {"width": 100}}
-        )
-
-        grid_response_players = AgGrid(
-            player_df,
-            gridOptions=gb_players.build(),
-            update_mode=GridUpdateMode.SELECTION_CHANGED,
-            allow_unsafe_jscode=True,
-            height=400
-        )
-
-        selected_rows = grid_response_players['selected_rows']
-        if selected_rows is not None and len(selected_rows) > 0:
-            selected_player = selected_rows.iloc[0]
-            st.info(f"Selected: {selected_player['Name']} (Rating: {selected_player['Rating']})")
+        # Create interactive table for players using itables
+        render_interactive_table(player_df.drop(columns=["ID"]))
     else:
         st.info("No players registered yet.")
 
@@ -131,27 +141,28 @@ with col2:
     st.subheader("🎾 Recent Matches")
 
     if not match_df.empty:
-        # Create AG-Grid for matches
-        gb_matches = GridOptionsBuilder.from_dataframe(match_df)
-        gb_matches.configure_pagination(paginationAutoPageSize=True)
-        gb_matches.configure_side_bar()
-        gb_matches.configure_columns(
-            {"Player 1": {"width": 120}, "Player 2": {"width": 120},
-             "Winner": {"width": 100}, "Score": {"width": 80}}
-        )
-
-        AgGrid(
-            match_df,
-            gridOptions=gb_matches.build(),
-            update_mode=GridUpdateMode.SELECTION_CHANGED,
-            allow_unsafe_jscode=True,
-            height=400
-        )
+        # Display latest 5 matches with badges
+        st.write("**Latest Updates:**")
+        for _, row in match_df.head(5).iterrows():
+            cols = st.columns([3, 1])
+            with cols[0]:
+                st.write(f"{row['Player 1']} vs {row['Player 2']} ({row['Score']})")
+            with cols[1]:
+                variant = "secondary"
+                if row['Status'] == 'completed':
+                    variant = "default"
+                elif row['Status'] == 'active':
+                    variant = "outline"
+                ui.badges(badge_list=[(row['Status'], variant)], key=f"dash_status_{row['ID']}")
+        
+        st.space("medium")
+        # Create interactive table for all matches using itables
+        render_interactive_table(match_df.drop(columns=["ID"]))
     else:
         st.info("No matches recorded yet.")
 
 # Player Performance Radar Chart
-st.divider()
+st.space("medium")
 st.subheader("📈 Player Performance Analysis")
 
 if not player_df.empty:

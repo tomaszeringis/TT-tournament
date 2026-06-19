@@ -8,7 +8,7 @@ import sys
 # Add the parent directory to sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from models import Base
+from models import Base, DATABASE_URL
 
 # this is the Alembic Config object
 config = context.config
@@ -18,15 +18,14 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 # Set the sqlalchemy.url from environment or use default
-sqlalchemy_config = config.get_section('sqlalchemy')
-if not sqlalchemy_config or not sqlalchemy_config.get('sqlalchemy.url'):
-    config.set_main_option("sqlalchemy.url", "sqlite:///data/tournament.db")
+# Always use the central DATABASE_URL from models.py to ensure consistency
+config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 target_metadata = Base.metadata
 
 def run_migrations_offline() -> None:
     """Run migrations in 'offline' mode."""
-    url = config.get_main_option("sqlalchemy.url")
+    url = config.get_main_option("sqlalchemy.url") or DATABASE_URL
     context.configure(
         url=url,
         target_metadata=target_metadata,
@@ -40,7 +39,7 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     """Run migrations in 'online' mode."""
     # Get the database URL from config
-    database_url = config.get_main_option("sqlalchemy.url") or "sqlite:///data/tournament.db"
+    database_url = config.get_main_option("sqlalchemy.url") or DATABASE_URL
 
     # Create configuration dict for engine_from_config
     configuration = {
