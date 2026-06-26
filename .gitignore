@@ -1,9 +1,13 @@
 .venv/
 .idea/
 *.log
-data/
 logs/
 __pycache__/
-tournament_platform/data/
-tournament_platform/logs/
 tournament_platform/__pycache__/
+# Database files
+*.db
+*.db-shm
+*.db-wal
+*.sqlite3
+data/chroma_db/
+tournament_platform/data/chroma_db/

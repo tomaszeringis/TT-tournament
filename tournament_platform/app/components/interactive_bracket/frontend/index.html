@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Interactive Tournament Bracket</title>
+    
+    <script>
+        // Catch errors as early as possible
+        window.onerror = function(msg, url, lineNo, columnNo, error) {
+            console.error("Global Error:", msg, url, lineNo, columnNo, error);
+            // We'll try to display this in the body once it's loaded
+            window.lastError = { msg, lineNo, columnNo };
+            return false;
+        };
+    </script>
+
+    <!-- Brackets Viewer CSS -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/brackets-viewer@1.1.0/dist/brackets-viewer.min.css" />
+    
+    <!-- Brackets Viewer JS -->
+    <script src="https://cdn.jsdelivr.net/npm/brackets-viewer@1.1.0/dist/brackets-viewer.min.js"></script>
+    
+    <!-- Panzoom for interactivity -->
+    <script src="https://cdn.jsdelivr.net/npm/@panzoom/panzoom@4.5.1/dist/panzoom.min.js"></script>
+
+    <!-- Streamlit Component Library -->
+    <script src="./streamlit-component-lib.js"></script>
+    
+    <script>
+        // Check if external libraries loaded
+        window.addEventListener('load', function() {
+            const libs = {
+                'BracketsViewer': !!window.bracketsViewer,
+                'Panzoom': !!window.Panzoom,
+                'Streamlit': !!window.Streamlit
+            };
+            console.log("Libraries status:", libs);
+            
+            if (!libs.Streamlit) {
+                document.getElementById('bracket-container').innerHTML = 
+                    '<div style="color: #ff4b4b; padding: 20px;">' +
+                    '<h3>Streamlit Lib Load Failure</h3>' +
+                    '<p>The component could not initialize the Streamlit communication layer.</p>' +
+                    '</div>';
+            } else if (!libs.BracketsViewer) {
+                document.getElementById('bracket-container').innerHTML = 
+                    '<div style="color: #ff4b4b; padding: 20px;">' +
+                    '<h3>External Assets Blocked</h3>' +
+                    '<p>The tournament bracket library (brackets-viewer) failed to load. This usually happens if jsdelivr.net is blocked by your firewall or proxy.</p>' +
+                    '<small>Try checking your browser console (F12) for network errors.</small>' +
+                    '</div>';
+                // Still signal ready so Streamlit doesn't show the generic timeout error
+                Streamlit.setComponentReady();
+            }
+        });
+    </script>
+    
+    <style>
+        :root {
+            --primary-color: #ff4b4b;
+            --background-color: #0e1117;
+            --secondary-background-color: #262730;
+            --text-color: #fafafa;
+            --font: "Source Sans Pro", sans-serif;
+            --match-background: var(--secondary-background-color);
+            --match-border: rgba(255, 255, 255, 0.1);
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: transparent;
+            color: var(--text-color);
+            font-family: var(--font);
+            overflow: hidden;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        #bracket-wrapper {
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            cursor: grab;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        #bracket-wrapper:active {
+            cursor: grabbing;
+        }
+
+        #bracket-container {
+            padding: 40px;
+            transform-origin: center;
+        }
+
+        /* Professional Bracket Styling */
+        .brackets-viewer {
+            background-color: transparent !important;
+            --match-width: 200px;
+            --match-horizontal-margin: 40px;
+            --match-vertical-margin: 20px;
+            --connector-color: var(--secondary-background-color);
+            --connector-border-width: 2px;
+            --win-color: var(--primary-color);
+        }
+
+        .brackets-viewer .match {
+            background-color: var(--match-background) !important;
+            border: 1px solid var(--match-border) !important;
+            border-radius: 8px !important;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1) !important;
+            transition: border-color 0.2s, box-shadow 0.2s !important;
+        }
+
+        .brackets-viewer .match:hover {
+            box-shadow: 0 0 0 2px var(--primary-color) !important;
+            border-color: var(--primary-color) !important;
+            cursor: pointer;
+        }
+
+        .brackets-viewer .match .opponent {
+            padding: 10px 15px !important;
+            font-size: 0.95rem !important;
+            border-bottom: 1px solid var(--match-border) !important;
+        }
+
+        .brackets-viewer .match .opponent:last-child {
+            border-bottom: none !important;
+        }
+
+        .brackets-viewer .match .opponent.win {
+            color: var(--primary-color) !important;
+            font-weight: 600 !important;
+        }
+
+        .brackets-viewer .match .score {
+            background-color: rgba(0,0,0,0.1) !important;
+            border-left: 1px solid var(--match-border) !important;
+            font-weight: 700 !important;
+            width: 30px !important;
+            text-align: center !important;
+        }
+
+        /* Customizing scrollbar to match Streamlit style */
+        ::-webkit-scrollbar {
+            width: 6px;
+            height: 6px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0);
+        }
+        ::-webkit-scrollbar-thumb {
+            background: var(--secondary-background-color);
+            border-radius: 10px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #60677a;
+        }
+
+        .controls {
+            position: fixed;
+            bottom: 10px;
+            right: 10px;
+            display: flex;
+            gap: 5px;
+            z-index: 100;
+        }
+
+        .btn {
+            background: var(--secondary-background-color);
+            color: var(--text-color);
+            border: 1px solid var(--match-border);
+            border-radius: 4px;
+            padding: 5px 10px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .btn:hover {
+            background: var(--primary-color);
+            color: white;
+        }
+    </style>
+</head>
+<body>
+    <div id="bracket-wrapper">
+        <div id="bracket-container" class="brackets-viewer"></div>
+    </div>
+    
+    <div class="controls">
+        <button class="btn" id="zoom-in" title="Zoom In">+</button>
+        <button class="btn" id="zoom-out" title="Zoom Out">-</button>
+        <button class="btn" id="reset" title="Reset View">Reset</button>
+    </div>
+
+    <script>
+        // Check if there was an early error
+        if (window.lastError) {
+            const container = document.getElementById('bracket-container');
+            if (container) {
+                container.innerHTML = `<div style="color: #ff4b4b; padding: 20px;">
+                    <h3>Frontend Initialization Error</h3>
+                    <p>${window.lastError.msg}</p>
+                    <small>Line: ${window.lastError.lineNo}, Column: ${window.lastError.columnNo}</small>
+                </div>`;
+            }
+        }
+
+        let panzoomInstance = null;
+
+        function applyTheme(theme) {
+            if (!theme) return;
+            
+            const root = document.documentElement;
+            root.style.setProperty('--primary-color', theme.primaryColor);
+            root.style.setProperty('--background-color', theme.backgroundColor);
+            root.style.setProperty('--secondary-background-color', theme.secondaryBackgroundColor);
+            root.style.setProperty('--text-color', theme.textColor);
+            root.style.setProperty('--font', theme.font);
+        }
+
+        function onRender(event) {
+            // Apply theme
+            applyTheme(event.detail.theme);
+
+            const args = event.detail.args;
+            const bracket_data = args.bracket_data;
+            const height = args.height || 600;
+            
+            const container = document.getElementById('bracket-container');
+            const wrapper = document.getElementById('bracket-wrapper');
+
+            if (window.bracketsViewer && bracket_data) {
+                // Clear and render
+                container.innerHTML = '';
+                window.bracketsViewer.render(bracket_data, {
+                    selector: '#bracket-container',
+                    responsive: true,
+                    separatedChildCount: true,
+                    showStageName: true,
+                    showFinal: true,
+                    onMatchClick: (match) => {
+                        Streamlit.setComponentValue(match);
+                    }
+                });
+
+                // Initialize Panzoom
+                if (!panzoomInstance && window.Panzoom) {
+                    panzoomInstance = Panzoom(container, {
+                        maxScale: 3,
+                        minScale: 0.3,
+                        contain: 'outside'
+                    });
+
+                    wrapper.addEventListener('wheel', panzoomInstance.zoomWithWheel);
+                    
+                    document.getElementById('zoom-in').addEventListener('click', () => panzoomInstance.zoomIn());
+                    document.getElementById('zoom-out').addEventListener('click', () => panzoomInstance.zoomOut());
+                    document.getElementById('reset').addEventListener('click', () => panzoomInstance.reset());
+                }
+            } else if (!bracket_data) {
+                container.innerHTML = '<p style="padding: 20px;">No bracket data provided.</p>';
+            } else {
+                container.innerHTML = '<p style="color: red; padding: 20px;">Error: Libraries failed to load.</p>';
+            }
+
+            Streamlit.setFrameHeight(height); 
+        }
+
+        // Register the render callback
+        if (window.Streamlit) {
+            Streamlit.events.addEventListener(Streamlit.RENDER_EVENT, onRender);
+            // Tell Streamlit that the component is ready
+            Streamlit.setComponentReady();
+        } else {
+            // Fallback if Streamlit lib didn't load
+            setTimeout(() => {
+                const container = document.getElementById('bracket-container');
+                if (container && container.innerHTML === '') {
+                    container.innerHTML = '<p style="color: red; padding: 20px;">Error: Streamlit library failed to load. Check your internet connection or proxy settings.</p>';
+                }
+            }, 1000);
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+alembic/__pycache__/
+alembic/versions/__pycache__/
+api/__pycache__/
+app/__pycache__/
+app/pages/__pycache__/
+services/__pycache__/
+data/**/*.db
+data/**/*.sqlite3
+data/**/*.db-shm
+data/**/*.db-wal
+data/chroma_db/
+logs/
+app/logs/
+*.log
+alembic/script.py.mako.bak

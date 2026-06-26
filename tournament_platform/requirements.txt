@@ -1,0 +1,56 @@
+# Core Web Framework
+streamlit>=1.35.0
+fastapi>=0.110.0
+uvicorn>=0.29.0
+
+# Database
+sqlalchemy>=2.0.30
+alembic>=1.13.0
+
+# AI/LLM
+ollama>=0.3.0
+chromadb>=0.4.24
+semantic-kernel>=1.43.1
+langchain>=0.2.0
+langchain-community>=0.2.0
+langchain-ollama>=0.1.0
+langchain-text-splitters>=0.2.0
+
+# Authentication & Security
+streamlit-authenticator==0.3.2
+PyJWT>=2.3.0
+cryptography>=39.0.0
+python-multipart>=0.0.6
+captcha>=0.5.0
+
+# UI Components
+streamlit-aggrid>=0.3.4
+streamlit-shadcn-ui>=0.1.19
+extra-streamlit-components>=0.1.70
+pyyaml>=6.0.1
+
+# Data & Visualization
+pandas>=2.0.0
+plotly>=5.18.0
+itables>=2.0.0
+requests>=2.31.0
+pydantic>=2.7.0
+
+# Speech & Audio
+faster-whisper>=1.0.3
+SpeechRecognition>=3.10.4
+PyAudio>=0.2.14
+RealtimeTTS>=0.4.1
+pyttsx3>=2.90
+
+# Tournament/Bracket Management
+bracketool>=0.1
+round-robin-tournament>=1.0.0
+
+# Microsoft Graph API
+msgraph-sdk>=1.0.0
+msal>=1.20.0
+kiota-abstractions>=1.0.0
+
+# PDF Processing
+pypdf>=4.2.0

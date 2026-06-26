@@ -1,0 +1,10 @@
+credentials:
+  usernames:
+    admin:
+      email: admin@corp.com
+      name: Admin User
+      password: '123' # Hash these in production
+cookie:
+  expiry_days: 30
+  key: random_signature_key
+  name: tt_auth_cookie
