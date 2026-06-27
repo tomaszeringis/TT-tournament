@@ -19,6 +19,7 @@ from tournament_platform.config import settings
 from tournament_platform.services.settings import (
     ENABLE_VOICE_ENTRY,
     ENABLE_RULES_ASSISTANT,
+    ENABLE_RANKING_INTELLIGENCE,
     SPEECH_MODEL_SIZE,
     KEEP_AUDIO_FILES,
 )
@@ -85,6 +86,23 @@ def render_tournament_creation():
             default=player_names[:8] if len(player_names) >= 8 else player_names,
             help="Choose at least 2 players to create a tournament"
         )
+
+        # Seeding suggestion button
+        if ENABLE_RANKING_INTELLIGENCE and st.button("🎯 Suggest Seeding by Rating", key="suggest_seeding_btn"):
+            if not all_players:
+                st.warning("No players with ratings available for seeding.")
+            else:
+                sorted_players = sorted(all_players, key=lambda p: p.rating, reverse=True)
+                seeded_names = [p.name for p in sorted_players]
+                # Filter to only those currently selected, preserving rating order
+                selected_sorted = [name for name in seeded_names if name in selected_players]
+                st.session_state["seeded_players"] = selected_sorted
+                st.rerun()
+
+        # Restore seeded selection if available
+        if "seeded_players" in st.session_state and st.session_state["seeded_players"]:
+            selected_players = st.session_state["seeded_players"]
+            st.caption("🔽 Players are ordered by rating (highest first).")
         
         submitted = st.form_submit_button("🏆 Create Tournament")
         
@@ -334,6 +352,40 @@ def render_confirmed_result_form(parsed: dict, tournaments: list):
         if p1 and p2 and winner != "Select winner":
             if winner != p1 and winner != p2:
                 st.warning("⚠️ Winner must be one of the players")
+
+        # Ranking intelligence: upset alert and seeding suggestion
+        if ENABLE_RANKING_INTELLIGENCE and p1 and p2 and winner != "Select winner":
+            st.space("small")
+            # Look up player IDs by name
+            db = SessionLocal()
+            try:
+                p1_obj = db.query(Player).filter(Player.name == p1).first()
+                p2_obj = db.query(Player).filter(Player.name == p2).first()
+                if p1_obj and p2_obj:
+                    winner_obj = db.query(Player).filter(Player.name == winner).first()
+                    winner_id = winner_obj.id if winner_obj else None
+                    preview_resp = api_request(
+                        "post",
+                        "/api/ratings/preview-match",
+                        json={
+                            "player1_id": p1_obj.id,
+                            "player2_id": p2_obj.id,
+                            "winner_id": winner_id,
+                        },
+                        parse_json=True,
+                        error_context="rating preview",
+                    )
+                    if preview_resp:
+                        if preview_resp.get("upset_possible"):
+                            st.warning(
+                                f"⚠️ **Possible upset:** {preview_resp.get('explanation', '')}"
+                            )
+                        else:
+                            st.info(f"ℹ️ {preview_resp.get('explanation', '')}")
+            except Exception as e:
+                st.caption(f"Ranking preview unavailable: {e}")
+            finally:
+                db.close()
 
         submitted = st.form_submit_button("📤 Submit confirmed result", use_container_width=True)
 

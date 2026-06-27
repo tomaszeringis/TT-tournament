@@ -2,11 +2,13 @@ import streamlit as st
 import streamlit_shadcn_ui as ui
 import pandas as pd
 import plotly.graph_objects as go
+import requests
 from tournament_platform.app.utils import (
     render_interactive_table,
     render_database_error,
     render_status_badge,
     render_metric_cards,
+    api_request,
 )
 from tournament_platform.app.components.ai_status import render_ai_status_badge
 
@@ -309,6 +311,51 @@ def render_dashboard():
         # Clear the question after showing
         if 'quick_question' in st.session_state:
             del st.session_state['quick_question']
+
+    # Ranking Intelligence Section
+    st.space("medium")
+    st.subheader("🧠 Ranking Intelligence")
+
+    try:
+        leaderboard_resp = api_request(
+            "get",
+            "/api/ratings/leaderboard",
+            parse_json=True,
+            error_context="loading leaderboard",
+        )
+    except Exception as e:
+        leaderboard_resp = None
+        st.warning(f"Could not load leaderboard: {e}")
+
+    if leaderboard_resp:
+        lb_df = pd.DataFrame(leaderboard_resp)
+        if not lb_df.empty:
+            # Top 3 player cards
+            st.markdown("**🏆 Top 3 Players**")
+            top3 = lb_df.head(3)
+            card_cols = st.columns(3)
+            for idx, (_, row) in enumerate(top3.iterrows()):
+                with card_cols[idx]:
+                    medal = ["🥇", "🥈", "🥉"][idx]
+                    st.metric(
+                        label=f"{medal} {row['name']}",
+                        value=f"{row['rating']} pts",
+                        delta=f"{row['wins']}W - {row['losses']}L",
+                    )
+
+            st.space("small")
+            st.markdown("**📋 Full Leaderboard**")
+            display_df = lb_df[[
+                "name", "rating", "matches_played", "wins", "losses", "last_rating_change"
+            ]].copy()
+            display_df.columns = ["Player", "Rating", "Matches", "Wins", "Losses", "Last Change"]
+            display_df.index = range(1, len(display_df) + 1)
+            display_df.index.name = "Rank"
+            render_interactive_table(display_df)
+        else:
+            st.info("No ranking data available yet.")
+    else:
+        st.info("Ranking data unavailable.")
 
 
 if __name__ == "__main__":

@@ -21,8 +21,20 @@ from tournament_platform.services.match_reporting import (
     InvalidWinnerError,
     report_existing_match,
 )
-from tournament_platform.services.schemas import MatchResultParseRequest, MatchResultParseResponse
+from tournament_platform.services.schemas import (
+    MatchResultParseRequest,
+    MatchResultParseResponse,
+    LeaderboardEntry,
+    RatingHistoryEntry,
+    PreviewMatchRequest,
+    PreviewMatchResponse,
+)
 from tournament_platform.services.match_parser import parse_match_result
+from tournament_platform.services.rating_intelligence import (
+    get_leaderboard_data,
+    get_player_rating_history_data,
+    preview_match_rating,
+)
 from tournament_platform.config import settings
 from tournament_platform.services.settings import (
     ENABLE_VOICE_ENTRY,
@@ -256,6 +268,66 @@ async def ask_rules(request: Request):
         if "Model" in str(e) or "connect" in str(e).lower():
             raise HTTPException(status_code=503, detail=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ratings/leaderboard", response_model=List[LeaderboardEntry])
+async def get_leaderboard(db: Session = Depends(get_db)):
+    """
+    Return the current ratings leaderboard with wins/losses derived from completed matches.
+    """
+    try:
+        data = get_leaderboard_data(db_session=db)
+        return [LeaderboardEntry(**entry) for entry in data]
+    except Exception as e:
+        logger.error(f"Error fetching leaderboard: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch leaderboard")
+
+
+@app.get("/api/ratings/player/{player_id}/history", response_model=List[RatingHistoryEntry])
+async def get_player_history(player_id: int, db: Session = Depends(get_db)):
+    """
+    Return rating history for a specific player.
+    """
+    try:
+        data = get_player_rating_history_data(player_id, db_session=db)
+        return [RatingHistoryEntry(**entry) for entry in data]
+    except Exception as e:
+        logger.error(f"Error fetching rating history for player {player_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch rating history")
+
+
+@app.post("/api/ratings/preview-match", response_model=PreviewMatchResponse)
+async def preview_match(request: Request, db: Session = Depends(get_db)):
+    """
+    Preview the rating impact and upset potential for a match between two players.
+    Does not write to the database.
+    """
+    try:
+        data = await request.json()
+        logger.info(f"Received match preview request: {data}")
+
+        try:
+            req = PreviewMatchRequest(**data)
+        except ValidationError as e:
+            logger.warning(f"Preview request validation error: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid request body: {e}")
+
+        preview = preview_match_rating(
+            player1_id=req.player1_id,
+            player2_id=req.player2_id,
+            winner_id=req.winner_id,
+            db_session=db,
+        )
+        return PreviewMatchResponse(**preview)
+
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in request: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON format")
+    except Exception as e:
+        logger.error(f"Error previewing match: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
 
 @app.get("/health")
 async def health_check():

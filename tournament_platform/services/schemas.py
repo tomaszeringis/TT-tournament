@@ -38,3 +38,41 @@ class MatchResultParseResponse(BaseModel):
         None,
         description="Raw parsed data for debugging"
     )
+
+
+class LeaderboardEntry(BaseModel):
+    """Single entry in the ratings leaderboard."""
+    player_id: int = Field(..., description="Player ID")
+    name: str = Field(..., description="Player name")
+    rating: int = Field(..., description="Current rating")
+    matches_played: int = Field(..., description="Total matches played")
+    wins: int = Field(..., description="Total wins")
+    losses: int = Field(..., description="Total losses")
+    last_rating_change: Optional[int] = Field(None, description="Most recent rating change from history")
+
+
+class RatingHistoryEntry(BaseModel):
+    """Single rating history entry."""
+    id: int
+    rating: int
+    timestamp: str
+
+
+class PreviewMatchRequest(BaseModel):
+    """Request to preview the rating impact of a potential match."""
+    player1_id: int = Field(..., description="ID of the first player")
+    player2_id: int = Field(..., description="ID of the second player")
+    winner_id: Optional[int] = Field(None, description="Optional predicted winner ID")
+
+
+class PreviewMatchResponse(BaseModel):
+    """Response with rating preview and upset analysis."""
+    player1_id: int
+    player2_id: int
+    player1_rating: int
+    player2_rating: int
+    rating_difference: int
+    expected_favorite: int
+    upset_possible: bool
+    explanation: str
+    predicted_rating_changes: Optional[Dict[str, int]] = None
