@@ -21,6 +21,8 @@ from tournament_platform.services.match_reporting import (
     InvalidWinnerError,
     report_existing_match,
 )
+from tournament_platform.services.schemas import MatchResultParseRequest, MatchResultParseResponse
+from tournament_platform.services.match_parser import parse_match_result
 from tournament_platform.config import settings
 from tournament_platform.services.settings import (
     ENABLE_VOICE_ENTRY,
@@ -154,6 +156,54 @@ async def report_match(request: Request, db: Session = Depends(get_db)):
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         logger.error(f"Error processing match report: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
+@app.post("/api/match/parse")
+async def parse_match(request: Request):
+    """
+    Parse-only endpoint for match result entry.
+    - Accepts a plain-text transcript
+    - Returns structured JSON for UI confirmation
+    - NEVER writes to the database
+    """
+    try:
+        data = await request.json()
+        logger.info(f"Received match parse request: {data}")
+
+        # Validate request body
+        try:
+            parse_request = MatchResultParseRequest(**data)
+        except ValidationError as e:
+            logger.warning(f"Parse request validation error: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid request body: {e}")
+
+        transcript = parse_request.text.strip()
+        if not transcript:
+            raise HTTPException(status_code=400, detail="'text' field must not be empty")
+
+        # Call the parser service (no DB writes)
+        parsed = parse_match_result(
+            text=transcript,
+            ai_engine=ai_engine,
+            tournament_id=parse_request.tournament_id,
+            match_id=parse_request.match_id,
+        )
+
+        # Validate response against schema
+        response = MatchResultParseResponse(**parsed)
+        logger.info(f"Parse result: status={response.status}, winner={response.winner}, score={response.score}")
+        return response.model_dump()
+
+    except HTTPException:
+        raise
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in request: {e}")
+        raise HTTPException(status_code=400, detail="Invalid JSON format")
+    except ValidationError as e:
+        logger.warning(f"Parse response validation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Internal validation error: {e}")
+    except Exception as e:
+        logger.error(f"Error parsing match result: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
 
 @app.post("/api/rules/ask")

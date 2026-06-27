@@ -13,13 +13,14 @@ import asyncio
 import tempfile
 import hashlib
 import os
+import requests
 from typing import Optional, Tuple, Dict, List
 
 # Import the MatchManager and UmpireEngine
 from tournament_platform.services.match_manager import MatchManager, MatchState
 from tournament_platform.services.umpire_engine import UmpireEngine, UmpireConfig
-from tournament_platform.models import SessionLocal, Match, MatchStatus, Player
-from tournament_platform.app.utils import format_player_label
+from tournament_platform.models import SessionLocal, Match, MatchStatus, Player, Tournament
+from tournament_platform.app.utils import format_player_label, api_request
 
 
 # ============================================================================
@@ -349,6 +350,192 @@ else:
     # Reset hash when audio is cleared
     st.session_state.last_audio_hash = None
 
+# ============================================================================
+# Match Reporting UI
+# ============================================================================
+
+st.divider()
+st.subheader("📤 Report Match Result")
+
+# Initialize session state for match reporting
+if 'report_transcript' not in st.session_state:
+    st.session_state.report_transcript = ""
+if 'report_parsed' not in st.session_state:
+    st.session_state.report_parsed = None
+if 'report_status' not in st.session_state:
+    st.session_state.report_status = None
+
+# Step 1: Input transcript
+st.markdown("**Step 1: Enter or record match result**")
+col_report_input, col_report_text = st.columns([1, 2])
+
+with col_report_input:
+    if st.button("🎙️ Record Result", key="record_result_btn", use_container_width=True):
+        st.session_state.report_transcript = ""
+        st.session_state.report_parsed = None
+        st.session_state.report_status = None
+        with st.status("Recording...", expanded=True) as status:
+            try:
+                audio_path = asyncio.run(record_audio())
+                status.update(label="Recording complete", state="complete", expanded=False)
+                with st.status("Transcribing...", expanded=True) as trans_status:
+                    reporter = get_speech_reporter()
+                    transcript = reporter.transcribe_audio(audio_path)
+                    st.session_state.report_transcript = transcript
+                    trans_status.update(label="Transcription complete", state="complete", expanded=False)
+                if os.path.exists(audio_path):
+                    os.remove(audio_path)
+            except Exception as e:
+                st.session_state.report_status = f"Error: {e}"
+                status.update(label="Error occurred", state="error", expanded=True)
+
+with col_report_text:
+    report_text = st.text_area(
+        "Or type match result (e.g., 'Alice beat Bob 3-1')",
+        value=st.session_state.report_transcript,
+        key="report_text_input",
+        height=80,
+        help="Describe the match result in natural language"
+    )
+
+    if st.button("🔍 Parse Result", key="parse_result_btn", use_container_width=True):
+        if report_text.strip():
+            st.session_state.report_transcript = report_text.strip()
+            st.session_state.report_parsed = None
+            st.session_state.report_status = None
+            with st.spinner("Parsing match result..."):
+                try:
+                    response = api_request(
+                        "post",
+                        "/api/match/parse",
+                        json={"text": st.session_state.report_transcript},
+                        error_context="match result parsing"
+                    )
+                    if response:
+                        st.session_state.report_parsed = response
+                        st.session_state.report_status = response.get("status", "unknown")
+                except Exception as e:
+                    st.session_state.report_status = f"Error: {e}"
+        else:
+            st.warning("Please enter a match result first.")
+
+# Step 2: Review parsed result
+if st.session_state.report_parsed:
+    st.divider()
+    st.markdown("**Step 2: Review Parsed Result**")
+    parsed = st.session_state.report_parsed
+
+    # Status badge
+    status_color = {
+        "success": "🟢",
+        "needs_review": "🟡",
+        "error": "🔴"
+    }.get(st.session_state.report_status, "⚪")
+    st.markdown(f"**Status:** {status_color} {st.session_state.report_status}")
+
+    # Show warnings if any
+    if parsed.get("warnings"):
+        for warning in parsed["warnings"]:
+            st.warning(f"⚠️ {warning}")
+
+    # Review card
+    with st.container(border=True):
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            st.markdown(f"**Player 1:** {parsed.get('player1') or 'Not detected'}")
+        with col_p2:
+            st.markdown(f"**Player 2:** {parsed.get('player2') or 'Not detected'}")
+        st.markdown(f"**Score:** {parsed.get('score') or 'Not detected'}")
+        st.markdown(f"**Winner:** {parsed.get('winner') or 'Not detected'}")
+        st.caption(f"Confidence: {parsed.get('confidence', 0):.0%}")
+
+    # Step 3: Confirm and submit
+    st.markdown("**Step 3: Confirm and Submit**")
+    st.caption("Verify the details below and submit to record the match result.")
+
+    with st.form("voice_match_report_form"):
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            p1 = st.text_input("Player 1", value=parsed.get("player1") or "")
+        with col_p2:
+            p2 = st.text_input("Player 2", value=parsed.get("player2") or "")
+
+        # Parse score for number inputs
+        score_val = parsed.get("score") or "0-0"
+        try:
+            s1_str, s2_str = score_val.split("-")
+            s1 = int(s1_str)
+            s2 = int(s2_str)
+        except Exception:
+            s1, s2 = 0, 0
+
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            s1 = st.number_input("Player 1 Score", min_value=0, max_value=10, value=s1)
+        with col_s2:
+            s2 = st.number_input("Player 2 Score", min_value=0, max_value=10, value=s2)
+
+        # Winner selection
+        winner_options = ["Select winner", p1, p2] if p1 and p2 else ["Select Players First"]
+        winner_index = 0
+        if parsed.get("winner") in winner_options:
+            winner_index = winner_options.index(parsed["winner"])
+        winner = st.selectbox("Winner", winner_options, index=winner_index)
+
+        score = f"{s1}-{s2}"
+
+        # Tournament selection
+        db = SessionLocal()
+        try:
+            tournaments = db.query(Tournament).all()
+            tournament_options = {t.name: t.id for t in tournaments}
+            selected_tournament = st.selectbox(
+                "Tournament (optional)",
+                options=["None"] + list(tournament_options.keys())
+            )
+        finally:
+            db.close()
+
+        # Validation
+        if p1 and p2 and winner != "Select winner":
+            if winner != p1 and winner != p2:
+                st.warning("⚠️ Winner must be one of the players")
+
+        submitted = st.form_submit_button("📤 Submit Result", use_container_width=True)
+
+        if submitted:
+            if not p1 or not p2:
+                st.error("Please provide both player names")
+            elif winner == "Select winner":
+                st.error("Please select a winner")
+            elif winner != p1 and winner != p2:
+                st.error("Winner must be one of the players")
+            else:
+                try:
+                    payload = {
+                        "player1": p1,
+                        "player2": p2,
+                        "score": score,
+                        "winner": winner,
+                        "tournament_id": tournament_options.get(selected_tournament) if selected_tournament != "None" else None
+                    }
+                    with st.status("Submitting result...", expanded=False) as status:
+                        response = api_request(
+                            "post",
+                            "/api/report",
+                            json=payload,
+                            error_context="match result submission"
+                        )
+                        if response is not None:
+                            st.session_state.report_transcript = ""
+                            st.session_state.report_parsed = None
+                            st.session_state.report_status = None
+                            status.update(label="Result submitted!", state="complete", expanded=False)
+                            st.success("✅ Match result submitted successfully!")
+                            st.rerun()
+                except Exception as e:
+                    st.error(f"Connection error: {e}")
+
 # Display last feedback
 if st.session_state.last_feedback:
     st.info(f"Last action: {st.session_state.last_feedback}")
@@ -362,6 +549,7 @@ st.markdown("""
 - "Player A scored" / "Player B scored" - Add a point
 - "Undo last point" - Remove the last point
 - "What's the score?" - Hear the current score
+- "Alice beat Bob 3-1" - Report a match result
 
 **Tips:**
 - Speak clearly and at a normal pace
