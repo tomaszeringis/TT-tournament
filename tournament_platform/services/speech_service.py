@@ -5,11 +5,12 @@ import audioop
 import speech_recognition as sr
 from faster_whisper import WhisperModel
 from tournament_platform.config import settings
+from tournament_platform.services.settings import SPEECH_MODEL_SIZE
 
 class SpeechReporter:
     def __init__(self, model_size=None):
         # Use settings default, allow override
-        model_size = model_size or settings.WHISPER_MODEL_SIZE
+        model_size = model_size or SPEECH_MODEL_SIZE
         self.model = WhisperModel(
             model_size,
             device=settings.WHISPER_DEVICE,

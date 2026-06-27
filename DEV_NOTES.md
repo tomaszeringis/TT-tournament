@@ -46,3 +46,30 @@ python tournament_platform/api/server.py
 # Streamlit frontend
 streamlit run tournament_platform/app/main.py
 ```
+
+## Local feature flags
+
+Feature flags are defined in [`tournament_platform/services/settings.py`](tournament_platform/services/settings.py) and can be overridden via environment variables or a `.env` file. A template is provided at [`tournament_platform/.env.example`](tournament_platform/.env.example).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `API_BASE_URL` | `http://localhost:8000` | Base URL for the FastAPI backend used by the Streamlit frontend. |
+| `OLLAMA_MODEL` | `llama3:latest` | Ollama model identifier for AI features. |
+| `ENABLE_VOICE_ENTRY` | `True` | Enable voice-based match entry (faster-whisper / SpeechRecognition). |
+| `ENABLE_RULES_ASSISTANT` | `True` | Enable the AI rules assistant (RAG over tournament rule documents). |
+| `ENABLE_RANKING_INTELLIGENCE` | `True` | Enable ranking intelligence features (AI-enhanced ranking insights). |
+| `ENABLE_SPOKEN_CONFIRMATION` | `False` | Enable spoken confirmation prompts after voice actions. |
+| `KEEP_AUDIO_FILES` | `False` | Keep temporary audio files after transcription (useful for debugging). |
+| `SPEECH_MODEL_SIZE` | `base` | Whisper model size for speech-to-text transcription (`tiny`, `base`, `small`, `medium`, `large-v3`). |
+
+### Usage
+
+1. Copy `.env.example` to `.env` in the `tournament_platform/` directory.
+2. Adjust values as needed.
+3. The settings module loads `.env` automatically via `python-dotenv`.
+
+### Notes
+
+- Feature flags are read at runtime; restart the app after changing `.env`.
+- The `API_BASE_URL` flag replaces the previous hardcoded `http://localhost:8000` in the frontend.
+- The `SPEECH_MODEL_SIZE` flag controls the Whisper model used by the speech service.

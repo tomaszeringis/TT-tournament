@@ -22,6 +22,13 @@ from tournament_platform.services.match_reporting import (
     report_existing_match,
 )
 from tournament_platform.config import settings
+from tournament_platform.services.settings import (
+    ENABLE_VOICE_ENTRY,
+    ENABLE_RULES_ASSISTANT,
+    ENABLE_RANKING_INTELLIGENCE,
+    ENABLE_SPOKEN_CONFIRMATION,
+    KEEP_AUDIO_FILES,
+)
 
 # Configure logging
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

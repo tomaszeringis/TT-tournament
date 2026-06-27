@@ -15,11 +15,16 @@ from tournament_platform.app.utils import render_database_connection_error, rend
 from tournament_platform.app.components.player_registration import render_player_registration_section, get_all_players
 from tournament_platform.app.components.ai_status import render_ai_status_badge
 from tournament_platform.config import settings
+from tournament_platform.services.settings import (
+    ENABLE_VOICE_ENTRY,
+    ENABLE_RULES_ASSISTANT,
+    SPEECH_MODEL_SIZE,
+)
 
 
 @st.cache_resource
 def get_speech_reporter():
-    return SpeechReporter(model_size="base")
+    return SpeechReporter(model_size=SPEECH_MODEL_SIZE)
 
 
 @st.cache_resource

@@ -10,6 +10,7 @@ from .bracket_manager import TournamentState
 from .ranking_service import RatingManager
 from tournament_platform.models import Match, MatchStatus, Tournament, SessionLocal, Player
 from tournament_platform.config import settings
+from tournament_platform.services.settings import OLLAMA_MODEL as FEATURE_OLLAMA_MODEL
 
 # Configure logging
 os.makedirs(settings.LOG_DIR, exist_ok=True)
@@ -58,7 +59,7 @@ class MatchResult(BaseModel):
 class AIEngine:
     def __init__(self, model=None, chroma_path=None):
         # Use settings default, allow override
-        self.model = model or settings.OLLAMA_MODEL
+        self.model = model or FEATURE_OLLAMA_MODEL
         if chroma_path is None:
             self.chroma_path = settings.CHROMA_DB_PATH
         else:
