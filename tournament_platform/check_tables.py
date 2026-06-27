@@ -9,7 +9,7 @@ tables = cursor.fetchall()
 print('Tables in database:')
 if tables:
     for t in tables:
-        print(f'  ✓ {t[0]}')
+        print(f'  [OK] {t[0]}')
 else:
     print('  (no tables found)')
 conn.close()

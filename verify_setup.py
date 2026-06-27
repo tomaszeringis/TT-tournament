@@ -12,41 +12,41 @@ import os
 
 def test_imports():
     """Test all main package imports."""
-    print("\n📦 Testing Package Imports...")
+    print("\n[PKG] Testing Package Imports...")
     try:
         import streamlit
-        print("  ✓ streamlit")
+        print("  [OK] streamlit")
         import fastapi
-        print("  ✓ fastapi")
+        print("  [OK] fastapi")
         import sqlalchemy
-        print("  ✓ sqlalchemy")
+        print("  [OK] sqlalchemy")
         import alembic
-        print("  ✓ alembic")
+        print("  [OK] alembic")
         import chromadb
-        print("  ✓ chromadb")
+        print("  [OK] chromadb")
         import pydantic
-        print("  ✓ pydantic")
+        print("  [OK] pydantic")
         import plotly
-        print("  ✓ plotly")
+        print("  [OK] plotly")
         import ollama
-        print("  ✓ ollama")
-        print("  ✓ All packages imported successfully!")
+        print("  [OK] ollama")
+        print("  [OK] All packages imported successfully!")
         return True
     except ImportError as e:
-        print(f"  ✗ Import error: {e}")
+        print(f"  [FAIL] Import error: {e}")
         return False
 
 def test_models():
     """Test database models."""
-    print("\n🗄️  Testing Database Models...")
+    print("\n[DB]  Testing Database Models...")
     try:
         from tournament_platform.models import Player, Match, Tournament, MatchStatus, SessionLocal
 
-        print("  ✓ Player model")
-        print("  ✓ Match model")
-        print("  ✓ Tournament model")
-        print("  ✓ MatchStatus enum")
-        print("  ✓ Database session factory")
+        print("  [OK] Player model")
+        print("  [OK] Match model")
+        print("  [OK] Tournament model")
+        print("  [OK] MatchStatus enum")
+        print("  [OK] Database session factory")
 
         # Test database connectivity
         try:
@@ -56,40 +56,40 @@ def test_models():
             tournament_count = db.query(Tournament).count()
             db.close()
 
-            print(f"  ✓ Database connection successful")
+            print(f"  [OK] Database connection successful")
             print(f"    - Players in database: {player_count}")
             print(f"    - Matches in database: {match_count}")
             print(f"    - Tournaments in database: {tournament_count}")
             return True
         except Exception as e:
-            print(f"  ⚠️  Database tables not accessible: {e}")
+            print(f"  [WARN]  Database tables not accessible: {e}")
             return False
 
     except Exception as e:
-        print(f"  ✗ Database error: {e}")
+        print(f"  [FAIL] Database error: {e}")
         import traceback
         traceback.print_exc()
         return False
 
 def test_ai_engine():
     """Test AI engine."""
-    print("\n🤖 Testing AI Engine...")
+    print("\n[AI] Testing AI Engine...")
     try:
         from tournament_platform.services.ai_engine import AIEngine, MatchReport
-        print("  ✓ AIEngine class")
-        print("  ✓ MatchReport Pydantic model")
+        print("  [OK] AIEngine class")
+        print("  [OK] MatchReport Pydantic model")
 
         ai = AIEngine()
-        print("  ✓ AIEngine instance created")
-        print("  ✓ ChromaDB initialized")
+        print("  [OK] AIEngine instance created")
+        print("  [OK] ChromaDB initialized")
         return True
     except Exception as e:
-        print(f"  ✗ AI Engine error: {e}")
+        print(f"  [FAIL] AI Engine error: {e}")
         return False
 
 def test_migrations():
     """Test Alembic migrations."""
-    print("\n📜 Testing Alembic Migrations...")
+    print("\n[MIG] Testing Alembic Migrations...")
     try:
         from alembic.config import Config
         from alembic import command
@@ -98,28 +98,28 @@ def test_migrations():
         # Check if alembic.ini exists
         config_path = os.path.join(os.path.dirname(__file__), 'tournament_platform', 'alembic.ini')
         if os.path.exists(config_path):
-            print("  ✓ alembic.ini found")
+            print("  [OK] alembic.ini found")
         else:
-            print("  ✗ alembic.ini not found")
+            print("  [FAIL] alembic.ini not found")
             return False
 
         # Check if migration files exist
         versions_path = os.path.join(os.path.dirname(__file__), 'tournament_platform', 'alembic', 'versions')
         if os.path.exists(versions_path):
             migration_files = [f for f in os.listdir(versions_path) if f.endswith('.py') and f != '__init__.py']
-            print(f"  ✓ Migration directory found ({len(migration_files)} migrations)")
+            print(f"  [OK] Migration directory found ({len(migration_files)} migrations)")
         else:
-            print("  ✗ Migration directory not found")
+            print("  [FAIL] Migration directory not found")
             return False
 
         return True
     except Exception as e:
-        print(f"  ✗ Migration error: {e}")
+        print(f"  [FAIL] Migration error: {e}")
         return False
 
 def test_directories():
     """Test required directories."""
-    print("\n📁 Testing Directories...")
+    print("\n[DIR] Testing Directories...")
     base_path = os.path.dirname(__file__)
 
     required_dirs = {
@@ -136,16 +136,16 @@ def test_directories():
     for dir_path, description in required_dirs.items():
         full_path = os.path.join(base_path, dir_path)
         if os.path.isdir(full_path):
-            print(f"  ✓ {dir_path} ({description})")
+            print(f"  [OK] {dir_path} ({description})")
         else:
-            print(f"  ✗ {dir_path} ({description}) - NOT FOUND")
+            print(f"  [FAIL] {dir_path} ({description}) - NOT FOUND")
             all_exist = False
 
     return all_exist
 
 def test_files():
     """Test required files."""
-    print("\n📄 Testing Required Files...")
+    print("\n[FILE] Testing Required Files...")
     base_path = os.path.dirname(__file__)
 
     required_files = {
@@ -163,16 +163,16 @@ def test_files():
         full_path = os.path.join(base_path, file_path)
         if os.path.isfile(full_path):
             size = os.path.getsize(full_path)
-            print(f"  ✓ {file_path} ({description}) - {size} bytes")
+            print(f"  [OK] {file_path} ({description}) - {size} bytes")
         else:
-            print(f"  ✗ {file_path} ({description}) - NOT FOUND")
+            print(f"  [FAIL] {file_path} ({description}) - NOT FOUND")
             all_exist = False
 
     return all_exist
 
 def test_rag():
     """Test RAG system."""
-    print("\n🧠 Testing RAG System...")
+    print("\n[BRAIN] Testing RAG System...")
     try:
         from tournament_platform.services.rules_retrieval import _get_chroma_client
         chroma_path = os.path.join(os.path.dirname(__file__), 'tournament_platform', 'data', 'chroma_db')
@@ -181,23 +181,23 @@ def test_rag():
             try:
                 collection = client.get_collection(name="tournament_rules")
                 count = collection.count()
-                print(f"  ✓ ChromaDB collection found")
-                print(f"  ✓ {count} rules stored in RAG system")
+                print(f"  [OK] ChromaDB collection found")
+                print(f"  [OK] {count} rules stored in RAG system")
                 return True
             except:
-                print("  ⚠️  RAG not initialized yet (this is OK - run initialize_rag.py)")
+                print("  [WARN]  RAG not initialized yet (this is OK - run initialize_rag.py)")
                 return True
         else:
-            print("  ⚠️  ChromaDB directory not found (this is OK - will be created on first use)")
+            print("  [WARN]  ChromaDB directory not found (this is OK - will be created on first use)")
             return True
     except Exception as e:
-        print(f"  ✗ RAG error: {e}")
+        print(f"  [FAIL] RAG error: {e}")
         return False
 
 def main():
     """Run all tests."""
     print("=" * 70)
-    print("🎉 Tournament Platform - Setup Verification")
+    print("[DONE] Tournament Platform - Setup Verification")
     print("=" * 70)
 
     results = {
@@ -211,28 +211,28 @@ def main():
     }
 
     print("\n" + "=" * 70)
-    print("📊 Verification Summary")
+    print("[STATS] Verification Summary")
     print("=" * 70)
 
     passed = sum(1 for v in results.values() if v)
     total = len(results)
 
     for name, result in results.items():
-        status = "✅ PASS" if result else "❌ FAIL"
+        status = "[OK] PASS" if result else "[FAIL] FAIL"
         print(f"{status} - {name}")
 
     print("\n" + "-" * 70)
     print(f"Result: {passed}/{total} checks passed")
 
     if passed == total:
-        print("\n✅ Setup Complete! Ready to run:")
+        print("\n[OK] Setup Complete! Ready to run:")
         print("\n   API Server:")
         print("     python tournament_platform/api/server.py")
         print("\n   Streamlit Frontend:")
         print("     streamlit run tournament_platform/app/main.py")
         return 0
     else:
-        print(f"\n⚠️  Setup incomplete. {total - passed} check(s) failed.")
+        print(f"\n[WARN]  Setup incomplete. {total - passed} check(s) failed.")
         print("Please review the errors above and fix any issues.")
         return 1
 

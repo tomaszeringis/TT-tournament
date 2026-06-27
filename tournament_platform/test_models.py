@@ -9,12 +9,12 @@ try:
     tournament_count = db.query(Tournament).count()
     db.close()
 
-    print(f"✓ Database accessible")
+    print("[OK] Database accessible")
     print(f"  Players: {player_count}")
     print(f"  Matches: {match_count}")
     print(f"  Tournaments: {tournament_count}")
 except Exception as e:
-    print(f"✗ Database error: {e}")
+    print("[ERR] Database error: {e}")
     import traceback
     traceback.print_exc()
 
