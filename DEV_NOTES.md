@@ -73,3 +73,43 @@ Feature flags are defined in [`tournament_platform/services/settings.py`](tourna
 - Feature flags are read at runtime; restart the app after changing `.env`.
 - The `API_BASE_URL` flag replaces the previous hardcoded `http://localhost:8000` in the frontend.
 - The `SPEECH_MODEL_SIZE` flag controls the Whisper model used by the speech service.
+
+## RAG Knowledge Base Initialization
+
+The Rules Assistant and AI Assistant use a ChromaDB-backed RAG (Retrieval-Augmented Generation) knowledge base built from the tournament rule PDFs.
+
+### Prerequisites
+
+1. **Ollama must be running** with the required models:
+   ```powershell
+   ollama serve
+   ollama pull llama3:latest
+   ollama pull nomic-embed-text
+   ```
+
+2. **Rule documents** should be placed in `tournament_platform/data/docs/`. The platform ships with the ITTF rules PDF.
+
+### Initialize / Re-initialize the Knowledge Base
+
+```powershell
+python initialize_rag.py
+```
+
+This script:
+- Connects to Ollama for embeddings (`nomic-embed-text`)
+- Reads all PDFs from `tournament_platform/data/docs/`
+- Splits them into chunks and stores them in ChromaDB at `data/chroma_db/`
+
+### Verify the Knowledge Base
+
+```powershell
+python verify_setup.py
+```
+
+Look for `[RAG]` checks passing. If the knowledge base is empty or missing, re-run `initialize_rag.py`.
+
+### Troubleshooting RAG
+
+- **"No relevant rules found"**: The knowledge base may be empty. Re-run `initialize_rag.py`.
+- **Ollama connection errors**: Ensure `ollama serve` is running and the model is pulled.
+- **ChromaDB path**: Set `CHROMA_DB_PATH` in `.env` if you want to store the vector DB elsewhere.
