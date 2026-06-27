@@ -28,6 +28,8 @@ streamlit run tournament_platform/app/main.py
 
 Open `http://localhost:8501` in your browser.
 
+For a guided walkthrough of the AI quick-win features, see [QUICK_WINS.md](QUICK_WINS.md).
+
 ---
 
 ## 📁 Project Structure
