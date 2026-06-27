@@ -17,14 +17,13 @@ from kiota_abstractions.authentication.allowed_hosts_validator import AllowedHos
 from kiota_abstractions.authentication.base_bearer_token_authentication_provider import BaseBearerTokenAuthenticationProvider
 
 # Import models
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from models import Match, Player, SessionLocal
+from tournament_platform.models import Match, Player, SessionLocal
+from tournament_platform.config import settings
 
-# Azure AD configuration - Should be in environment variables
-CLIENT_ID = os.getenv("AZURE_CLIENT_ID", "YOUR_CLIENT_ID")
-CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET", "YOUR_CLIENT_SECRET")
-TENANT_ID = os.getenv("AZURE_TENANT_ID", "common")
+# Azure AD configuration from centralized settings
+CLIENT_ID = settings.AZURE_CLIENT_ID
+CLIENT_SECRET = settings.AZURE_CLIENT_SECRET
+TENANT_ID = settings.AZURE_TENANT_ID
 AUTHORITY = f"https://login.microsoftonline.com/{TENANT_ID}"
 SCOPES = ["https://graph.microsoft.com/Calendars.ReadWrite"]
 
@@ -73,18 +72,20 @@ async def create_match_event(match: Match, user_assertion: str = None):
     # 1. Get player emails from database
     db = SessionLocal()
     try:
-        p1 = db.query(Player).filter(Player.name == match.player1).first()
-        p2 = db.query(Player).filter(Player.name == match.player2).first()
-        
+        p1 = db.query(Player).filter(Player.id == match.player1_id).first() if match.player1_id else None
+        p2 = db.query(Player).filter(Player.id == match.player2_id).first() if match.player2_id else None
+
         attendee_emails = []
         if p1 and p1.email:
             attendee_emails.append(p1.email)
         if p2 and p2.email:
             attendee_emails.append(p2.email)
-            
+
         if not attendee_emails:
             # Fallback if players not found or no emails
-            print(f"Warning: No emails found for players {match.player1} or {match.player2}")
+            p1_name = p1.name if p1 else "Unknown"
+            p2_name = p2.name if p2 else "Unknown"
+            print(f"Warning: No emails found for players {p1_name} or {p2_name}")
 
         # 2. Get Graph token using OBO flow
         graph_token = get_obo_token(user_assertion)
@@ -98,10 +99,12 @@ async def create_match_event(match: Match, user_assertion: str = None):
         start_time = match.scheduled_time or datetime.datetime.utcnow()
         end_time = start_time + datetime.timedelta(hours=1)
         
+        p1_name = p1.name if p1 else "Unknown"
+        p2_name = p2.name if p2 else "Unknown"
         new_event = Event()
-        new_event.subject = f"🏓 Match: {match.player1} vs {match.player2}"
+        new_event.subject = f"🏓 Match: {p1_name} vs {p2_name}"
         new_event.body = ItemBody(
-            content=f"Tournament match between {match.player1} and {match.player2}.",
+            content=f"Tournament match between {p1_name} and {p2_name}.",
             content_type=BodyType.Text
         )
         

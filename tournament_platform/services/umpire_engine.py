@@ -11,7 +11,6 @@ Implements a pipeline where:
 import asyncio
 import logging
 import os
-import sys
 from typing import Optional, AsyncGenerator, Callable, List, Dict, Any
 from dataclasses import dataclass, field
 
@@ -19,13 +18,14 @@ import ollama
 import pyaudio
 from faster_whisper import WhisperModel
 from RealtimeTTS import TextToAudioStream, GTTSEngine
-from .rules_retrieval import RulesRetriever
+from tournament_platform.services.rules_retrieval import RulesRetriever
+from tournament_platform.config import settings
 
 # Configure logging
-os.makedirs("logs", exist_ok=True)
+os.makedirs(settings.LOG_DIR, exist_ok=True)
 logging.basicConfig(
-    filename="logs/umpire_engine.log",
-    level=logging.INFO,
+    filename=os.path.join(settings.LOG_DIR, "umpire_engine.log"),
+    level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
@@ -45,17 +45,17 @@ referee, umpire, score, scorekeeper, match ball, match point
 @dataclass
 class UmpireConfig:
     """Configuration for UmpireEngine."""
-    whisper_model_size: str = "base"
-    ollama_model: str = "llama3:latest"
-    tts_sample_rate: int = 24000
-    tts_chunk_size: int = 1024
+    whisper_model_size: str = settings.WHISPER_MODEL_SIZE
+    ollama_model: str = settings.OLLAMA_MODEL
+    tts_sample_rate: int = settings.TTS_SAMPLE_RATE
+    tts_chunk_size: int = settings.TTS_CHUNK_SIZE
     max_response_words: int = 15
-    audio_format: int = pyaudio.paInt16
-    channels: int = 1
-    rate: int = 16000
-    chunk: int = 1024
-    silence_threshold: int = 500
-    min_silence_duration: float = 1.0
+    audio_format: int = settings.AUDIO_FORMAT
+    channels: int = settings.AUDIO_CHANNELS
+    rate: int = settings.AUDIO_RATE
+    chunk: int = settings.AUDIO_CHUNK
+    silence_threshold: int = settings.AUDIO_SILENCE_THRESHOLD
+    min_silence_duration: float = settings.AUDIO_MIN_SILENCE_DURATION
 
 
 class UmpireEngine:

@@ -11,3 +11,8 @@ tournament_platform/__pycache__/
 *.sqlite3
 data/chroma_db/
 tournament_platform/data/chroma_db/
+
+# Environment files (may contain secrets)
+.env
+.env.local
+.env.*.local

@@ -2,49 +2,107 @@ import streamlit as st
 import streamlit_shadcn_ui as ui
 import pandas as pd
 import plotly.graph_objects as go
-import sys
-import os
-from app.utils import render_interactive_table
+from tournament_platform.app.utils import (
+    render_interactive_table,
+    render_database_error,
+    render_status_badge,
+    render_metric_cards,
+)
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from models import SessionLocal, Player, Match, Tournament, MatchStatus, DATABASE_URL, DATABASE_PATH
+from tournament_platform.models import SessionLocal, Player, Match, Tournament, MatchStatus
+from tournament_platform.config import settings
 
-def get_player_stats(player_name):
-    """Get statistics for a player"""
+
+@st.cache_data(ttl=300, show_spinner="Loading dashboard data...")
+def load_dashboard_data():
+    """Load all dashboard data in a single cached database session."""
     db = SessionLocal()
+    try:
+        total_players = db.query(Player).count()
+        total_matches = db.query(Match).count()
+        active_tournaments = db.query(Tournament).count()
+        completed_matches = db.query(Match).filter(Match.status == MatchStatus.completed).count()
 
-    # Get all matches for this player
-    matches = db.query(Match).filter(
-        (Match.player1 == player_name) | (Match.player2 == player_name)
-    ).all()
+        players = db.query(Player).all()
+        matches = db.query(Match).all()
 
+        player_df = pd.DataFrame([
+            {
+                "ID": p.id,
+                "Name": p.name,
+                "Email": p.email,
+                "Rating": p.rating
+            }
+            for p in players
+        ])
+
+        match_df = pd.DataFrame([
+            {
+                "ID": m.id,
+                "Player 1": m.player1,
+                "Player 2": m.player2,
+                "Winner": m.winner or "Pending",
+                "Score": m.score or "-",
+                "Status": m.status.value if m.status else "pending"
+            }
+            for m in matches
+        ])
+
+        # Build a lookup: player_name -> list of matches
+        player_matches = {}
+        for m in matches:
+            for p_name in (m.player1, m.player2):
+                if p_name not in player_matches:
+                    player_matches[p_name] = []
+                player_matches[p_name].append(m)
+
+        return {
+            "metrics": {
+                "total_players": total_players,
+                "total_matches": total_matches,
+                "active_tournaments": active_tournaments,
+                "completed_matches": completed_matches,
+            },
+            "player_df": player_df,
+            "match_df": match_df,
+            "player_matches": player_matches,
+        }
+    finally:
+        db.close()
+
+
+@st.cache_data(ttl=300, show_spinner="Computing player statistics...")
+def compute_player_stats(player_name, player_matches):
+    """Compute statistics for a player using pre-fetched match data."""
+    matches = player_matches.get(player_name, [])
     if not matches:
         return None
 
     total_matches = len(matches)
-    wins = len([m for m in matches if m.winner == player_name])
+    # Find player id from match data to determine wins
+    # We use player name matching since player1/player2 are stored as names
+    wins = sum(1 for m in matches if m.winner == player_name)
     win_rate = (wins / total_matches * 100) if total_matches > 0 else 0
 
     # Calculate consistency (standard deviation of match intervals)
     completed_matches = [m for m in matches if m.winner is not None]
     consistency = min(100, 80 + (len(completed_matches) / max(1, total_matches)) * 20)
 
-    # Calculate aggression (score-based metric)
-    aggression = 60  # Default value
-
-    db.close()
+    # Synthetic metric: aggression (placeholder until score parsing is implemented)
+    aggression = 60  # Placeholder value — replace with real calculation when score data is available
 
     return {
-        "win_rate": win_rate,
-        "consistency": consistency,
-        "aggression": aggression,
+        "win_rate": round(win_rate, 1),
+        "consistency": round(consistency, 1),
+        "aggression": aggression,  # Labeled as synthetic in the chart
         "total_matches": total_matches,
-        "wins": wins
+        "wins": wins,
     }
 
-def create_radar_chart(player_name):
-    """Create a radar chart for player stats"""
-    stats = get_player_stats(player_name)
+
+def create_radar_chart(player_name, player_matches):
+    """Create a radar chart for player stats using cached data."""
+    stats = compute_player_stats(player_name, player_matches)
 
     if not stats:
         st.warning(f"No statistics available for {player_name}")
@@ -52,7 +110,7 @@ def create_radar_chart(player_name):
 
     fig = go.Figure(data=go.Scatterpolar(
         r=[stats['win_rate'], stats['consistency'], stats['aggression']],
-        theta=['Win Rate', 'Consistency', 'Aggression'],
+        theta=['Win Rate', 'Consistency', 'Aggression (synthetic)'],
         fill='toself',
         name=player_name
     ))
@@ -67,111 +125,71 @@ def create_radar_chart(player_name):
     st.plotly_chart(fig, use_container_width=True)
 
 
-try:
-    db = SessionLocal()
-    # Fetch stats for cards
-    total_players = db.query(Player).count()
-    total_matches = db.query(Match).count()
-    active_tournaments = db.query(Tournament).count()
-    completed_matches = db.query(Match).filter(Match.status == MatchStatus.completed).count()
-    
+def render_dashboard():
+    """Render the optimized dashboard page."""
+    st.title("📊 Tournament Dashboard")
+
+    try:
+        data = load_dashboard_data()
+    except Exception as e:
+        render_database_error(e, "dashboard data")
+        st.stop()
+
+    metrics = data["metrics"]
+    player_df = data["player_df"]
+    match_df = data["match_df"]
+    player_matches = data["player_matches"]
+
     # Render metric cards
-    col_m1, col_m2, col_m3, col_m4 = st.columns(4)
-    with col_m1:
-        ui.metric_card(title="Total Players", content=str(total_players), description="Registered players", key="m1")
-    with col_m2:
-        ui.metric_card(title="Total Matches", content=str(total_matches), description="Matches played", key="m2")
-    with col_m3:
-        ui.metric_card(title="Tournaments", content=str(active_tournaments), description="Total events", key="m3")
-    with col_m4:
-        ui.metric_card(title="Completed", content=str(completed_matches), description="Finished matches", key="m4")
-    
+    render_metric_cards([
+        {"title": "Total Players", "content": metrics["total_players"], "description": "Registered players"},
+        {"title": "Total Matches", "content": metrics["total_matches"], "description": "Matches played"},
+        {"title": "Tournaments", "content": metrics["active_tournaments"], "description": "Total events"},
+        {"title": "Completed", "content": metrics["completed_matches"], "description": "Finished matches"},
+    ])
+
     st.space("medium")
 
-    # Fetch players
-    players = db.query(Player).all()
-except Exception as e:
-    st.error(f"❌ Database connection error: {e}")
-    with st.expander("🔍 Debug Information"):
-        st.write(f"**Database URL:** `{DATABASE_URL}`")
-        st.write(f"**Database Path:** `{DATABASE_PATH}`")
-        st.write(f"**File Exists:** `{os.path.exists(DATABASE_PATH)}`")
-        st.write(f"**Current Working Directory:** `{os.getcwd()}`")
-    st.info("Please ensure the database file is accessible and not locked by another process.")
-    st.stop()
+    col1, col2 = st.columns([1, 1])
 
-player_df = pd.DataFrame([
-    {
-        "ID": p.id,
-        "Name": p.name,
-        "Email": p.email,
-        "Rating": p.rating
-    }
-    for p in players
-])
+    with col1:
+        st.subheader("👥 Players")
 
-# Fetch matches
-matches = db.query(Match).all()
-match_df = pd.DataFrame([
-    {
-        "ID": m.id,
-        "Player 1": m.player1,
-        "Player 2": m.player2,
-        "Winner": m.winner or "Pending",
-        "Score": m.score or "-",
-        "Status": m.status.value if m.status else "pending"
-    }
-    for m in matches
-])
+        if not player_df.empty:
+            render_interactive_table(player_df.drop(columns=["ID"]))
+        else:
+            st.info("No players registered yet.")
 
-db.close()
+    with col2:
+        st.subheader("🎾 Recent Matches")
 
-col1, col2 = st.columns([1, 1])
+        if not match_df.empty:
+            st.write("**Latest Updates:**")
+            for _, row in match_df.head(5).iterrows():
+                cols = st.columns([3, 1])
+                with cols[0]:
+                    st.write(f"{row['Player 1']} vs {row['Player 2']} ({row['Score']})")
+                with cols[1]:
+                    render_status_badge(row['Status'], key=f"dash_status_{row['ID']}")
 
-with col1:
-    st.subheader("👥 Players")
+            st.space("medium")
+            render_interactive_table(match_df.drop(columns=["ID"]))
+        else:
+            st.info("No matches recorded yet.")
+
+    # Player Performance Radar Chart
+    st.space("medium")
+    st.subheader("📈 Player Performance Analysis")
 
     if not player_df.empty:
-        # Create interactive table for players using itables
-        render_interactive_table(player_df.drop(columns=["ID"]))
-    else:
-        st.info("No players registered yet.")
+        selected_player_name = st.selectbox(
+            "Select a player to view performance stats:",
+            options=player_df["Name"].tolist()
+        )
 
-with col2:
-    st.subheader("🎾 Recent Matches")
-
-    if not match_df.empty:
-        # Display latest 5 matches with badges
-        st.write("**Latest Updates:**")
-        for _, row in match_df.head(5).iterrows():
-            cols = st.columns([3, 1])
-            with cols[0]:
-                st.write(f"{row['Player 1']} vs {row['Player 2']} ({row['Score']})")
-            with cols[1]:
-                variant = "secondary"
-                if row['Status'] == 'completed':
-                    variant = "default"
-                elif row['Status'] == 'active':
-                    variant = "outline"
-                ui.badges(badge_list=[(row['Status'], variant)], key=f"dash_status_{row['ID']}")
-        
-        st.space("medium")
-        # Create interactive table for all matches using itables
-        render_interactive_table(match_df.drop(columns=["ID"]))
-    else:
-        st.info("No matches recorded yet.")
-
-# Player Performance Radar Chart
-st.space("medium")
-st.subheader("📈 Player Performance Analysis")
-
-if not player_df.empty:
-    selected_player_name = st.selectbox(
-        "Select a player to view performance stats:",
-        options=player_df["Name"].tolist()
-    )
-
-    if selected_player_name:
-        create_radar_chart(selected_player_name)
+        if selected_player_name:
+            create_radar_chart(selected_player_name, player_matches)
 
 
+if __name__ == "__main__":
+    render_dashboard()

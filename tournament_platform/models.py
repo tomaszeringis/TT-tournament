@@ -73,15 +73,23 @@ class Match(Base):
     tournament_id = Column(Integer, ForeignKey("tournaments.id"), nullable=True)
     scheduled_time = Column(DateTime, default=datetime.datetime.utcnow)
     location = Column(String, nullable=True)
-    
+
     # Bracket-specific fields
     round_number = Column(Integer, nullable=True)
     bracket_index = Column(Integer, nullable=True)
     next_match_id = Column(Integer, ForeignKey("matches.id"), nullable=True)
 
+    # Foreign keys to Player (nullable for incremental migration)
+    player1_id = Column(Integer, ForeignKey("players.id"), nullable=True)
+    player2_id = Column(Integer, ForeignKey("players.id"), nullable=True)
+    winner_id = Column(Integer, ForeignKey("players.id"), nullable=True)
+
     # Relationships
     tournament = relationship("Tournament", back_populates="matches")
     next_match = relationship("Match", remote_side=[id], backref="previous_matches")
+    player1_rel = relationship("Player", foreign_keys=[player1_id])
+    player2_rel = relationship("Player", foreign_keys=[player2_id])
+    winner_rel = relationship("Player", foreign_keys=[winner_id])
 
 class RatingHistory(Base):
     __tablename__ = "rating_history"

@@ -1,6 +1,7 @@
 import os
 import chromadb
 import chromadb.utils.embedding_functions as ef
+from tournament_platform.config import settings
 
 class RulesRetriever:
     """
@@ -8,9 +9,7 @@ class RulesRetriever:
     """
     def __init__(self, chroma_path=None):
         if chroma_path is None:
-            # Consistent with AIEngine and rules_ingestion: tournament_platform/data/chroma_db
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.chroma_path = os.path.join(base_dir, "data", "chroma_db")
+            self.chroma_path = settings.CHROMA_DB_PATH
         else:
             self.chroma_path = chroma_path
 
@@ -22,8 +21,8 @@ class RulesRetriever:
         
         # Use nomic-embed-text for consistent embeddings with the ingestion process
         self.embedding_function = ef.OllamaEmbeddingFunction(
-            model_name="nomic-embed-text",
-            url="http://localhost:11434/api/embeddings",
+            model_name=settings.OLLAMA_EMBEDDING_MODEL,
+            url=settings.OLLAMA_EMBEDDING_URL,
         )
 
         # Get or create the 'tournament_rules' collection

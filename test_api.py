@@ -6,26 +6,40 @@ Usage:
     python test_api.py
 
 Make sure the FastAPI server is running:
-    python api/server.py
+    python tournament_platform/api/server.py
 """
 
 import requests
 import json
 import time
 
-API_BASE_URL = "http://localhost:8000"
+from tournament_platform.config import settings
+
 
 def test_health():
     """Test the health check endpoint."""
     print("🏥 Testing health endpoint...")
     try:
-        response = requests.get(f"{API_BASE_URL}/health")
+        response = requests.get(f"{settings.API_BASE_URL}/health", timeout=10)
         print(f"  Status: {response.status_code}")
         print(f"  Response: {json.dumps(response.json(), indent=2)}")
         return response.status_code == 200
+    except requests.exceptions.ConnectionError:
+        print(f"  ❌ Error: Cannot connect to {settings.API_BASE_URL}")
+        return False
+    except requests.exceptions.Timeout:
+        print(f"  ❌ Error: Request timed out")
+        return False
+    except requests.exceptions.HTTPError as e:
+        print(f"  ❌ Error: HTTP {e.response.status_code if e.response else 'unknown'}")
+        return False
+    except json.JSONDecodeError:
+        print(f"  ❌ Error: Invalid JSON response")
+        return False
     except Exception as e:
         print(f"  ❌ Error: {e}")
         return False
+
 
 def test_report_match(player1, player2, score, winner=None, tournament_id=None):
     """Test the match reporting endpoint."""
@@ -43,16 +57,29 @@ def test_report_match(player1, player2, score, winner=None, tournament_id=None):
 
     try:
         response = requests.post(
-            f"{API_BASE_URL}/api/report",
+            f"{settings.API_BASE_URL}/api/report",
             json=payload,
-            timeout=10
+            timeout=10,
         )
         print(f"  Status: {response.status_code}")
         print(f"  Response: {json.dumps(response.json(), indent=2)}")
         return response.status_code == 200
+    except requests.exceptions.ConnectionError:
+        print(f"  ❌ Error: Cannot connect to {settings.API_BASE_URL}")
+        return False
+    except requests.exceptions.Timeout:
+        print(f"  ❌ Error: Request timed out")
+        return False
+    except requests.exceptions.HTTPError as e:
+        print(f"  ❌ Error: HTTP {e.response.status_code if e.response else 'unknown'}")
+        return False
+    except json.JSONDecodeError:
+        print(f"  ❌ Error: Invalid JSON response")
+        return False
     except Exception as e:
         print(f"  ❌ Error: {e}")
         return False
+
 
 def test_invalid_request():
     """Test error handling with invalid request."""
@@ -65,13 +92,25 @@ def test_invalid_request():
 
     try:
         response = requests.post(
-            f"{API_BASE_URL}/api/report",
+            f"{settings.API_BASE_URL}/api/report",
             json=payload,
-            timeout=10
+            timeout=10,
         )
         print(f"  Status: {response.status_code}")
         print(f"  Response: {json.dumps(response.json(), indent=2)}")
         return response.status_code == 400
+    except requests.exceptions.ConnectionError:
+        print(f"  ❌ Error: Cannot connect to {settings.API_BASE_URL}")
+        return False
+    except requests.exceptions.Timeout:
+        print(f"  ❌ Error: Request timed out")
+        return False
+    except requests.exceptions.HTTPError as e:
+        print(f"  ❌ Error: HTTP {e.response.status_code if e.response else 'unknown'}")
+        return False
+    except json.JSONDecodeError:
+        print(f"  ❌ Error: Invalid JSON response")
+        return False
     except Exception as e:
         print(f"  ❌ Error: {e}")
         return False
@@ -111,8 +150,8 @@ def run_tests():
 
 if __name__ == "__main__":
     print("\nEnsure the FastAPI server is running:")
-    print("  cd tournament_platform")
-    print("  python api/server.py\n")
+    print(f"  API Base URL: {settings.API_BASE_URL}")
+    print("  python tournament_platform/api/server.py\n")
 
     # Wait for user confirmation
     input("Press Enter to start tests...")

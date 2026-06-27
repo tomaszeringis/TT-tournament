@@ -4,11 +4,17 @@ import tempfile
 import audioop
 import speech_recognition as sr
 from faster_whisper import WhisperModel
+from tournament_platform.config import settings
 
 class SpeechReporter:
-    def __init__(self, model_size="base"):
-        # Run on CPU by default for broader compatibility, can be changed to "cuda" if GPU is available
-        self.model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    def __init__(self, model_size=None):
+        # Use settings default, allow override
+        model_size = model_size or settings.WHISPER_MODEL_SIZE
+        self.model = WhisperModel(
+            model_size,
+            device=settings.WHISPER_DEVICE,
+            compute_type=settings.WHISPER_COMPUTE_TYPE
+        )
 
     def transcribe_audio(self, audio_file_path: str) -> str:
         """Transcribe audio file using faster-whisper."""

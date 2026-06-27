@@ -1,10 +1,10 @@
 import os
-import sys
 import uuid
 import chromadb
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
+from tournament_platform.config import settings
 
 def ingest_rules_from_pdf(pdf_path: str):
     """
@@ -38,9 +38,7 @@ def ingest_rules_from_pdf(pdf_path: str):
     print(f"✅ Created {len(chunks)} text chunks.")
 
     # 3. Initialize local ChromaDB client
-    # Consistent with AIEngine path: tournament_platform/data/chroma_db
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    chroma_path = os.path.join(base_dir, "data", "chroma_db")
+    chroma_path = settings.CHROMA_DB_PATH
     
     print(f"📦 Initializing ChromaDB client at: {chroma_path}")
     if not os.path.exists(chroma_path):
@@ -59,8 +57,8 @@ def ingest_rules_from_pdf(pdf_path: str):
     # Define embedding function for Chroma
     import chromadb.utils.embedding_functions as ef
     embedding_function = ef.OllamaEmbeddingFunction(
-        model_name="nomic-embed-text",
-        url="http://localhost:11434/api/embeddings",
+        model_name=settings.OLLAMA_EMBEDDING_MODEL,
+        url=settings.OLLAMA_EMBEDDING_URL,
     )
     
     collection = client.create_collection(
@@ -69,36 +67,26 @@ def ingest_rules_from_pdf(pdf_path: str):
     )
 
     # 5. Generate embeddings and store
-    print(f"🧠 Generating embeddings with 'nomic-embed-text' via Ollama...")
+    print(f"🧠 Generating embeddings with '{settings.OLLAMA_EMBEDDING_MODEL}' via Ollama...")
     try:
         # Initialize LangChain's OllamaEmbeddings
-        embeddings_model = OllamaEmbeddings(model="nomic-embed-text")
+        embeddings_model = OllamaEmbeddings(model=settings.OLLAMA_EMBEDDING_MODEL)
         
         texts = [chunk.page_content for chunk in chunks]
-        metadatas = [chunk.metadata for chunk in chunks]
-        # Ensure metadatas are simple dictionaries
-        for meta in metadatas:
-            meta["source"] = os.path.basename(pdf_path)
-            
-        ids = [str(uuid.uuid4()) for _ in range(len(chunks))]
-
-        # Generate embeddings for the chunks
-        print("💡 Requesting embeddings from Ollama (this may take a moment)...")
-        embeddings = embeddings_model.embed_documents(texts)
         
         # 6. Store everything in ChromaDB
         print(f"📥 Inserting {len(chunks)} chunks into ChromaDB...")
         collection.add(
             documents=texts,
-            embeddings=embeddings,
-            metadatas=metadatas,
-            ids=ids
+            embeddings=embeddings_model.embed_documents(texts),
+            metadatas=[chunk.metadata for chunk in chunks],
+            ids=[f"chunk_{i}_{uuid.uuid4()}" for i in range(len(chunks))]
         )
         print(f"✨ Successfully ingested tournament rules into '{collection_name}'!")
         
     except Exception as e:
         print(f"❌ Error during processing: {e}")
-        print("Ensure Ollama is running and 'nomic-embed-text' model is pulled.")
+        print(f"Ensure Ollama is running and '{settings.OLLAMA_EMBEDDING_MODEL}' model is pulled.")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

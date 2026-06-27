@@ -46,7 +46,7 @@ class TournamentState:
     def update_match_result(self, match_id: int, winner_name: str, score: str, tournament_type: str = 'knockout'):
         """
         Updates a match result, sets the winner, and propagates to the next round if knockout.
-        
+
         Args:
             match_id: The unique ID of the match to update.
             winner_name: Name of the winning participant.
@@ -62,7 +62,7 @@ class TournamentState:
         winner = next((p for p in self.data.get('participants', []) if p['name'] == winner_name), None)
         if not winner:
             raise ValueError(f"Participant with name '{winner_name}' not found.")
-        
+
         winner_id = winner['id']
 
         # 3. Parse score and update match

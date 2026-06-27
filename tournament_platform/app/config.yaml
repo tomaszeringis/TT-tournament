@@ -3,8 +3,8 @@ credentials:
     admin:
       email: admin@corp.com
       name: Admin User
-      password: '123' # Hash these in production
+      password: 'CHANGE_ME_IN_STREAMLIT_SECRETS'
 cookie:
   expiry_days: 30
-  key: random_signature_key
+  key: CHANGE_ME_IN_ENV
   name: tt_auth_cookie

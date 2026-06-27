@@ -1,13 +1,9 @@
 import streamlit as st
 import pandas as pd
-import sys
-import os
 
-# Ensure we can import from the parent directory
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from services.ranking_service import RatingManager
-from models import SessionLocal, Player
-from app.utils import render_interactive_table
+from tournament_platform.services.ranking_service import RatingManager
+from tournament_platform.models import SessionLocal, Player
+from tournament_platform.app.utils import render_interactive_table, format_player_label
 
 st.title("🏆 Player Rankings")
 st.space("medium")
@@ -55,7 +51,7 @@ else:
         selected_player = st.selectbox(
             "Select a player", 
             options=players, 
-            format_func=lambda x: f"{x.name} ({x.rating})"
+            format_func=lambda x: format_player_label(x.name, x.rating)
         )
         
         view_history = st.button("👁️ View History")

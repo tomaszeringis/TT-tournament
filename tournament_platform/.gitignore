@@ -15,3 +15,8 @@ logs/
 app/logs/
 *.log
 alembic/script.py.mako.bak
+
+# Environment files (may contain secrets)
+.env
+.env.local
+.env.*.local

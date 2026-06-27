@@ -2,18 +2,16 @@ import streamlit as st
 import streamlit_shadcn_ui as ui
 import pandas as pd
 import requests
-import sys
-import os
 import asyncio
 from datetime import datetime
-from services.speech_service import record_audio, SpeechReporter
-from services.ai_engine import AIEngine, validate_and_map_to_match
-from services.tournament_engine import TournamentFactory, TournamentContext, KnockoutStrategy, RoundRobinStrategy
-from services.bracket_manager import TournamentState
-from components.interactive_bracket import interactive_bracket
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from models import SessionLocal, Player, Match, Tournament, MatchStatus, TournamentType, DATABASE_URL, DATABASE_PATH
+from tournament_platform.services.speech_service import record_audio, SpeechReporter
+from tournament_platform.services.ai_engine import AIEngine, validate_and_map_to_match
+from tournament_platform.services.tournament_engine import TournamentFactory, TournamentContext, KnockoutStrategy, RoundRobinStrategy
+from tournament_platform.services.bracket_manager import TournamentState
+from tournament_platform.app.components.interactive_bracket import interactive_bracket
+from tournament_platform.models import SessionLocal, Player, Match, Tournament, MatchStatus, TournamentType, DATABASE_URL, DATABASE_PATH
+from tournament_platform.app.utils import render_database_connection_error, render_status_badge, format_match_label
 
 @st.cache_resource
 def get_speech_reporter():
@@ -29,14 +27,7 @@ st.space("medium")
 try:
     db = SessionLocal()
 except Exception as e:
-    st.error(f"❌ Database connection error: {e}")
-    with st.expander("🔍 Debug Information"):
-        st.write(f"**Database URL:** `{DATABASE_URL}`")
-        st.write(f"**Database Path:** `{DATABASE_PATH}`")
-        st.write(f"**File Exists:** `{os.path.exists(DATABASE_PATH)}`")
-        st.write(f"**Current Working Directory:** `{os.getcwd()}`")
-    st.info("Please ensure the database file is accessible and not locked by another process.")
-    st.stop()
+    render_database_connection_error(e)
 
 # Sidebar for creating tournaments
 with st.sidebar:
@@ -232,12 +223,7 @@ with tab_tournaments:
                                 f"Winner: {match.winner or 'TBD'}"
                             )
                         with cols[1]:
-                            variant = "secondary"
-                            if match.status == MatchStatus.completed:
-                                variant = "default"
-                            elif match.status == MatchStatus.active:
-                                variant = "outline"
-                            ui.badges(badge_list=[(match.status.value, variant)], key=f"status_{match.id}")
+                            render_status_badge(match.status.value, key=f"status_{match.id}")
                 else:
                     st.write("No matches yet")
                     

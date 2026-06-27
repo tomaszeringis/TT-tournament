@@ -9,19 +9,49 @@ A simple, privacy-focused scorekeeping system using:
 """
 
 import streamlit as st
-import sys
-import os
 import asyncio
 import tempfile
 import hashlib
-from typing import Optional, Tuple
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+import os
+from typing import Optional, Tuple, Dict, List
 
 # Import the MatchManager and UmpireEngine
-from services.match_manager import MatchManager, MatchState
-from services.umpire_engine import UmpireEngine, UmpireConfig
-from models import SessionLocal, Match, MatchStatus
+from tournament_platform.services.match_manager import MatchManager, MatchState
+from tournament_platform.services.umpire_engine import UmpireEngine, UmpireConfig
+from tournament_platform.models import SessionLocal, Match, MatchStatus, Player
+from tournament_platform.app.utils import format_player_label
+
+
+# ============================================================================
+# Player Selection Helpers
+# ============================================================================
+
+@st.cache_data(ttl=30)
+def get_all_players() -> List[Dict]:
+    """Return all players as plain dicts for selectbox options."""
+    db = SessionLocal()
+    try:
+        players = db.query(Player).order_by(Player.name).all()
+        return [
+            {"id": p.id, "name": p.name, "rating": p.rating}
+            for p in players
+        ]
+    finally:
+        db.close()
+
+
+def find_player_by_name(players: List[Dict], name: str) -> Optional[Dict]:
+    """Find a player by name (case-insensitive, partial match)."""
+    name_lower = name.lower().strip()
+    for player in players:
+        if player["name"].lower() == name_lower:
+            return player
+    # Try partial match
+    for player in players:
+        if name_lower in player["name"].lower():
+            return player
+    return None
+
 
 # ============================================================================
 # TTS Engine (Offline, using pyttsx3)
@@ -73,11 +103,13 @@ def get_current_match_context() -> Optional[dict]:
         active_match = db.query(Match).filter(
             Match.status == MatchStatus.active
         ).order_by(Match.scheduled_time.desc()).first()
-        
+
         if active_match:
+            p1 = db.query(Player).filter(Player.id == active_match.player1_id).first() if active_match.player1_id else None
+            p2 = db.query(Player).filter(Player.id == active_match.player2_id).first() if active_match.player2_id else None
             context = {
-                "player1": active_match.player1,
-                "player2": active_match.player2,
+                "player1": p1.name if p1 else "Unknown",
+                "player2": p2.name if p2 else "Unknown",
                 "match_id": active_match.id
             }
             db.close()
@@ -128,29 +160,89 @@ def process_voice_command(audio_bytes: bytes) -> Tuple[str, str]:
 st.title("🎤 Voice Scorekeeper")
 st.caption("Speak to update scores. The system uses local transcription - no data leaves your machine.")
 
-# Player name configuration
-st.subheader("Player Names")
+# Player selection configuration
+st.subheader("Player Selection")
+st.caption("Select two different players for the match. The system will validate against the database.")
+
+# Get all players from database
+all_players = get_all_players()
+player_options = {format_player_label(p['name'], p['rating']): p for p in all_players}
+player_names = list(player_options.keys())
+
+# Initialize session state for player selection
+if 'selected_player_a' not in st.session_state:
+    st.session_state.selected_player_a = None
+if 'selected_player_b' not in st.session_state:
+    st.session_state.selected_player_b = None
+
 col1, col2 = st.columns(2)
 
 with col1:
-    player_a_name = st.text_input(
-        "Player A Name",
-        value=st.session_state.match_manager.state.player_a,
-        key="player_a_name_input"
+    # Get current player A name to find index
+    current_player_a = st.session_state.match_manager.state.player_a
+    current_player_a_id = st.session_state.match_manager.state.player_a_id
+    
+    # Find the index of the currently selected player
+    player_a_index = 0
+    if current_player_a_id and current_player_a_id in [p['id'] for p in all_players]:
+        for i, (label, p) in enumerate(player_options.items()):
+            if p['id'] == current_player_a_id:
+                player_a_index = i
+                break
+    
+    selected_player_a_label = st.selectbox(
+        "Player A",
+        options=["-- Select Player --"] + player_names,
+        index=player_a_index + 1 if player_a_index > 0 else 0,
+        key="player_a_select",
+        help="Select the first player from the database"
     )
+    
+    if selected_player_a_label != "-- Select Player --":
+        st.session_state.selected_player_a = player_options[selected_player_a_label]
 
 with col2:
-    player_b_name = st.text_input(
-        "Player B Name",
-        value=st.session_state.match_manager.state.player_b,
-        key="player_b_name_input"
+    # Get current player B name to find index
+    current_player_b = st.session_state.match_manager.state.player_b
+    current_player_b_id = st.session_state.match_manager.state.player_b_id
+    
+    # Find the index of the currently selected player
+    player_b_index = 0
+    if current_player_b_id and current_player_b_id in [p['id'] for p in all_players]:
+        for i, (label, p) in enumerate(player_options.items()):
+            if p['id'] == current_player_b_id:
+                player_b_index = i
+                break
+    
+    selected_player_b_label = st.selectbox(
+        "Player B",
+        options=["-- Select Player --"] + player_names,
+        index=player_b_index + 1 if player_b_index > 0 else 0,
+        key="player_b_select",
+        help="Select the second player from the database"
     )
+    
+    if selected_player_b_label != "-- Select Player --":
+        st.session_state.selected_player_b = player_options[selected_player_b_label]
 
-# Update player names if changed
-if (player_a_name != st.session_state.match_manager.state.player_a or 
-    player_b_name != st.session_state.match_manager.state.player_b):
-    st.session_state.match_manager.set_player_names(player_a_name, player_b_name)
-    st.rerun()
+# Validate and update player selection
+if st.session_state.selected_player_a and st.session_state.selected_player_b:
+    # Check for duplicate selection
+    if st.session_state.selected_player_a['id'] == st.session_state.selected_player_b['id']:
+        st.error("❌ Cannot select the same player for both sides. Please choose two different players.")
+    else:
+        # Update MatchManager with selected players
+        if (st.session_state.match_manager.state.player_a_id != st.session_state.selected_player_a['id'] or
+            st.session_state.match_manager.state.player_b_id != st.session_state.selected_player_b['id']):
+            st.session_state.match_manager.set_player_names(
+                st.session_state.selected_player_a['name'],
+                st.session_state.selected_player_b['name'],
+                st.session_state.selected_player_a['id'],
+                st.session_state.selected_player_b['id']
+            )
+            st.rerun()
+elif st.session_state.selected_player_a or st.session_state.selected_player_b:
+    st.info("Select both players to start the match.")
 
 # Current score display
 st.divider()

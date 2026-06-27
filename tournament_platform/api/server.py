@@ -1,5 +1,6 @@
 from fastapi import FastAPI, Request, Depends, HTTPException
 from sqlalchemy.orm import Session
+from pydantic import ValidationError
 import uvicorn
 import httpx
 import re
@@ -10,20 +11,26 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 # Import models and database
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from models import SessionLocal, Match, MatchStatus, Player
-from services.ai_engine import AIEngine
-from services.ranking_service import RatingManager
+from tournament_platform.models import SessionLocal, Match, MatchStatus, Player
+from tournament_platform.services.ai_engine import AIEngine
+from tournament_platform.services.ranking_service import RatingManager
+from tournament_platform.services.match_reporting import (
+    ReportMatchCommand,
+    MatchNotFoundError,
+    MatchAlreadyCompletedError,
+    InvalidWinnerError,
+    report_existing_match,
+)
+from tournament_platform.config import settings
 
 # Configure logging
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-LOG_DIR = os.path.join(BASE_DIR, "logs")
+LOG_DIR = os.path.join(BASE_DIR, settings.LOG_DIR)
 if not os.path.exists(LOG_DIR):
     os.makedirs(LOG_DIR, exist_ok=True)
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(os.path.join(LOG_DIR, 'app.log')),
@@ -31,8 +38,6 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
-
-TEAMS_WEBHOOK_URL = "YOUR_TEAMS_WEBHOOK_URL_HERE"
 
 # Initialize AI Engine and Rating Manager
 ai_engine = AIEngine()
@@ -69,71 +74,56 @@ async def global_exception_handler(request: Request, exc: Exception):
 @app.post("/api/report")
 async def report_match(request: Request, db: Session = Depends(get_db)):
     """
-    Async endpoint to report match results.
-    - Receives match data from frontend
-    - Updates database
+    Async endpoint to report match results for an existing scheduled match.
+    - Receives match_id, winner, and score from frontend
+    - Delegates to the match_reporting service for validation and update
     - Sends notification to Teams
     """
     try:
         data = await request.json()
         logger.info(f"Received match report: {data}")
 
-        # Validate required fields
-        required_fields = ['player1', 'player2', 'score']
-        if not all(field in data for field in required_fields):
-            logger.warning(f"Missing required fields. Received: {data.keys()}")
-            raise HTTPException(status_code=400, detail="Missing required fields")
-
-        # Create new match record
-        match = Match(
-            player1=data['player1'],
-            player2=data['player2'],
-            score=data['score'],
-            winner=data.get('winner'),
-            status=MatchStatus.completed,
-            tournament_id=data.get('tournament_id')
-        )
-
-        db.add(match)
-        db.commit()
-        db.refresh(match)
-        logger.info(f"Match record created with ID: {match.id}")
+        command = ReportMatchCommand(**data)
+        match = report_existing_match(db, command)
+        logger.info(f"Match {match.id} updated with result via service")
 
         # Update Ratings
         logger.info(f"Attempting live ratings update for match {match.id}")
-        if match.winner and match.player1 and match.player2:
+        if match.winner_id and match.player1_id and match.player2_id:
             try:
-                winner_name = match.winner
-                loser_name = match.player2 if winner_name == match.player1 else match.player1
-                
-                logger.info(f"Winner: {winner_name}, Loser: {loser_name}")
-                winner = db.query(Player).filter(Player.name == winner_name).first()
-                loser = db.query(Player).filter(Player.name == loser_name).first()
-                
-                if winner and loser:
-                    logger.info(f"Found players in DB. IDs: {winner.id}, {loser.id}")
-                    rating_manager.update_ratings(winner.id, loser.id, db_session=db)
-                    logger.info(f"RatingManager.update_ratings called successfully")
-                else:
-                    logger.warning(f"Could not update ratings: Player(s) not found in DB. Winner: {winner_name}, Loser: {loser_name}")
+                winner_id = match.winner_id
+                loser_id = match.player2_id if winner_id == match.player1_id else match.player1_id
+
+                logger.info(f"Winner ID: {winner_id}, Loser ID: {loser_id}")
+                rating_manager.update_ratings(winner_id, loser_id, db_session=db)
+                logger.info(f"RatingManager.update_ratings called successfully")
             except Exception as e:
                 logger.error(f"Failed to update live ratings: {e}", exc_info=True)
         else:
-            logger.warning(f"Skipping ratings update: Missing match data. Winner={match.winner}, P1={match.player1}, P2={match.player2}")
+            p1_name = match.player1_rel.name if match.player1_rel else "Unknown"
+            p2_name = match.player2_rel.name if match.player2_rel else "Unknown"
+            winner_name = match.winner_rel.name if match.winner_rel else "Unknown"
+            logger.warning(f"Skipping ratings update: Missing match data. Winner={winner_name}, P1={p1_name}, P2={p2_name}")
 
-        # Push to Teams webhook asynchronously
-        msg = f"🎾 New Match Result: {data['player1']} vs {data['player2']} → Score: {data['score']}"
+        # Push to Teams webhook asynchronously (only if configured)
+        p1_name = match.player1_rel.name if match.player1_rel else "Unknown"
+        p2_name = match.player2_rel.name if match.player2_rel else "Unknown"
+        winner_name = match.winner_rel.name if match.winner_rel else "Unknown"
+        msg = f"🎾 Match Result: {p1_name} vs {p2_name} → Score: {match.score} (Winner: {winner_name})"
 
-        async with httpx.AsyncClient() as client:
-            try:
-                await client.post(
-                    TEAMS_WEBHOOK_URL,
-                    json={"text": msg},
-                    timeout=10.0
-                )
-                logger.info("Successfully sent notification to Teams")
-            except Exception as e:
-                logger.warning(f"Failed to send Teams notification: {e}")
+        if settings.TEAMS_WEBHOOK_URL:
+            async with httpx.AsyncClient() as client:
+                try:
+                    await client.post(
+                        settings.TEAMS_WEBHOOK_URL,
+                        json={"text": msg},
+                        timeout=10.0
+                    )
+                    logger.info("Successfully sent notification to Teams")
+                except Exception as e:
+                    logger.warning(f"Failed to send Teams notification: {e}")
+        else:
+            logger.debug("Teams webhook not configured, skipping notification")
 
         return {
             "status": "success",
@@ -146,6 +136,12 @@ async def report_match(request: Request, db: Session = Depends(get_db)):
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in request: {e}")
         raise HTTPException(status_code=400, detail="Invalid JSON format")
+    except ValidationError as e:
+        logger.warning(f"Match report validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except (MatchNotFoundError, MatchAlreadyCompletedError, InvalidWinnerError) as e:
+        logger.warning(f"Match report validation error: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
     except (ValueError, ConnectionError) as e:
         logger.error(f"AI Engine error: {e}")
         raise HTTPException(status_code=503, detail=str(e))
@@ -178,16 +174,19 @@ async def ask_rules(request: Request):
             "text": f"🙋 **Question:** {question}\n\n⚖️ **Referee Answer:** {formatted_answer}"
         }
         
-        async with httpx.AsyncClient() as client:
-            try:
-                await client.post(
-                    TEAMS_WEBHOOK_URL,
-                    json=teams_msg,
-                    timeout=10.0
-                )
-                logger.info("Successfully sent rule answer to Teams")
-            except Exception as e:
-                logger.warning(f"Failed to send Teams notification: {e}")
+        if settings.TEAMS_WEBHOOK_URL:
+            async with httpx.AsyncClient() as client:
+                try:
+                    await client.post(
+                        settings.TEAMS_WEBHOOK_URL,
+                        json=teams_msg,
+                        timeout=10.0
+                    )
+                    logger.info("Successfully sent rule answer to Teams")
+                except Exception as e:
+                    logger.warning(f"Failed to send Teams notification: {e}")
+        else:
+            logger.debug("Teams webhook not configured, skipping notification")
         
         return {
             "status": "success",
@@ -207,9 +206,4 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-
-
-
-
-
+    uvicorn.run(app, host=settings.API_HOST, port=settings.API_PORT)

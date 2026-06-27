@@ -29,14 +29,7 @@ def check_database():
     os.chdir(tp_path)
 
     try:
-        sys.path.insert(0, tp_path)
-        import importlib.util
-        spec = importlib.util.spec_from_file_location("models", os.path.join(tp_path, "models.py"))
-        models = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(models)
-
-        SessionLocal = models.SessionLocal
-        Player = models.Player
+        from tournament_platform.models import SessionLocal, Player
 
         db = SessionLocal()
         player_count = db.query(Player).count()
@@ -74,6 +67,6 @@ print("\n" + "=" * 60)
 print("SETUP COMPLETE: All systems ready!")
 print("=" * 60)
 print("\nTo start:")
-print("  API:       cd tournament_platform && python api/server.py")
-print("  Frontend:  cd tournament_platform && streamlit run app/main.py")
+print("  API:       python tournament_platform/api/server.py")
+print("  Frontend:  streamlit run tournament_platform/app/main.py")
 

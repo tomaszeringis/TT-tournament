@@ -1,8 +1,4 @@
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.dirname(__file__)))
-
-from models import Player, Match, Tournament, MatchStatus, SessionLocal
+from tournament_platform.models import Player, Match, Tournament, MatchStatus, SessionLocal
 
 print("Models imported successfully")
 

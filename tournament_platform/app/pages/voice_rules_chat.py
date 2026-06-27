@@ -1,14 +1,11 @@
 import streamlit as st
-import sys
-import os
 import asyncio
 import tempfile
 import hashlib
 from typing import Optional, Dict, Any, List
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from services.umpire_engine import UmpireEngine, UmpireConfig
-from models import SessionLocal, Match, MatchStatus
+from tournament_platform.services.umpire_engine import UmpireEngine, UmpireConfig
+from tournament_platform.models import SessionLocal, Match, MatchStatus, Player
 
 # Initialize UmpireEngine in session state
 if 'umpire_engine' not in st.session_state:
@@ -37,11 +34,13 @@ def get_current_match_context() -> Optional[Dict[str, Any]]:
         active_match = db.query(Match).filter(
             Match.status == MatchStatus.active
         ).order_by(Match.scheduled_time.desc()).first()
-        
+
         if active_match:
+            p1 = db.query(Player).filter(Player.id == active_match.player1_id).first() if active_match.player1_id else None
+            p2 = db.query(Player).filter(Player.id == active_match.player2_id).first() if active_match.player2_id else None
             context = {
-                "player1": active_match.player1,
-                "player2": active_match.player2,
+                "player1": p1.name if p1 else "Unknown",
+                "player2": p2.name if p2 else "Unknown",
                 "tournament": active_match.tournament.name if active_match.tournament else None,
                 "score": active_match.score,
                 "match_id": active_match.id

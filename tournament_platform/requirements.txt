@@ -35,6 +35,7 @@ plotly>=5.18.0
 itables>=2.0.0
 requests>=2.31.0
 pydantic>=2.7.0
+pydantic-settings>=2.0.0
 
 # Speech & Audio
 faster-whisper>=1.0.3
@@ -50,7 +51,6 @@ round-robin-tournament>=1.0.0
 # Microsoft Graph API
 msgraph-sdk>=1.0.0
 msal>=1.20.0
-kiota-abstractions>=1.0.0
 
 # PDF Processing
 pypdf>=4.2.0

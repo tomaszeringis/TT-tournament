@@ -7,11 +7,7 @@ Usage:
     python initialize_rag.py
 """
 
-import sys
-import os
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'tournament_platform'))
-
-from services.ai_engine import AIEngine
+from tournament_platform.services.ai_engine import AIEngine
 
 # Sample tournament rules for table tennis
 TOURNAMENT_RULES = [

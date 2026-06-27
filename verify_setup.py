@@ -40,54 +40,30 @@ def test_models():
     """Test database models."""
     print("\n🗄️  Testing Database Models...")
     try:
-        # Temporarily change directory and add to path
-        base_path = os.path.dirname(__file__)
-        tp_path = os.path.abspath(os.path.join(base_path, 'tournament_platform'))
+        from tournament_platform.models import Player, Match, Tournament, MatchStatus, SessionLocal
 
-        if tp_path not in sys.path:
-            sys.path.insert(0, tp_path)
+        print("  ✓ Player model")
+        print("  ✓ Match model")
+        print("  ✓ Tournament model")
+        print("  ✓ MatchStatus enum")
+        print("  ✓ Database session factory")
 
-        # Change to that directory temporarily so relative imports work
-        original_dir = os.getcwd()
+        # Test database connectivity
         try:
-            os.chdir(tp_path)
+            db = SessionLocal()
+            player_count = db.query(Player).count()
+            match_count = db.query(Match).count()
+            tournament_count = db.query(Tournament).count()
+            db.close()
 
-            # Now import
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("models", os.path.join(tp_path, "models.py"))
-            models = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(models)
-
-            Player = models.Player
-            Match = models.Match
-            Tournament = models.Tournament
-            MatchStatus = models.MatchStatus
-            SessionLocal = models.SessionLocal
-
-            print("  ✓ Player model")
-            print("  ✓ Match model")
-            print("  ✓ Tournament model")
-            print("  ✓ MatchStatus enum")
-            print("  ✓ Database session factory")
-
-            # Test database connectivity
-            try:
-                db = SessionLocal()
-                player_count = db.query(Player).count()
-                match_count = db.query(Match).count()
-                tournament_count = db.query(Tournament).count()
-                db.close()
-
-                print(f"  ✓ Database connection successful")
-                print(f"    - Players in database: {player_count}")
-                print(f"    - Matches in database: {match_count}")
-                print(f"    - Tournaments in database: {tournament_count}")
-                return True
-            except Exception as e:
-                print(f"  ⚠️  Database tables not accessible: {e}")
-                return False
-        finally:
-            os.chdir(original_dir)
+            print(f"  ✓ Database connection successful")
+            print(f"    - Players in database: {player_count}")
+            print(f"    - Matches in database: {match_count}")
+            print(f"    - Tournaments in database: {tournament_count}")
+            return True
+        except Exception as e:
+            print(f"  ⚠️  Database tables not accessible: {e}")
+            return False
 
     except Exception as e:
         print(f"  ✗ Database error: {e}")
@@ -99,8 +75,7 @@ def test_ai_engine():
     """Test AI engine."""
     print("\n🤖 Testing AI Engine...")
     try:
-        sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'tournament_platform'))
-        from services.ai_engine import AIEngine, MatchReport
+        from tournament_platform.services.ai_engine import AIEngine, MatchReport
         print("  ✓ AIEngine class")
         print("  ✓ MatchReport Pydantic model")
 
@@ -252,12 +227,8 @@ def main():
     if passed == total:
         print("\n✅ Setup Complete! Ready to run:")
         print("\n   API Server:")
-        print("     cd tournament_platform")
-        print("     python api/server.py")
+        print("     python tournament_platform/api/server.py")
         print("\n   Streamlit Frontend:")
-        print("     cd tournament_platform/app")
-        print("     streamlit run main.py")
-        print("\n   Or from root:")
         print("     streamlit run tournament_platform/app/main.py")
         return 0
     else:

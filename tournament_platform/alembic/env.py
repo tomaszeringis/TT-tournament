@@ -3,12 +3,8 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
 from alembic import context
 import os
-import sys
 
-# Add the parent directory to sys.path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from models import Base, DATABASE_URL
+from tournament_platform.models import Base, DATABASE_URL
 
 # this is the Alembic Config object
 config = context.config

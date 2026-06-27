@@ -1,5 +1,3 @@
-import sys
-import os
 import logging
 from datetime import datetime
 from typing import List, Optional
@@ -9,14 +7,7 @@ from sqlalchemy.orm import joinedload
 from ranking_table_tennis.models.rankings import Rankings
 from ranking_table_tennis.configs import ConfigManager
 
-# Ensure we can import from the parent directory
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-try:
-    from models import Player, SessionLocal, RatingHistory
-except ImportError:
-    Player = None
-    SessionLocal = None
-    RatingHistory = None
+from tournament_platform.models import Player, SessionLocal, RatingHistory
 
 logger = logging.getLogger(__name__)
 

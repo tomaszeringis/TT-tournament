@@ -6,14 +6,14 @@ for intent parsing instead of complex AI reasoning.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Optional
 
 
 @dataclass
 class MatchState:
     """
     Stores the scores for two players, the current set, and match history.
-    
+
     Designed for table tennis scoring with extensibility for:
     - Deuce handling
     - Set changes
@@ -21,18 +21,22 @@ class MatchState:
     """
     player_a: str = "Player A"
     player_b: str = "Player B"
+    player_a_id: Optional[int] = None
+    player_b_id: Optional[int] = None
     score_a: int = 0
     score_b: int = 0
     current_set: int = 1
     sets_a: int = 0
     sets_b: int = 0
     match_history: List[Dict[str, Any]] = field(default_factory=list)
-    
+
     def to_dict(self) -> Dict[str, Any]:
         """Convert state to dictionary for serialization."""
         return {
             "player_a": self.player_a,
             "player_b": self.player_b,
+            "player_a_id": self.player_a_id,
+            "player_b_id": self.player_b_id,
             "score_a": self.score_a,
             "score_b": self.score_b,
             "current_set": self.current_set,
@@ -77,8 +81,8 @@ class MatchManager:
         "score please", "current score", "tell me the score", "show score"
     ]
     
-    def __init__(self, player_a: str = "Player A", player_b: str = "Player B"):
-        self.state = MatchState(player_a=player_a, player_b=player_b)
+    def __init__(self, player_a: str = "Player A", player_b: str = "Player B", player_a_id: Optional[int] = None, player_b_id: Optional[int] = None):
+        self.state = MatchState(player_a=player_a, player_b=player_b, player_a_id=player_a_id, player_b_id=player_b_id)
     
     def update_score(self, transcription: str) -> Tuple[bool, str]:
         """
@@ -186,11 +190,15 @@ class MatchManager:
         """
         self.state = MatchState(
             player_a=self.state.player_a,
-            player_b=self.state.player_b
+            player_b=self.state.player_b,
+            player_a_id=self.state.player_a_id,
+            player_b_id=self.state.player_b_id
         )
         return True, "Match reset. Score is 0 to 0"
     
-    def set_player_names(self, player_a: str, player_b: str) -> None:
-        """Set custom player names."""
+    def set_player_names(self, player_a: str, player_b: str, player_a_id: Optional[int] = None, player_b_id: Optional[int] = None) -> None:
+        """Set custom player names and optionally their database IDs."""
         self.state.player_a = player_a
         self.state.player_b = player_b
+        self.state.player_a_id = player_a_id
+        self.state.player_b_id = player_b_id

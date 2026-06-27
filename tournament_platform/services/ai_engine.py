@@ -7,31 +7,20 @@ from pydantic import BaseModel
 from typing import Optional, Union
 import os
 import uuid
-import sys
 from .rules_retrieval import RulesRetriever
 from .bracket_manager import TournamentState
 from .ranking_service import RatingManager
+from tournament_platform.models import Match, MatchStatus, Tournament, SessionLocal, Player
+from tournament_platform.config import settings
 
 # Configure logging
-os.makedirs("logs", exist_ok=True)
+os.makedirs(settings.LOG_DIR, exist_ok=True)
 logging.basicConfig(
-    filename="logs/app.log",
-    level=logging.INFO,
+    filename=os.path.join(settings.LOG_DIR, "app.log"),
+    level=getattr(logging, settings.LOG_LEVEL, logging.INFO),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 )
 logger = logging.getLogger(__name__)
-
-# Add root to sys.path to import models
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-try:
-    from models import Match, MatchStatus, Tournament, SessionLocal, Player
-except ImportError:
-    # Fallback for when models is not accessible directly
-    Match = None
-    MatchStatus = None
-    Tournament = None
-    SessionLocal = None
-    Player = None
 
 class MatchReport(BaseModel):
     """Structured response from AI engine for match analysis"""
@@ -57,12 +46,10 @@ class MatchResult(BaseModel):
 
 class AIEngine:
     def __init__(self, model=None, chroma_path=None):
-        # Allow environment variable override, fallback to llama3:latest
-        self.model = model or os.environ.get("OLLAMA_MODEL", "llama3:latest")
+        # Use settings default, allow override
+        self.model = model or settings.OLLAMA_MODEL
         if chroma_path is None:
-            # Default to data/chroma_db relative to this file's parent directory
-            base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.chroma_path = os.path.join(base_dir, "data", "chroma_db")
+            self.chroma_path = settings.CHROMA_DB_PATH
         else:
             self.chroma_path = chroma_path
 
@@ -151,7 +138,7 @@ class AIEngine:
             # Handle connection errors
             if "connection" in error_str or "connect" in error_str or "11434" in error_str:
                 raise ConnectionError(
-                    f"Failed to connect to Ollama at localhost:11434. "
+                    f"Failed to connect to Ollama at {settings.OLLAMA_HOST}. "
                     f"Please ensure Ollama is running ('ollama serve'). Details: {e}"
                 ) from e
                 
@@ -360,4 +347,3 @@ def validate_and_map_to_match(result_dict: dict) -> Union['Match', dict]:
             status=MatchStatus.completed if MatchStatus else "completed"
         )
     return match_data
-

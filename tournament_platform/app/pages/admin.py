@@ -1,13 +1,21 @@
 import streamlit as st
 import streamlit_shadcn_ui as ui
 import pandas as pd
-import sys
-import os
-from app.utils import render_interactive_table
+import importlib.metadata
+from datetime import datetime, timezone
+from sqlalchemy import text
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from models import SessionLocal, Player, Match, Tournament, MatchStatus, DATABASE_PATH
-from services.ai_engine import AIEngine
+from tournament_platform.models import SessionLocal, Player, Match, Tournament, MatchStatus, DATABASE_PATH, engine
+from tournament_platform.services.ai_engine import AIEngine
+from tournament_platform.services.player_stats import get_player_statistics
+from tournament_platform.app.utils import (
+    render_interactive_table,
+    api_request,
+    render_database_connection_error,
+    render_status_badge,
+    format_match_label,
+)
+from tournament_platform.config import settings
 
 st.title("👨‍💼 Admin Panel")
 st.space("medium")
@@ -15,9 +23,7 @@ st.space("medium")
 try:
     db = SessionLocal()
 except Exception as e:
-    st.error(f"❌ Database connection error: {e}")
-    st.info("Please ensure the database file is accessible and not locked by another process.")
-    st.stop()
+    render_database_connection_error(e)
 
 # Admin dashboard tabs
 admin_tabs = st.tabs(["Database Overview", "Match Management", "System Health"])
@@ -49,29 +55,15 @@ with admin_tabs[0]:
     # Detailed statistics
     st.write("**Detailed Player Statistics:**")
 
-    players = db.query(Player).all()
-    if players:
-        player_data = []
-        for player in players:
-            total_matches = db.query(Match).filter(
-                (Match.player1 == player.name) | (Match.player2 == player.name)
-            ).count()
-            wins = db.query(Match).filter(Match.winner == player.name).count()
-
-            player_data.append({
-                "ID": player.id,
-                "Name": player.name,
-                "Email": player.email,
-                "Rating": player.rating,
-                "Matches": total_matches,
-                "Wins": wins,
-                "Win Rate": f"{(wins/total_matches*100):.1f}%" if total_matches > 0 else "0%"
-            })
-
-        player_df = pd.DataFrame(player_data)
+    # Use optimized aggregate query for player statistics
+    player_stats = get_player_statistics(db)
+    if player_stats:
+        player_df = pd.DataFrame(player_stats)
 
         # itables for player stats
         render_interactive_table(player_df.drop(columns=["ID"]))
+    else:
+        st.info("No players found in database")
 
 # Tab 2: Match Management
 with admin_tabs[1]:
@@ -114,12 +106,7 @@ with admin_tabs[1]:
             with m_cols[0]:
                 st.write(f"{m.player1} vs {m.player2} | Tournament: {m.tournament.name if m.tournament else 'N/A'}")
             with m_cols[1]:
-                variant = "secondary"
-                if m.status == MatchStatus.completed:
-                    variant = "default"
-                elif m.status == MatchStatus.active:
-                    variant = "outline"
-                ui.badges(badge_list=[(m.status.value, variant)], key=f"admin_status_{m.id}")
+                render_status_badge(m.status.value, key=f"admin_status_{m.id}")
         
         st.space("medium")
         for m in matches:
@@ -155,46 +142,129 @@ with admin_tabs[1]:
             st.cache_data.clear()
             st.toast("Cache cleared!", icon="✅")
 
+# Helper functions for system health checks
+def get_package_version(package_name: str) -> str:
+    """Get the installed version of a package, or 'unknown' if not found."""
+    try:
+        return importlib.metadata.version(package_name)
+    except importlib.metadata.PackageNotFoundError:
+        return "not installed"
+
+def check_database_health() -> tuple[bool, str]:
+    """Check if database is accessible and return status with details."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        return True, f"Connected ({DATABASE_PATH})"
+    except Exception as e:
+        return False, f"Error: {str(e)[:50]}"
+
+def check_api_health() -> tuple[bool, str]:
+    """Check if FastAPI health endpoint is responding."""
+    response = api_request(
+        "get",
+        "/health",
+        error_context="API health check",
+        timeout=3.0,
+        parse_json=True,
+    )
+    if response is not None:
+        status = response.get("status", "unknown")
+        return True, f"Running ({settings.API_BASE_URL}) - {status}"
+    return False, f"Unavailable ({settings.API_BASE_URL})"
+
+def check_ollama_health() -> tuple[bool, str]:
+    """Check if Ollama is running and model is available."""
+    try:
+        import ollama
+        response = ollama.list()
+        if hasattr(response, 'models'):
+            model_names = [m.model for m in response.models]
+        else:
+            model_names = [m.get('name') for m in response.get('models', [])]
+        
+        if settings.OLLAMA_MODEL in model_names:
+            return True, f"Connected - {settings.OLLAMA_MODEL}"
+        return True, f"Connected - model not found (configured: {settings.OLLAMA_MODEL})"
+    except Exception as e:
+        return False, f"Disconnected - {str(e)[:50]}"
+
+def check_teams_webhook() -> tuple[bool, str]:
+    """Check if Teams webhook is configured."""
+    if settings.TEAMS_WEBHOOK_URL:
+        return True, "Configured"
+    return False, "Not configured"
+
+def check_azure_config() -> tuple[bool, str]:
+    """Check if Azure integration is configured."""
+    if settings.AZURE_CLIENT_ID and settings.AZURE_CLIENT_SECRET:
+        return True, "Configured"
+    return False, "Not configured"
+
 # Tab 3: System Health
 with admin_tabs[2]:
     st.subheader("💚 System Health")
 
+    # Perform real health checks
+    db_healthy, db_status = check_database_health()
+    api_healthy, api_status = check_api_health()
+    ollama_healthy, ollama_status = check_ollama_health()
+    teams_configured, teams_status = check_teams_webhook()
+    azure_configured, azure_status = check_azure_config()
+
     col1, col2 = st.columns([1, 1])
 
     with col1:
-        st.metric("Database Status", "✅ Connected", delta="Healthy")
-        st.metric("API Status", "✅ Running", delta="http://localhost:8000")
+        db_icon = "✅" if db_healthy else "❌"
+        st.metric("Database Status", f"{db_icon} {'Connected' if db_healthy else 'Disconnected'}", delta=db_status)
+        
+        api_icon = "✅" if api_healthy else "❌"
+        st.metric("API Status", f"{api_icon} {'Running' if api_healthy else 'Unavailable'}", delta=api_status)
 
     with col2:
-        st.metric("Last Updated", "Just now", delta="+0s")
-        st.metric("Active Sessions", "1", delta="+1")
+        ollama_icon = "✅" if ollama_healthy else "❌"
+        st.metric("Ollama Status", f"{ollama_icon} {'Connected' if ollama_healthy else 'Disconnected'}", delta=ollama_status)
+        
+        teams_icon = "✅" if teams_configured else "⚪"
+        st.metric("Teams Webhook", f"{teams_icon} {'Configured' if teams_configured else 'Not configured'}", delta=teams_status)
 
     st.space("medium")
     st.write("**System Information**")
 
     # Get current AI engine to show actual model
     try:
-        engine = AIEngine()
-        current_model = engine.model
+        ai_engine = AIEngine()
+        current_model = ai_engine.model
     except Exception:
-        current_model = os.environ.get("OLLAMA_MODEL", "llama3:latest")
+        current_model = settings.OLLAMA_MODEL
 
     system_info = {
         "Database Type": "SQLite",
-        "Database Path": DATABASE_PATH,
+        "Database Path": str(DATABASE_PATH),
         "AI Model": current_model,
-        "Streamlit Version": "1.35.0",
-        "FastAPI Version": "0.110.0"
+        "Ollama Host": settings.OLLAMA_HOST,
+        "Streamlit Version": get_package_version("streamlit"),
+        "FastAPI Version": get_package_version("fastapi"),
+        "SQLAlchemy Version": get_package_version("sqlalchemy"),
+        "ChromaDB Version": get_package_version("chromadb"),
     }
 
     info_df = pd.DataFrame(list(system_info.items()), columns=["Parameter", "Value"])
     st.table(info_df)
 
     st.space("medium")
-    st.write("**Recent Events**")
+    st.write("**Optional Integrations**")
 
-    st.info("- ✅ System started successfully\n- 🎾 Last match recorded: 5 minutes ago\n- 👥 Last player registration: 2 hours ago")
+    integrations = {
+        "Teams Webhook": "✅ Configured" if teams_configured else "⚪ Not configured",
+        "Azure Calendar": "✅ Configured" if azure_configured else "⚪ Not configured",
+    }
+
+    integrations_df = pd.DataFrame(list(integrations.items()), columns=["Integration", "Status"])
+    st.table(integrations_df)
+
+    st.space("medium")
+    st.write("**Last Updated**")
+    st.caption(f"System health checked at: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
 db.close()
-
-
