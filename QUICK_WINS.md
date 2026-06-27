@@ -10,7 +10,7 @@ This document describes the AI-powered quick-win features added to the Tournamen
 | 2 | **Match Reporting UI** | Voice Scorekeeper → "Report Match Result" | 3-step flow: parse → review → confirm & submit. |
 | 3 | **Ranking Intelligence** | Dashboard + `GET /api/ratings/leaderboard` | Live standings with wins/losses derived from completed matches. |
 | 4 | **Rating Preview** | `POST /api/ratings/preview-match` | Preview rating impact and upset potential before a match. |
-| 5 | **Tournament Rules Assistant** | Rules Assistant page + `POST /api/rules/ask` | Ask questions about tournament rules using RAG. |
+| 5 | **Tournament Rules Assistant** | AI Assistant → Rules Q&A tab + `POST /api/rules/ask` | Ask questions about tournament rules using RAG. |
 | 6 | **Public Tournament Board** | Public Board page | Read-only TV/projector display with current matches, standings, and recent results. |
 | 7 | **Voice Privacy Safeguards** | Voice Scorekeeper + Tournament Setup | Local-first audio processing, temp file deletion by default, privacy notices. |
 
@@ -97,7 +97,7 @@ Follow these steps to verify all features end-to-end:
   - Check that standings/leaderboard reflects the new match result
 
 - [ ] **Ask a rules question**
-  - Go to Rules Assistant
+  - Go to AI Assistant → Rules Q&A tab
   - Type a question like "What is the scoring system?"
   - Verify an answer is returned
 

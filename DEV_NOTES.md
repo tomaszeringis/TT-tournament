@@ -74,9 +74,13 @@ Feature flags are defined in [`tournament_platform/services/settings.py`](tourna
 - The `API_BASE_URL` flag replaces the previous hardcoded `http://localhost:8000` in the frontend.
 - The `SPEECH_MODEL_SIZE` flag controls the Whisper model used by the speech service.
 
+## Page consolidation
+
+The Rules Assistant page has been merged into the AI Assistant page. Users now access rules Q&A through the **Rules Q&A** tab inside the AI Assistant page. The old `rules_assistant.py` page file has been removed from the UI navigation.
+
 ## RAG Knowledge Base Initialization
 
-The Rules Assistant and AI Assistant use a ChromaDB-backed RAG (Retrieval-Augmented Generation) knowledge base built from the tournament rule PDFs.
+The AI Assistant (Rules Q&A tab) uses a ChromaDB-backed RAG (Retrieval-Augmented Generation) knowledge base built from the tournament rule PDFs.
 
 ### Prerequisites
 
