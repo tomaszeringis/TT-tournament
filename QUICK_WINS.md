@@ -13,6 +13,7 @@ This document describes the AI-powered quick-win features added to the Tournamen
 | 5 | **Tournament Rules Assistant** | AI Assistant → Rules Q&A tab + `POST /api/rules/ask` | Ask questions about tournament rules using RAG. |
 | 6 | **Public Tournament Board** | Public Board page | Read-only TV/projector display with current matches, standings, and recent results. |
 | 7 | **Voice Privacy Safeguards** | Voice Scorekeeper + Tournament Setup | Local-first audio processing, temp file deletion by default, privacy notices. |
+| 8 | **Active Match Selection** | Voice Scorekeeper → "Active Tournament Matches" | Select a match from an active tournament to prefill players and score the result. Completed matches are hidden by default. Manual entry remains available as fallback. |
 
 ## Feature Flags
 

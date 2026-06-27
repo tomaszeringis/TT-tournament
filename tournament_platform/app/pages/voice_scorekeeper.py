@@ -22,6 +22,7 @@ from tournament_platform.services.umpire_engine import UmpireEngine, UmpireConfi
 from tournament_platform.models import SessionLocal, Match, MatchStatus, Player, Tournament
 from tournament_platform.app.utils import format_player_label, api_request
 from tournament_platform.services.settings import KEEP_AUDIO_FILES
+from tournament_platform.services.schemas import ActiveMatchResponse
 
 
 # ============================================================================
@@ -93,6 +94,26 @@ if 'last_audio_hash' not in st.session_state:
 if 'last_feedback' not in st.session_state:
     st.session_state.last_feedback = None
 
+# Voice scorekeeper match selector state
+if 'voice_selected_tournament_id' not in st.session_state:
+    st.session_state.voice_selected_tournament_id = None
+if 'voice_selected_match_id' not in st.session_state:
+    st.session_state.voice_selected_match_id = None
+if 'voice_selected_player1_id' not in st.session_state:
+    st.session_state.voice_selected_player1_id = None
+if 'voice_selected_player1_name' not in st.session_state:
+    st.session_state.voice_selected_player1_name = None
+if 'voice_selected_player2_id' not in st.session_state:
+    st.session_state.voice_selected_player2_id = None
+if 'voice_selected_player2_name' not in st.session_state:
+    st.session_state.voice_selected_player2_name = None
+if 'voice_match_options' not in st.session_state:
+    st.session_state.voice_match_options = []
+if 'voice_parsed_result' not in st.session_state:
+    st.session_state.voice_parsed_result = None
+if 'voice_score_input' not in st.session_state:
+    st.session_state.voice_score_input = "0-0"
+
 
 # ============================================================================
 # Helper Functions
@@ -156,11 +177,210 @@ def process_voice_command(audio_bytes: bytes) -> Tuple[str, str]:
 
 
 # ============================================================================
+# Active Tournament Match Selector Helpers
+# ============================================================================
+
+@st.cache_data(ttl=60)
+def fetch_active_tournaments() -> List[Dict]:
+    """Return all tournaments as plain dicts for selectbox options."""
+    db = SessionLocal()
+    try:
+        tournaments = db.query(Tournament).order_by(Tournament.name).all()
+        return [
+            {"id": t.id, "name": t.name, "type": t.tournament_type.value if t.tournament_type else None}
+            for t in tournaments
+        ]
+    finally:
+        db.close()
+
+
+@st.cache_data(ttl=30)
+def fetch_active_matches(tournament_id: int, statuses: Optional[List[str]] = None) -> List[Dict]:
+    """Fetch scorable matches for a tournament via the API."""
+    params = {"limit": 100}
+    if statuses:
+        params["statuses"] = ",".join(statuses)
+    response = api_request(
+        "get",
+        f"/api/tournaments/{tournament_id}/matches/active",
+        params=params,
+        parse_json=True,
+        error_context="fetching active matches",
+    )
+    if response and isinstance(response, dict):
+        return response.get("matches", [])
+    return []
+
+
+def format_match_option(match: Dict) -> str:
+    """Format a match dict into a human-readable label for the selector."""
+    parts = []
+    if match.get("round_number") is not None:
+        parts.append(f"Round {match['round_number']}")
+    if match.get("location"):
+        parts.append(f"Table {match['location']}")
+    p1 = match.get("player1_name") or "TBD"
+    p2 = match.get("player2_name") or "TBD"
+    parts.append(f"{p1} vs {p2}")
+    status = match.get("status", "unknown")
+    parts.append(status)
+    if match.get("scheduled_time"):
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(match["scheduled_time"].replace("Z", "+00:00"))
+            parts.append(dt.strftime("%H:%M"))
+        except Exception:
+            pass
+    return " | ".join(parts)
+
+
+def apply_selected_match_to_session(match: Dict) -> None:
+    """Apply a selected match dict to session state."""
+    st.session_state.voice_selected_match_id = match.get("match_id")
+    st.session_state.voice_selected_player1_id = match.get("player1_id")
+    st.session_state.voice_selected_player1_name = match.get("player1_name")
+    st.session_state.voice_selected_player2_id = match.get("player2_id")
+    st.session_state.voice_selected_player2_name = match.get("player2_name")
+    # Also update the MatchManager state for live scoring
+    if (st.session_state.match_manager.state.player_a_id != match.get("player1_id") or
+        st.session_state.match_manager.state.player_b_id != match.get("player2_id")):
+        st.session_state.match_manager.set_player_names(
+            match.get("player1_name") or "Player A",
+            match.get("player2_name") or "Player B",
+            match.get("player1_id"),
+            match.get("player2_id"),
+        )
+
+
+def clear_selected_match() -> None:
+    """Clear the selected match from session state."""
+    st.session_state.voice_selected_match_id = None
+    st.session_state.voice_selected_player1_id = None
+    st.session_state.voice_selected_player1_name = None
+    st.session_state.voice_selected_player2_id = None
+    st.session_state.voice_selected_player2_name = None
+    st.session_state.voice_match_options = []
+    st.session_state.voice_parsed_result = None
+    st.session_state.voice_score_input = "0-0"
+
+
+def render_active_match_selector() -> None:
+    """Render the active tournament match selector UI."""
+    st.subheader("🎯 Active Tournament Matches")
+    st.caption("Select a match to prefill players and score the result.")
+
+    tournaments = fetch_active_tournaments()
+    if not tournaments:
+        st.info("No tournaments found. Create a tournament first.")
+        return
+
+    tournament_options = {t["name"]: t["id"] for t in tournaments}
+    current_tournament_id = st.session_state.voice_selected_tournament_id
+
+    # Find index for current selection
+    selected_tournament_name = None
+    for name, tid in tournament_options.items():
+        if tid == current_tournament_id:
+            selected_tournament_name = name
+            break
+
+    col_t, col_f, col_r = st.columns([2, 2, 1])
+    with col_t:
+        selected_tournament_name = st.selectbox(
+            "Tournament",
+            options=list(tournament_options.keys()),
+            index=list(tournament_options.keys()).index(selected_tournament_name) if selected_tournament_name else 0,
+            key="voice_tournament_select",
+        )
+    with col_f:
+        status_filter = st.multiselect(
+            "Status filter",
+            options=["active", "pending"],
+            default=["active", "pending"],
+            key="voice_status_filter",
+        )
+    with col_r:
+        st.write("")
+        st.write("")
+        if st.button("🔄 Refresh", key="voice_refresh_matches", use_container_width=True):
+            fetch_active_matches.clear()
+            fetch_active_tournaments.clear()
+            st.rerun()
+
+    tournament_id = tournament_options[selected_tournament_name]
+    st.session_state.voice_selected_tournament_id = tournament_id
+
+    matches = fetch_active_matches(tournament_id, statuses=status_filter)
+    st.session_state.voice_match_options = matches
+
+    if not matches:
+        st.info("No active or pending matches found for this tournament.")
+        return
+
+    # Build options list, disabling incomplete matches
+    match_labels = []
+    match_disabled = []
+    for m in matches:
+        label = format_match_option(m)
+        match_labels.append(label)
+        match_disabled.append(m.get("incomplete", False))
+
+    # Find current selection index
+    current_match_id = st.session_state.voice_selected_match_id
+    selected_index = 0
+    for i, m in enumerate(matches):
+        if m.get("match_id") == current_match_id:
+            selected_index = i
+            break
+
+    selected_label = st.selectbox(
+        "Select a match",
+        options=match_labels,
+        index=selected_index,
+        key="voice_match_select",
+        help="Incomplete matches (missing players) are disabled unless byes are supported.",
+    )
+
+    # Find the selected match dict
+    selected_match = None
+    for i, label in enumerate(match_labels):
+        if label == selected_label:
+            selected_match = matches[i]
+            break
+
+    if selected_match:
+        if selected_match.get("incomplete"):
+            st.warning("⚠️ This match is missing a player and cannot be scored yet.")
+        else:
+            apply_selected_match_to_session(selected_match)
+
+    # Clear button
+    if st.button("🗑️ Clear selected match", key="voice_clear_match"):
+        clear_selected_match()
+        st.rerun()
+
+
+def render_selected_match_summary() -> None:
+    """Render a compact summary of the currently selected match."""
+    if not st.session_state.voice_selected_match_id:
+        return
+    p1 = st.session_state.voice_selected_player1_name or "TBD"
+    p2 = st.session_state.voice_selected_player2_name or "TBD"
+    st.info(f"**Selected Match:** {p1} vs {p2} (ID: {st.session_state.voice_selected_match_id})")
+
+
+# ============================================================================
 # Page UI
 # ============================================================================
 
 st.title("🎤 Voice Scorekeeper")
 st.caption("Speak to update scores. The system uses local transcription - no data leaves your machine.")
+
+# Active Tournament Match Selector
+render_active_match_selector()
+render_selected_match_summary()
+
+st.divider()
 
 # Player selection configuration
 st.subheader("Player Selection")
@@ -177,6 +397,12 @@ if 'selected_player_a' not in st.session_state:
 if 'selected_player_b' not in st.session_state:
     st.session_state.selected_player_b = None
 
+# If a match is selected, prefill players from the match
+selected_match_p1_id = st.session_state.voice_selected_player1_id
+selected_match_p2_id = st.session_state.voice_selected_player2_id
+selected_match_p1_name = st.session_state.voice_selected_player1_name
+selected_match_p2_name = st.session_state.voice_selected_player2_name
+
 col1, col2 = st.columns(2)
 
 with col1:
@@ -189,6 +415,12 @@ with col1:
     if current_player_a_id and current_player_a_id in [p['id'] for p in all_players]:
         for i, (label, p) in enumerate(player_options.items()):
             if p['id'] == current_player_a_id:
+                player_a_index = i
+                break
+    # If a match is selected and player A is not yet set, prefill from match
+    if selected_match_p1_id and not current_player_a_id:
+        for i, (label, p) in enumerate(player_options.items()):
+            if p['id'] == selected_match_p1_id:
                 player_a_index = i
                 break
     
@@ -213,6 +445,12 @@ with col2:
     if current_player_b_id and current_player_b_id in [p['id'] for p in all_players]:
         for i, (label, p) in enumerate(player_options.items()):
             if p['id'] == current_player_b_id:
+                player_b_index = i
+                break
+    # If a match is selected and player B is not yet set, prefill from match
+    if selected_match_p2_id and not current_player_b_id:
+        for i, (label, p) in enumerate(player_options.items()):
+            if p['id'] == selected_match_p2_id:
                 player_b_index = i
                 break
     
@@ -373,6 +611,15 @@ if 'report_parsed' not in st.session_state:
 if 'report_status' not in st.session_state:
     st.session_state.report_status = None
 
+# Show selected match context if available
+selected_match_id = st.session_state.voice_selected_match_id
+selected_match_p1 = st.session_state.voice_selected_player1_name
+selected_match_p2 = st.session_state.voice_selected_player2_name
+
+if selected_match_id and selected_match_p1 and selected_match_p2:
+    st.info(f"**Scoring for selected match:** {selected_match_p1} vs {selected_match_p2} (Match ID: {selected_match_id})")
+    st.caption("Players are prefilled from the selected match. You can still edit names or swap the winner before submitting.")
+
 # Step 1: Input transcript
 st.markdown("**Step 1: Enter or record match result**")
 col_report_input, col_report_text = st.columns([1, 2])
@@ -416,15 +663,32 @@ with col_report_text:
             st.session_state.report_status = None
             with st.spinner("Parsing match result..."):
                 try:
+                    parse_payload = {"text": st.session_state.report_transcript}
+                    # Include match context if a match is selected
+                    if selected_match_id:
+                        parse_payload["match_id"] = selected_match_id
+                        parse_payload["tournament_id"] = st.session_state.voice_selected_tournament_id
                     response = api_request(
                         "post",
                         "/api/match/parse",
-                        json={"text": st.session_state.report_transcript},
+                        json=parse_payload,
                         error_context="match result parsing"
                     )
                     if response:
                         st.session_state.report_parsed = response
                         st.session_state.report_status = response.get("status", "unknown")
+                        # Check for name mismatch with selected match
+                        if selected_match_p1 and selected_match_p2:
+                            parsed_p1 = response.get("player1")
+                            parsed_p2 = response.get("player2")
+                            if parsed_p1 and parsed_p2:
+                                if (parsed_p1.lower() != selected_match_p1.lower() or
+                                    parsed_p2.lower() != selected_match_p2.lower()):
+                                    st.warning(
+                                        f"⚠️ Transcript names do not match the selected match. "
+                                        f"Selected: {selected_match_p1} vs {selected_match_p2}. "
+                                        f"Parsed: {parsed_p1} vs {parsed_p2}. Please review before submitting."
+                                    )
                 except Exception as e:
                     st.session_state.report_status = f"Error: {e}"
         else:
@@ -449,13 +713,17 @@ if st.session_state.report_parsed:
         for warning in parsed["warnings"]:
             st.warning(f"⚠️ {warning}")
 
-    # Review card
+    # Review card - show selected match context prominently
     with st.container(border=True):
+        if selected_match_id:
+            st.markdown(f"**Match ID:** {selected_match_id}")
         col_p1, col_p2 = st.columns(2)
         with col_p1:
-            st.markdown(f"**Player 1:** {parsed.get('player1') or 'Not detected'}")
+            display_p1 = parsed.get('player1') or selected_match_p1 or 'Not detected'
+            st.markdown(f"**Player 1:** {display_p1}")
         with col_p2:
-            st.markdown(f"**Player 2:** {parsed.get('player2') or 'Not detected'}")
+            display_p2 = parsed.get('player2') or selected_match_p2 or 'Not detected'
+            st.markdown(f"**Player 2:** {display_p2}")
         st.markdown(f"**Score:** {parsed.get('score') or 'Not detected'}")
         st.markdown(f"**Winner:** {parsed.get('winner') or 'Not detected'}")
         st.caption(f"Confidence: {parsed.get('confidence', 0):.0%}")
@@ -465,11 +733,35 @@ if st.session_state.report_parsed:
     st.caption("Verify the details below and submit to record the match result.")
 
     with st.form("voice_match_report_form"):
+        # Prefill from selected match or parsed result
+        default_p1 = selected_match_p1 or parsed.get("player1") or ""
+        default_p2 = selected_match_p2 or parsed.get("player2") or ""
+
+        # Swap winner buttons (outside form logic, using session state)
+        if selected_match_p1 and selected_match_p2:
+            swap_col1, swap_col2, swap_col3 = st.columns([1, 1, 2])
+            with swap_col1:
+                if st.button("🔄 Swap → P1 Wins", key="swap_winner_p1", use_container_width=True):
+                    st.session_state.voice_swap_winner = selected_match_p1
+                    st.rerun()
+            with swap_col2:
+                if st.button("🔄 Swap → P2 Wins", key="swap_winner_p2", use_container_width=True):
+                    st.session_state.voice_swap_winner = selected_match_p2
+                    st.rerun()
+            with swap_col3:
+                if st.button("↩️ Reset Swap", key="reset_swap", use_container_width=True):
+                    if "voice_swap_winner" in st.session_state:
+                        del st.session_state.voice_swap_winner
+                    st.rerun()
+
+        # Determine winner from swap if set
+        swap_winner = st.session_state.get("voice_swap_winner")
+
         col_p1, col_p2 = st.columns(2)
         with col_p1:
-            p1 = st.text_input("Player 1", value=parsed.get("player1") or "")
+            p1 = st.text_input("Player 1", value=default_p1)
         with col_p2:
-            p2 = st.text_input("Player 2", value=parsed.get("player2") or "")
+            p2 = st.text_input("Player 2", value=default_p2)
 
         # Parse score for number inputs
         score_val = parsed.get("score") or "0-0"
@@ -486,23 +778,39 @@ if st.session_state.report_parsed:
         with col_s2:
             s2 = st.number_input("Player 2 Score", min_value=0, max_value=10, value=s2)
 
-        # Winner selection
-        winner_options = ["Select winner", p1, p2] if p1 and p2 else ["Select Players First"]
-        winner_index = 0
-        if parsed.get("winner") in winner_options:
-            winner_index = winner_options.index(parsed["winner"])
-        winner = st.selectbox("Winner", winner_options, index=winner_index)
+        # Winner selection - prefer selected match players and swap
+        if p1 and p2:
+            winner_options = ["Select winner", p1, p2]
+            winner_index = 0
+            # Prioritize swap winner if set
+            if swap_winner and swap_winner in winner_options:
+                winner_index = winner_options.index(swap_winner)
+            else:
+                parsed_winner = parsed.get("winner")
+                if parsed_winner in winner_options:
+                    winner_index = winner_options.index(parsed_winner)
+            winner = st.selectbox("Winner", winner_options, index=winner_index)
+        else:
+            winner = "Select winner"
+            st.warning("Enter both player names to select a winner.")
 
         score = f"{s1}-{s2}"
 
-        # Tournament selection
+        # Tournament selection - prefill from selected match tournament if available
         db = SessionLocal()
         try:
             tournaments = db.query(Tournament).all()
             tournament_options = {t.name: t.id for t in tournaments}
+            default_tournament_idx = 0
+            if st.session_state.voice_selected_tournament_id:
+                for i, (name, tid) in enumerate(tournament_options.items()):
+                    if tid == st.session_state.voice_selected_tournament_id:
+                        default_tournament_idx = i + 1  # +1 for "None" option
+                        break
             selected_tournament = st.selectbox(
                 "Tournament (optional)",
-                options=["None"] + list(tournament_options.keys())
+                options=["None"] + list(tournament_options.keys()),
+                index=default_tournament_idx,
             )
         finally:
             db.close()
@@ -512,7 +820,22 @@ if st.session_state.report_parsed:
             if winner != p1 and winner != p2:
                 st.warning("⚠️ Winner must be one of the players")
 
-        submitted = st.form_submit_button("📤 Submit Result", use_container_width=True)
+        # Check if selected match is already completed
+        match_completed = False
+        if selected_match_id:
+            db_check = SessionLocal()
+            try:
+                match_check = db_check.query(Match).filter(Match.id == selected_match_id).first()
+                if match_check and match_check.status == MatchStatus.completed:
+                    match_completed = True
+            finally:
+                db_check.close()
+
+        if match_completed:
+            st.error("❌ This match has already been completed. Please refresh the match list and select an active match.")
+            submitted = st.form_submit_button("📤 Submit Result", use_container_width=True, disabled=True)
+        else:
+            submitted = st.form_submit_button("📤 Submit Result", use_container_width=True)
 
         if submitted:
             if not p1 or not p2:
@@ -521,15 +844,26 @@ if st.session_state.report_parsed:
                 st.error("Please select a winner")
             elif winner != p1 and winner != p2:
                 st.error("Winner must be one of the players")
+            elif match_completed:
+                st.error("Cannot submit: match is already completed")
             else:
                 try:
                     payload = {
-                        "player1": p1,
-                        "player2": p2,
                         "score": score,
                         "winner": winner,
-                        "tournament_id": tournament_options.get(selected_tournament) if selected_tournament != "None" else None
                     }
+                    # Include match_id when available (preferred)
+                    if selected_match_id:
+                        payload["match_id"] = selected_match_id
+                    else:
+                        # Fallback to player names for backward compatibility
+                        payload["player1"] = p1
+                        payload["player2"] = p2
+                    # Include tournament_id if selected
+                    tournament_id_val = tournament_options.get(selected_tournament) if selected_tournament != "None" else None
+                    if tournament_id_val:
+                        payload["tournament_id"] = tournament_id_val
+
                     with st.status("Submitting result...", expanded=False) as status:
                         response = api_request(
                             "post",
@@ -541,6 +875,9 @@ if st.session_state.report_parsed:
                             st.session_state.report_transcript = ""
                             st.session_state.report_parsed = None
                             st.session_state.report_status = None
+                            # Clear selected match after successful submission
+                            if selected_match_id:
+                                clear_selected_match()
                             status.update(label="Result submitted!", state="complete", expanded=False)
                             st.success("✅ Match result submitted successfully!")
                             st.rerun()

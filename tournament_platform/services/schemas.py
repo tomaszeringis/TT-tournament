@@ -4,6 +4,7 @@ Pydantic schemas for API request/response validation.
 
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
+from datetime import datetime
 
 
 class MatchResultParseRequest(BaseModel):
@@ -76,3 +77,26 @@ class PreviewMatchResponse(BaseModel):
     upset_possible: bool
     explanation: str
     predicted_rating_changes: Optional[Dict[str, int]] = None
+
+
+class ActiveMatchResponse(BaseModel):
+    """Single active/pending match for scorekeeper selection."""
+    match_id: int
+    player1_id: Optional[int] = None
+    player1_name: Optional[str] = None
+    player2_id: Optional[int] = None
+    player2_name: Optional[str] = None
+    status: str
+    round_number: Optional[int] = None
+    bracket_index: Optional[int] = None
+    scheduled_time: Optional[str] = None
+    location: Optional[str] = None
+    score: Optional[str] = None
+    incomplete: bool = False
+
+
+class ActiveTournamentMatchesResponse(BaseModel):
+    """Response for active tournament matches endpoint."""
+    tournament_id: int
+    tournament_name: str
+    matches: List[ActiveMatchResponse] = []

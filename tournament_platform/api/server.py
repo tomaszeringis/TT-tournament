@@ -1,3 +1,4 @@
+from typing import List
 from fastapi import FastAPI, Request, Depends, HTTPException
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
@@ -11,7 +12,7 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 # Import models and database
-from tournament_platform.models import SessionLocal, Match, MatchStatus, Player
+from tournament_platform.models import SessionLocal, Match, MatchStatus, Player, Tournament
 from tournament_platform.services.ai_engine import AIEngine
 from tournament_platform.services.ranking_service import RatingManager
 from tournament_platform.services.match_reporting import (
@@ -28,6 +29,8 @@ from tournament_platform.services.schemas import (
     RatingHistoryEntry,
     PreviewMatchRequest,
     PreviewMatchResponse,
+    ActiveMatchResponse,
+    ActiveTournamentMatchesResponse,
 )
 from tournament_platform.services.match_parser import parse_match_result
 from tournament_platform.services.rating_intelligence import (
@@ -330,6 +333,99 @@ async def preview_match(request: Request, db: Session = Depends(get_db)):
     except Exception as e:
         logger.error(f"Error previewing match: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
+
+@app.get("/api/tournaments/{tournament_id}/matches/active", response_model=ActiveTournamentMatchesResponse)
+async def get_active_tournament_matches(
+    tournament_id: int,
+    statuses: Optional[str] = None,
+    limit: int = 100,
+    db: Session = Depends(get_db)
+):
+    """
+    Return scorable matches for a tournament.
+
+    By default returns matches with status: active, pending.
+    Optionally includes in_progress if the app uses that status.
+
+    Query params:
+    - statuses: comma-separated list of statuses to include (e.g. "active,pending,in_progress")
+    - limit: maximum number of matches to return (default 100)
+    """
+    try:
+        tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+        if not tournament:
+            raise HTTPException(status_code=404, detail=f"Tournament {tournament_id} not found")
+
+        # Build allowed statuses
+        allowed_statuses = set()
+        if statuses:
+            for s in statuses.split(","):
+                s = s.strip().lower()
+                if s in {st.value for st in MatchStatus}:
+                    allowed_statuses.add(s)
+        else:
+            # Default: active and pending
+            allowed_statuses = {MatchStatus.active.value, MatchStatus.pending.value}
+            # Include in_progress if it exists in the enum
+            if hasattr(MatchStatus, "in_progress"):
+                allowed_statuses.add(MatchStatus.in_progress.value)
+
+        # Query matches
+        query = db.query(Match).filter(
+            Match.tournament_id == tournament_id,
+            Match.status.in_(allowed_statuses)
+        )
+        matches = query.limit(limit).all()
+
+        # Sort: status priority (active/in_progress first), then round, bracket, scheduled_time, id
+        def sort_key(m):
+            status_priority = 0 if m.status in (MatchStatus.active, MatchStatus.active) else 1
+            if hasattr(MatchStatus, "in_progress") and m.status == MatchStatus.in_progress:
+                status_priority = 0
+            return (
+                status_priority,
+                m.round_number or 0,
+                m.bracket_index or 0,
+                m.scheduled_time or datetime.min.replace(tzinfo=timezone.utc),
+                m.id,
+            )
+
+        matches.sort(key=sort_key)
+
+        # Build response
+        result_matches = []
+        for m in matches:
+            p1 = db.query(Player).filter(Player.id == m.player1_id).first() if m.player1_id else None
+            p2 = db.query(Player).filter(Player.id == m.player2_id).first() if m.player2_id else None
+            incomplete = not (m.player1_id and m.player2_id and p1 and p2)
+
+            result_matches.append(ActiveMatchResponse(
+                match_id=m.id,
+                player1_id=m.player1_id,
+                player1_name=p1.name if p1 else m.player1,
+                player2_id=m.player2_id,
+                player2_name=p2.name if p2 else m.player2,
+                status=m.status.value if isinstance(m.status, MatchStatus) else str(m.status),
+                round_number=m.round_number,
+                bracket_index=m.bracket_index,
+                scheduled_time=m.scheduled_time.isoformat() if m.scheduled_time else None,
+                location=m.location,
+                score=m.score,
+                incomplete=incomplete,
+            ))
+
+        return ActiveTournamentMatchesResponse(
+            tournament_id=tournament_id,
+            tournament_name=tournament.name,
+            matches=result_matches,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching active matches for tournament {tournament_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch active matches")
 
 
 @app.get("/health")

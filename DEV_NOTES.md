@@ -47,6 +47,53 @@ python tournament_platform/api/server.py
 streamlit run tournament_platform/app/main.py
 ```
 
+## Voice Scorekeeper — Active Match Selection
+
+**Date added:** 2026-06-27
+
+The Voice Scorekeeper page now includes an "Active Tournament Matches" selector that lets scorers pick a match from an active tournament instead of manually typing player names.
+
+### What changed
+
+- **New API endpoint:** `GET /api/tournaments/{tournament_id}/matches/active`
+  - Returns scorable matches (active, pending) for a tournament.
+  - Supports optional `statuses` and `limit` query parameters.
+  - Sorts matches by status priority, round, bracket index, scheduled time, and ID.
+  - Marks matches with missing players as `incomplete` and disables them in the UI.
+
+- **Voice Scorekeeper UI additions:**
+  - Tournament selector dropdown at the top of the page.
+  - Match status filter (active, pending) with a refresh button.
+  - Match selector dropdown showing round, table/location, players, status, and scheduled time.
+  - Selected match summary bar showing the two players and match ID.
+  - "Clear selected match" button to reset the selection.
+  - Player A / Player B selectboxes are prefilled from the selected match.
+  - Match Reporting section shows the selected match context prominently.
+  - Transcript parsing includes `match_id` and `tournament_id` when a match is selected.
+  - Name-mismatch warning if the transcript names differ from the selected match players.
+  - Winner swap buttons (P1 wins / P2 wins / Reset) for quick correction.
+  - Submission is blocked if the selected match is already completed.
+  - Manual player entry remains available as a fallback when no match is selected.
+
+### Session state keys
+
+- `voice_selected_tournament_id`
+- `voice_selected_match_id`
+- `voice_selected_player1_id`
+- `voice_selected_player1_name`
+- `voice_selected_player2_id`
+- `voice_selected_player2_name`
+- `voice_match_options`
+- `voice_parsed_result`
+- `voice_score_input`
+- `voice_swap_winner`
+
+### Backward compatibility
+
+- The existing `/api/report` endpoint behavior is preserved.
+- When no match is selected, the report payload falls back to `player1`/`player2` names.
+- When a match is selected, `match_id` is included in the payload (preferred by `/api/report`).
+
 ## Local feature flags
 
 Feature flags are defined in [`tournament_platform/services/settings.py`](tournament_platform/services/settings.py) and can be overridden via environment variables or a `.env` file. A template is provided at [`tournament_platform/.env.example`](tournament_platform/.env.example).
