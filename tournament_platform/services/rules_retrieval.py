@@ -1,7 +1,35 @@
 import os
 import chromadb
 import chromadb.utils.embedding_functions as ef
+from typing import List, Dict, Optional
 from tournament_platform.config import settings
+
+# Singleton pattern to avoid multiple chromadb client initializations
+_chroma_client = None
+
+
+def _get_chroma_client(chroma_path: str):
+    """Get or create a singleton chromadb client."""
+    global _chroma_client
+    if _chroma_client is None:
+        # Ensure directory exists
+        if not os.path.exists(chroma_path):
+            os.makedirs(chroma_path, exist_ok=True)
+        
+        # Use chromadb.Client with settings to avoid Rust bindings issues
+        try:
+            _chroma_client = chromadb.PersistentClient(path=chroma_path)
+        except Exception as e:
+            # If PersistentClient fails due to Rust bindings, try with explicit settings
+            print(f"Warning: PersistentClient failed, trying with settings: {e}")
+            settings_obj = chromadb.Settings(
+                is_persistent=True,
+                persist_directory=chroma_path,
+            )
+            _chroma_client = chromadb.Client(settings=settings_obj)
+    
+    return _chroma_client
+
 
 class RulesRetriever:
     """
@@ -13,11 +41,8 @@ class RulesRetriever:
         else:
             self.chroma_path = chroma_path
 
-        # Ensure directory exists
-        if not os.path.exists(self.chroma_path):
-            os.makedirs(self.chroma_path, exist_ok=True)
-
-        self.chroma_client = chromadb.PersistentClient(path=self.chroma_path)
+        # Use singleton client to avoid multiple initializations
+        self.chroma_client = _get_chroma_client(self.chroma_path)
         
         # Use nomic-embed-text for consistent embeddings with the ingestion process
         self.embedding_function = ef.OllamaEmbeddingFunction(
@@ -77,6 +102,38 @@ class RulesRetriever:
         except Exception as e:
             print(f"Error retrieving rules: {e}")
             return ""
+
+    def search_rules_with_metadata(self, query: str, n_results: int = 3) -> List[Dict]:
+        """
+        Retrieves the top N most relevant text chunks with full metadata.
+        
+        Returns a list of dicts with:
+        - document: the text chunk
+        - metadata: source metadata (page, source, etc.)
+        - distance: retrieval score (lower is more relevant)
+        - id: chunk identifier
+        """
+        try:
+            results = self.rules_collection.query(
+                query_texts=[query],
+                n_results=n_results,
+                include=['documents', 'metadatas', 'distances', 'ids']
+            )
+
+            sources = []
+            if results['documents'] and len(results['documents']) > 0:
+                for i in range(len(results['documents'][0])):
+                    source = {
+                        'document': results['documents'][0][i],
+                        'metadata': results['metadatas'][0][i] if results.get('metadatas') else {},
+                        'distance': results['distances'][0][i] if results.get('distances') else None,
+                        'id': results['ids'][0][i] if results.get('ids') else None
+                    }
+                    sources.append(source)
+            return sources
+        except Exception as e:
+            print(f"Error retrieving rules with metadata: {e}")
+            return []
 
 if __name__ == "__main__":
     # Quick sanity check

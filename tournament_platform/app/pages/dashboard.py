@@ -8,9 +8,17 @@ from tournament_platform.app.utils import (
     render_status_badge,
     render_metric_cards,
 )
+from tournament_platform.app.components.ai_status import render_ai_status_badge
 
 from tournament_platform.models import SessionLocal, Player, Match, Tournament, MatchStatus
 from tournament_platform.config import settings
+from tournament_platform.services.ai_engine import AIEngine
+
+
+@st.cache_resource
+def get_ai_engine():
+    """Get cached AIEngine instance for dashboard AI operations."""
+    return AIEngine()
 
 
 @st.cache_data(ttl=300, show_spinner="Loading dashboard data...")
@@ -43,7 +51,8 @@ def load_dashboard_data():
                 "Player 2": m.player2,
                 "Winner": m.winner or "Pending",
                 "Score": m.score or "-",
-                "Status": m.status.value if m.status else "pending"
+                "Status": m.status.value if m.status else "pending",
+                "Scheduled Time": m.scheduled_time
             }
             for m in matches
         ])
@@ -71,10 +80,32 @@ def load_dashboard_data():
         db.close()
 
 
+@st.cache_data(ttl=60, show_spinner="Loading recent matches...")
+def get_recent_matches(limit: int = 5):
+    """Get the most recent matches ordered by scheduled_time descending."""
+    db = SessionLocal()
+    try:
+        matches = db.query(Match).order_by(Match.scheduled_time.desc()).limit(limit).all()
+        return [
+            {
+                "id": m.id,
+                "player1": m.player1,
+                "player2": m.player2,
+                "winner": m.winner,
+                "score": m.score,
+                "status": m.status.value if m.status else "pending",
+                "scheduled_time": m.scheduled_time
+            }
+            for m in matches
+        ]
+    finally:
+        db.close()
+
+
 @st.cache_data(ttl=300, show_spinner="Computing player statistics...")
-def compute_player_stats(player_name, player_matches):
+def compute_player_stats(player_name, _player_matches):
     """Compute statistics for a player using pre-fetched match data."""
-    matches = player_matches.get(player_name, [])
+    matches = _player_matches.get(player_name, [])
     if not matches:
         return None
 
@@ -163,17 +194,19 @@ def render_dashboard():
     with col2:
         st.subheader("🎾 Recent Matches")
 
-        if not match_df.empty:
+        recent_matches = get_recent_matches(5)
+        if recent_matches:
             st.write("**Latest Updates:**")
-            for _, row in match_df.head(5).iterrows():
+            for m in recent_matches:
                 cols = st.columns([3, 1])
                 with cols[0]:
-                    st.write(f"{row['Player 1']} vs {row['Player 2']} ({row['Score']})")
+                    score_str = f" {m['score']}" if m['score'] else ""
+                    st.write(f"{m['player1']} vs {m['player2']}{score_str}")
                 with cols[1]:
-                    render_status_badge(row['Status'], key=f"dash_status_{row['ID']}")
+                    render_status_badge(m['status'], key=f"dash_status_{m['id']}")
 
             st.space("medium")
-            render_interactive_table(match_df.drop(columns=["ID"]))
+            render_interactive_table(match_df.drop(columns=["ID", "Scheduled Time"]))
         else:
             st.info("No matches recorded yet.")
 
@@ -189,6 +222,93 @@ def render_dashboard():
 
         if selected_player_name:
             create_radar_chart(selected_player_name, player_matches)
+
+    # AI Match Insights Section
+    st.space("medium")
+    st.subheader("🤖 AI Match Insights")
+    st.caption("Analyze completed matches with AI-powered insights. Review before using for decisions.")
+    
+    # Show AI status
+    render_ai_status_badge()
+    
+    # Get completed matches for AI analysis
+    if not match_df.empty:
+        completed_matches = match_df[match_df['Status'] == 'completed']
+    else:
+        completed_matches = pd.DataFrame()
+    
+    if not completed_matches.empty:
+        selected_match_id = st.selectbox(
+            "Select a completed match for AI analysis:",
+            options=[""] + completed_matches['ID'].astype(str).tolist(),
+            format_func=lambda x: f"Match #{x}" if x else "Select a match..."
+        )
+        
+        if selected_match_id:
+            match_row = completed_matches[completed_matches['ID'] == int(selected_match_id)].iloc[0]
+            match_data = {
+                "player1": match_row['Player 1'],
+                "player2": match_row['Player 2'],
+                "winner": match_row['Winner'],
+                "score": match_row['Score']
+            }
+            
+            if st.button("🔍 Analyze Match", key="analyze_match_btn"):
+                with st.status("Generating AI insights...", expanded=False) as status:
+                    try:
+                        ai_engine = get_ai_engine()
+                        report = ai_engine.generate_report(match_data)
+                        status.update(label="Analysis complete", state="complete", expanded=False)
+                        
+                        st.write("**Summary:**")
+                        st.write(report.summary)
+                        
+                        st.write("**Key Play:**")
+                        st.write(report.key_play)
+                        
+                        st.write(f"**Predicted Winner:** {report.predicted_winner}")
+                    except Exception as e:
+                        status.update(label="Error occurred", state="error", expanded=False)
+                        st.error(f"Error generating insights: {e}")
+    else:
+        st.info("No completed matches to analyze. Complete some matches first!")
+
+    # Quick Questions Section
+    st.space("medium")
+    st.subheader("❓ Quick Questions")
+    st.caption("Get instant answers to common questions. AI responses are informational only.")
+    
+    quick_questions = [
+        "Who has the most wins?",
+        "What are the tournament rules?",
+        "How do I register a player?",
+        "What's the next match?"
+    ]
+    
+    # Use selectbox for better mobile experience
+    selected_question = st.selectbox(
+        "Choose a question:",
+        options=[""] + quick_questions,
+        format_func=lambda x: x if x else "Select a question..."
+    )
+    
+    if selected_question:
+        st.session_state['quick_question'] = selected_question
+    
+    if st.session_state.get('quick_question'):
+        question = st.session_state['quick_question']
+        with st.status("Getting answer...", expanded=False) as status:
+            try:
+                ai_engine = get_ai_engine()
+                answer = ai_engine.referee_answer(question)
+                status.update(label="Answer ready", state="complete", expanded=False)
+                st.info(f"**Q:** {question}\n\n**A:** {answer}")
+            except Exception as e:
+                status.update(label="Error occurred", state="error", expanded=False)
+                st.error(f"Error: {e}")
+        # Clear the question after showing
+        if 'quick_question' in st.session_state:
+            del st.session_state['quick_question']
 
 
 if __name__ == "__main__":

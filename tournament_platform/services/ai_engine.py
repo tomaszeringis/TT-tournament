@@ -1,13 +1,11 @@
 import ollama
-import chromadb
-import chromadb.utils.embedding_functions as ef
 import json
 import logging
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from typing import Optional, Union
 import os
 import uuid
-from .rules_retrieval import RulesRetriever
+from .rules_retrieval import RulesRetriever, _get_chroma_client
 from .bracket_manager import TournamentState
 from .ranking_service import RatingManager
 from tournament_platform.models import Match, MatchStatus, Tournament, SessionLocal, Player
@@ -29,19 +27,32 @@ class MatchReport(BaseModel):
     predicted_winner: str
 
 class MatchResult(BaseModel):
-    """Structured match result extracted from speech"""
+    """Structured match result extracted from speech with explicit player-score mapping"""
+    player_a: str
+    player_b: str
+    player_a_score: int
+    player_b_score: int
     winner: str
-    loser: str
-    player1_score: int
-    player2_score: int
+
+    @model_validator(mode='after')
+    def validate_match_result(self):
+        """Validate that winner is one of the players and scores are non-negative."""
+        if self.winner not in (self.player_a, self.player_b):
+            raise ValueError(f"Winner '{self.winner}' must be either player_a or player_b")
+        if self.player_a_score < 0 or self.player_b_score < 0:
+            raise ValueError("Scores must be non-negative integers")
+        return self
 
     def to_match_model(self) -> dict:
-        """Helper to convert to a dictionary compatible with Match SQLAlchemy model"""
+        """
+        Helper to convert to a dictionary compatible with Match SQLAlchemy model.
+        Preserves the exact player-score mapping without reordering.
+        """
         return {
-            "player1": self.winner if self.winner < self.loser else self.loser, # Simple sorting for consistency
-            "player2": self.loser if self.winner < self.loser else self.winner,
+            "player1": self.player_a,
+            "player2": self.player_b,
             "winner": self.winner,
-            "score": f"{self.player1_score}-{self.player2_score}"
+            "score": f"{self.player_a_score}-{self.player_b_score}"
         }
 
 class AIEngine:
@@ -53,14 +64,12 @@ class AIEngine:
         else:
             self.chroma_path = chroma_path
 
-        # Initialize Chroma client for RAG
-        if not os.path.exists(self.chroma_path):
-            os.makedirs(self.chroma_path, exist_ok=True)
-
-        self.chroma_client = chromadb.PersistentClient(path=self.chroma_path)
-        
         # Initialize RulesRetriever for RAG (handles embedding function and collection)
+        # This uses the singleton chromadb client to avoid multiple initializations
         self.rules_retriever = RulesRetriever(chroma_path=self.chroma_path)
+        
+        # Get the shared chromadb client
+        self.chroma_client = self.rules_retriever.chroma_client
         
         # Verify Ollama connection and model availability
         self._ensure_model_available()
@@ -222,10 +231,11 @@ Respond ONLY with valid JSON, no additional text."""
 "{transcribed_text}"
 
 Return a JSON object with EXACTLY these keys:
-- winner (string)
-- loser (string)
-- player1_score (integer)
-- player2_score (integer)
+- player_a (string) - First player mentioned
+- player_b (string) - Second player mentioned
+- player_a_score (integer) - Score for player_a
+- player_b_score (integer) - Score for player_b
+- winner (string) - Must be either player_a or player_b
 
 Respond ONLY with valid JSON."""
 
@@ -259,16 +269,16 @@ Respond ONLY with valid JSON."""
                         if match_db.tournament:
                             t_type = match_db.tournament.tournament_type.value
                         
-                        # Update Match in Database
+                        # Update Match in Database - preserve exact player-score mapping
                         match_db.winner = match_result.winner
-                        match_db.score = f"{match_result.player1_score}-{match_result.player2_score}"
+                        match_db.score = f"{match_result.player_a_score}-{match_result.player_b_score}"
                         match_db.status = MatchStatus.completed
                         db_session.commit()
                         logger.info(f"Database: Updated match {match_id} status to completed.")
 
                         # Update Ratings
                         winner_name = match_result.winner
-                        loser_name = match_result.loser
+                        loser_name = match_result.player_b if match_result.winner == match_result.player_a else match_result.player_a
                         
                         winner = db_session.query(Player).filter(Player.name == winner_name).first()
                         loser = db_session.query(Player).filter(Player.name == loser_name).first()
@@ -285,7 +295,7 @@ Respond ONLY with valid JSON."""
                     db_session.close()
 
             try:
-                score_str = f"{match_result.player1_score}-{match_result.player2_score}"
+                score_str = f"{match_result.player_a_score}-{match_result.player_b_score}"
                 ts.update_match_result(match_id, match_result.winner, score_str, tournament_type=t_type)
                 logger.info(f"Bracket: Successfully updated match {match_id} (Type: {t_type}).")
                 return ts.get_bracket_data()
@@ -346,4 +356,12 @@ def validate_and_map_to_match(result_dict: dict) -> Union['Match', dict]:
             score=match_data["score"],
             status=MatchStatus.completed if MatchStatus else "completed"
         )
-    return match_data
+    # Return full data including explicit score fields for UI consumption
+    return {
+        "player_a": match_result.player_a,
+        "player_b": match_result.player_b,
+        "player_a_score": match_result.player_a_score,
+        "player_b_score": match_result.player_b_score,
+        "winner": match_result.winner,
+        "score": match_data["score"]
+    }

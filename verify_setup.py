@@ -174,10 +174,10 @@ def test_rag():
     """Test RAG system."""
     print("\n🧠 Testing RAG System...")
     try:
-        import chromadb
+        from tournament_platform.services.rules_retrieval import _get_chroma_client
         chroma_path = os.path.join(os.path.dirname(__file__), 'tournament_platform', 'data', 'chroma_db')
         if os.path.exists(chroma_path):
-            client = chromadb.PersistentClient(path=chroma_path)
+            client = _get_chroma_client(chroma_path)
             try:
                 collection = client.get_collection(name="tournament_rules")
                 count = collection.count()
@@ -238,7 +238,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-
-
-
-

@@ -5,11 +5,30 @@ from tournament_platform.services.ranking_service import RatingManager
 from tournament_platform.models import SessionLocal, Player
 from tournament_platform.app.utils import render_interactive_table, format_player_label
 
+
+@st.cache_data(ttl=60, show_spinner="Loading leaderboard...")
+def get_cached_leaderboard():
+    """Get cached leaderboard data."""
+    rm = RatingManager()
+    return rm.get_leaderboard()
+
+
+@st.cache_data(ttl=60, show_spinner="Loading rating history...")
+def get_cached_rating_history(player_id: int):
+    """Get cached rating history for a player."""
+    rm = RatingManager()
+    return rm.get_rating_history(player_id)
+
+
+def clear_cache_after_write():
+    """Clear cached data after database writes."""
+    st.cache_data.clear()
+
+
 st.title("🏆 Player Rankings")
 st.space("medium")
 
-rm = RatingManager()
-players = rm.get_leaderboard()
+players = get_cached_leaderboard()
 
 if not players:
     st.info("No rankings data available yet. Complete some matches to see the leaderboard!")
@@ -40,7 +59,7 @@ else:
     
     # Display the leaderboard using itables
     render_interactive_table(df.drop(columns=["ID"]))
-
+    
     st.space("medium")
     
     st.subheader("📊 Rating History Exploration")
@@ -59,7 +78,7 @@ else:
     if view_history and selected_player:
         with col2:
             st.write(f"Showing rating progression for **{selected_player.name}**")
-            history = rm.get_rating_history(selected_player.id)
+            history = get_cached_rating_history(selected_player.id)
             
             if history:
                 h_data = [{"Timestamp": h.timestamp, "Rating": h.rating} for h in history]

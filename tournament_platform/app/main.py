@@ -7,6 +7,17 @@ from tournament_platform.config import settings
 
 st.set_page_config(page_title="TT Platform", layout="wide")
 
+st.markdown(
+    """
+    <style>
+        .block-container {
+            padding-top: 1rem;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # Auth Load
 config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
 with open(config_path) as file:
@@ -37,24 +48,47 @@ authenticator = stauth.Authenticate(
 name, authentication_status, username = authenticator.login('main')
 
 if authentication_status:
-    st.title("🏓 Company Tournament Dashboard")
+    # Get user role from config (default to 'user' if not specified)
+    user_role = "user"
+    if username and username in config.get('credentials', {}).get('usernames', {}):
+        user_role = config['credentials']['usernames'][username].get('role', 'user')
+    
+    # Also check Streamlit secrets for role
+    try:
+        if hasattr(st, 'secrets') and 'credentials' in st.secrets:
+            if username in st.secrets['credentials'].get('usernames', {}):
+                user_role = st.secrets['credentials']['usernames'][username].get('role', 'user')
+    except Exception:
+        pass
+    
+    st.title("🏓")
     st.space("medium")
     
     # Multi-page navigation using st.navigation (Streamlit 1.35+)
     # Use absolute paths based on this file's location so they work from any CWD
     app_dir = os.path.dirname(__file__)
-    page_dashboard = st.Page(os.path.join(app_dir, "pages", "dashboard.py"), title="Dashboard", icon="📊")
-    page_rankings = st.Page(os.path.join(app_dir, "pages", "rankings.py"), title="Rankings", icon="🏆")
-    page_tournament = st.Page(os.path.join(app_dir, "pages", "tournament_setup.py"), title="Tournament Setup", icon="⚙️")
-    page_admin = st.Page(os.path.join(app_dir, "pages", "admin.py"), title="Admin", icon="👨‍💼")
-    page_voice_rules = st.Page(os.path.join(app_dir, "pages", "voice_rules_chat.py"), title="Voice Rules Chat", icon="🎤")
-    page_voice_scorekeeper = st.Page(os.path.join(app_dir, "pages", "voice_scorekeeper.py"), title="Voice Scorekeeper", icon="🔊")
-
-    navigation = st.navigation([page_dashboard, page_rankings, page_tournament, page_admin, page_voice_rules, page_voice_scorekeeper])
+    pages = [
+        st.Page(os.path.join(app_dir, "pages", "dashboard.py"), title="Dashboard", icon="📊"),
+        st.Page(os.path.join(app_dir, "pages", "rankings.py"), title="Rankings", icon="🏆"),
+        st.Page(os.path.join(app_dir, "pages", "tournament_setup.py"), title="Tournament Setup", icon="⚙️"),
+        st.Page(os.path.join(app_dir, "pages", "ai_assistant.py"), title="AI Assistant", icon="🤖"),
+        st.Page(os.path.join(app_dir, "pages", "voice_scorekeeper.py"), title="Voice Scorekeeper", icon="🔊"),
+    ]
+    
+    # Only add Admin page for admin users
+    if user_role == "admin":
+        pages.append(
+            st.Page(os.path.join(app_dir, "pages", "admin.py"), title="Admin", icon="👨‍💼")
+        )
+    
+    navigation = st.navigation(pages)
     navigation.run()
 
-    # Show logout button in sidebar
+    # Show user info and logout button in sidebar
     with st.sidebar:
+        st.divider()
+        st.markdown(f"**Logged in as:** {name or username}")
+        st.markdown(f"**Role:** {user_role}")
         st.divider()
         if st.button("🚪 Logout"):
             authenticator.logout()

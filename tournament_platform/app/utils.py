@@ -210,12 +210,19 @@ def render_interactive_table(
     # - Responsive design (adapts to container width)
     # - Theme-aware styling (light/dark mode compatible)
     # - Keyboard navigation and screen reader support
-    st.dataframe(
-        df,
-        use_container_width=True,
-        height=height,
-        hide_index=True,
-    )
+    if height is not None:
+        st.dataframe(
+            df,
+            use_container_width=True,
+            height=height,
+            hide_index=True,
+        )
+    else:
+        st.dataframe(
+            df,
+            use_container_width=True,
+            hide_index=True,
+        )
 
 
 def api_request(

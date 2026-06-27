@@ -1,9 +1,25 @@
+# Authentication configuration for streamlit-authenticator
+# For production, override credentials via Streamlit secrets (secrets.toml)
+# 
+# To assign admin role, add "role: admin" to the user's entry:
+#   usernames:
+#     admin_user:
+#       email: admin@example.com
+#       name: Admin User
+#       password: <hashed_password>
+#       role: admin
+#     normal_user:
+#       email: user@example.com
+#       name: Normal User
+#       password: <hashed_password>
+#       # role defaults to "user" if not specified
 credentials:
   usernames:
     admin:
       email: admin@corp.com
       name: Admin User
       password: 'CHANGE_ME_IN_STREAMLIT_SECRETS'
+      role: admin
 cookie:
   expiry_days: 30
   key: CHANGE_ME_IN_ENV

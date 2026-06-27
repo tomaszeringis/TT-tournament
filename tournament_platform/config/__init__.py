@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "Tournament Platform"
     APP_VERSION: str = "1.0.0"
     DEBUG: bool = False
+    DEBUG_UI_ENABLED: bool = False
 
     # -------------------------------------------------------------------------
     # FastAPI Server

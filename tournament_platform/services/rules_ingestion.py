@@ -1,10 +1,12 @@
 import os
+import sys
 import uuid
 import chromadb
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_ollama import OllamaEmbeddings
 from tournament_platform.config import settings
+from .rules_retrieval import _get_chroma_client
 
 def ingest_rules_from_pdf(pdf_path: str):
     """
@@ -37,14 +39,11 @@ def ingest_rules_from_pdf(pdf_path: str):
     chunks = text_splitter.split_documents(documents)
     print(f"✅ Created {len(chunks)} text chunks.")
 
-    # 3. Initialize local ChromaDB client
+    # 3. Initialize local ChromaDB client using singleton
     chroma_path = settings.CHROMA_DB_PATH
     
     print(f"📦 Initializing ChromaDB client at: {chroma_path}")
-    if not os.path.exists(chroma_path):
-        os.makedirs(chroma_path, exist_ok=True)
-    
-    client = chromadb.PersistentClient(path=chroma_path)
+    client = _get_chroma_client(chroma_path)
 
     collection_name = "tournament_rules"
     print(f"🧹 Resetting collection: '{collection_name}'...")
@@ -53,7 +52,7 @@ def ingest_rules_from_pdf(pdf_path: str):
     except Exception:
         # Collection might not exist, which is fine
         pass
-    
+
     # Define embedding function for Chroma
     import chromadb.utils.embedding_functions as ef
     embedding_function = ef.OllamaEmbeddingFunction(
