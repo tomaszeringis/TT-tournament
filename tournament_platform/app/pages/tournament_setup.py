@@ -3,6 +3,7 @@ import streamlit_shadcn_ui as ui
 import pandas as pd
 import asyncio
 import os
+import requests
 from datetime import datetime
 
 from tournament_platform.services.speech_service import record_audio, SpeechReporter
@@ -19,6 +20,7 @@ from tournament_platform.services.settings import (
     ENABLE_VOICE_ENTRY,
     ENABLE_RULES_ASSISTANT,
     SPEECH_MODEL_SIZE,
+    KEEP_AUDIO_FILES,
 )
 
 
@@ -168,191 +170,254 @@ def render_ai_chat_sidebar():
                 st.error(f"Error: {e}")
 
 
-def render_ai_match_reporting():
+def render_voice_or_text_parser():
     """
-    Render the AI-powered match reporting section.
-    Preserves session state for parsed results across reruns.
+    Render the voice recording and text parsing input section.
+    Stores parsed result in session state for confirmation.
     """
-    st.subheader("🎤 Report Match Result (AI-Powered)")
-    st.caption("AI will parse your match result. Please review and confirm before submitting to the database.")
-    
-    # Initialize session state for AI match reporting flow
+    st.markdown("**Step 1: Provide Match Result**")
+    col_input, col_text = st.columns([1, 2])
+
+    with col_input:
+        if ENABLE_VOICE_ENTRY:
+            if ui.button("🎙️ Record Match Result", key="record_match_btn"):
+                st.session_state.ai_match_transcript = None
+                st.session_state.ai_match_parsed = None
+                st.session_state.ai_match_error = None
+
+                with st.status("Recording...", expanded=True) as status:
+                    try:
+                        audio_path = asyncio.run(record_audio())
+                        status.update(label="Recording complete", state="complete", expanded=False)
+
+                        with st.status("Transcribing...", expanded=True) as trans_status:
+                            reporter = get_speech_reporter()
+                            transcript = reporter.transcribe_audio(audio_path)
+                            st.session_state.ai_match_transcript = transcript
+                            trans_status.update(label="Transcription complete", state="complete", expanded=False)
+
+                        # Parse via safe API endpoint (no DB writes)
+                        with st.status("Parsing result...", expanded=True) as parse_status:
+                            response = api_request(
+                                "post",
+                                "/api/match/parse",
+                                json={"text": transcript},
+                                parse_json=True,
+                                error_context="match result parsing"
+                            )
+                            if response is not None:
+                                st.session_state.ai_match_parsed = response
+                                parse_status.update(label="Parsing complete", state="complete", expanded=False)
+                            else:
+                                st.session_state.ai_match_error = "Failed to parse match result"
+                                parse_status.update(label="Parse failed", state="error", expanded=True)
+
+                        # Cleanup temp file unless configured to keep
+                        if not KEEP_AUDIO_FILES and os.path.exists(audio_path):
+                            os.remove(audio_path)
+
+                    except Exception as e:
+                        st.session_state.ai_match_error = f"Error during audio processing: {e}"
+                        status.update(label="Error occurred", state="error", expanded=True)
+        else:
+            st.caption("Voice entry is disabled in settings.")
+
+    with col_text:
+        text_input = st.text_area(
+            "Quick result entry",
+            value=st.session_state.ai_match_transcript or "",
+            key="manual_match_text",
+            height=80,
+            placeholder="Alice beat Bob 3-1\nTable 2: Maria defeated Tomas 3 to 2\nBob lost to Alice 1-3",
+            help="Type a match result in natural language"
+        )
+
+        if st.button("🔍 Parse result", key="parse_text_btn", use_container_width=True):
+            if text_input.strip():
+                st.session_state.ai_match_transcript = text_input.strip()
+                st.session_state.ai_match_parsed = None
+                st.session_state.ai_match_error = None
+
+                with st.spinner("Parsing match result..."):
+                    try:
+                        response = api_request(
+                            "post",
+                            "/api/match/parse",
+                            json={"text": text_input.strip()},
+                            parse_json=True,
+                            error_context="match result parsing"
+                        )
+                        if response is not None:
+                            st.session_state.ai_match_parsed = response
+                        else:
+                            st.session_state.ai_match_error = "Failed to parse match result"
+                    except Exception as e:
+                        st.session_state.ai_match_error = f"Error parsing match result: {e}"
+            else:
+                st.warning("Please enter a match result first.")
+
+
+def render_confirmed_result_form(parsed: dict, tournaments: list):
+    """
+    Render the confirmation panel and editable form for a parsed match result.
+    Returns the submitted payload dict or None.
+    """
+    st.divider()
+    st.markdown("**Step 2: Review Parsed Result**")
+    st.caption("Verify the parsed match details below. Edit if needed before submitting.")
+
+    # Status and warnings
+    status = parsed.get("status", "error")
+    if status == "needs_review":
+        st.warning("🟡 This result needs review — please verify the details carefully.")
+    elif status == "error":
+        st.error("🔴 Could not parse the match result. Please enter manually.")
+    else:
+        st.success("🟢 Result parsed successfully.")
+
+    if parsed.get("warnings"):
+        for warning in parsed["warnings"]:
+            st.warning(f"⚠️ {warning}")
+
+    # Confirmation card
+    with st.container(border=True):
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            st.markdown(f"**Transcript:** {parsed.get('transcript', '')}")
+        with col_t2:
+            st.markdown(f"**Confidence:** {parsed.get('confidence', 0):.0%}")
+        st.markdown(f"**Player 1:** {parsed.get('player1') or 'Not detected'}")
+        st.markdown(f"**Player 2:** {parsed.get('player2') or 'Not detected'}")
+        st.markdown(f"**Score:** {parsed.get('score') or 'Not detected'}")
+        st.markdown(f"**Winner:** {parsed.get('winner') or 'Not detected'}")
+
+    # Step 3: Edit and Submit
+    st.markdown("**Step 3: Confirm or Edit**")
+    st.caption("Review the match details and click Submit to save to the database.")
+
+    with st.form("confirmed_match_form"):
+        col_p1, col_p2 = st.columns(2)
+        with col_p1:
+            p1 = st.text_input("Player 1", value=parsed.get("player1") or "")
+        with col_p2:
+            p2 = st.text_input("Player 2", value=parsed.get("player2") or "")
+
+        # Parse score for number inputs
+        score_str = parsed.get("score") or "0-0"
+        try:
+            s1_val, s2_val = map(int, score_str.split("-"))
+        except Exception:
+            s1_val, s2_val = 0, 0
+
+        col_s1, col_s2 = st.columns(2)
+        with col_s1:
+            s1 = st.number_input("Player 1 Score", min_value=0, max_value=10, value=s1_val)
+        with col_s2:
+            s2 = st.number_input("Player 2 Score", min_value=0, max_value=10, value=s2_val)
+
+        # Winner selection
+        winner_options = ["Select winner", p1, p2] if p1 and p2 else ["Select Players First"]
+        winner_index = 0
+        if parsed.get("winner") in winner_options:
+            winner_index = winner_options.index(parsed["winner"])
+        winner = st.selectbox("Winner", winner_options, index=winner_index)
+        score = f"{s1}-{s2}"
+
+        # Tournament selection (preserve existing behavior)
+        tournament_options = {t.name: t.id for t in tournaments}
+        selected_tournament = st.selectbox(
+            "Tournament (optional)",
+            options=["None"] + list(tournament_options.keys())
+        )
+
+        # Validation warning
+        if p1 and p2 and winner != "Select winner":
+            if winner != p1 and winner != p2:
+                st.warning("⚠️ Winner must be one of the players")
+
+        submitted = st.form_submit_button("📤 Submit confirmed result", use_container_width=True)
+
+        if submitted:
+            if not p1 or not p2:
+                st.error("Please provide both player names")
+                return None
+            elif winner == "Select winner":
+                st.error("Please select a winner")
+                return None
+            elif winner != p1 and winner != p2:
+                st.error("Winner must be one of the players")
+                return None
+            else:
+                return {
+                    "player1": p1,
+                    "player2": p2,
+                    "score": score,
+                    "winner": winner,
+                    "tournament_id": tournament_options.get(selected_tournament) if selected_tournament != "None" else None
+                }
+    return None
+
+
+def submit_match_result(payload: dict):
+    """Submit a confirmed match result payload to /api/report."""
+    db = SessionLocal()
+    try:
+        with st.status("Submitting result...", expanded=False) as status:
+            response = api_request(
+                "post",
+                "/api/report",
+                json=payload,
+                error_context="match result submission"
+            )
+            if response is not None:
+                status.update(label="Result submitted!", state="complete", expanded=False)
+                st.success("✅ Match result submitted successfully!")
+                return True
+            return False
+    except Exception as e:
+        st.error(f"Connection error: {e}")
+        return False
+    finally:
+        db.close()
+
+
+def render_match_reporting_tab(db):
+    """
+    Render the Match Reporting tab with confirm-before-submit flow.
+    """
+    st.subheader("🎾 Report Match Result")
+    st.caption("Enter or record a match result, review the parsed details, then confirm to submit.")
+
+    # Initialize session state
     if 'ai_match_transcript' not in st.session_state:
         st.session_state['ai_match_transcript'] = None
     if 'ai_match_parsed' not in st.session_state:
         st.session_state['ai_match_parsed'] = None
     if 'ai_match_error' not in st.session_state:
         st.session_state['ai_match_error'] = None
-    
-    # Step 1: Input - Record or type match result
-    st.markdown("**Step 1: Provide Match Result**")
-    col_input, col_text = st.columns([1, 2])
-    
-    with col_input:
-        if ui.button("🎙️ Record Match Result", key="record_match_btn"):
-            st.session_state.ai_match_transcript = None
-            st.session_state.ai_match_parsed = None
-            st.session_state.ai_match_error = None
-            
-            with st.status("Recording...", expanded=True) as status:
-                try:
-                    # Use asyncio.run to call the async record_audio
-                    audio_path = asyncio.run(record_audio())
-                    status.update(label="Recording complete", state="complete", expanded=False)
-                    
-                    with st.status("Transcribing...", expanded=True) as trans_status:
-                        reporter = get_speech_reporter()
-                        transcript = reporter.transcribe_audio(audio_path)
-                        st.session_state.ai_match_transcript = transcript
-                        trans_status.update(label="Transcription complete", state="complete", expanded=False)
-                    
-                    with st.status("Parsing with AI...", expanded=True) as parse_status:
-                        ai_engine = get_ai_engine()
-                        parsed_result_pydantic = ai_engine.parse_match_result(transcript)
-                        st.session_state.ai_match_parsed = parsed_result_pydantic
-                        parse_status.update(label="Parsing complete", state="complete", expanded=False)
-                    
-                    # Cleanup temp file
-                    if os.path.exists(audio_path):
-                        os.remove(audio_path)
-                        
-                except Exception as e:
-                    st.session_state.ai_match_error = f"Error during audio processing: {e}"
-                    status.update(label="Error occurred", state="error", expanded=True)
-    
-    with col_text:
-        # Manual text input fallback
-        text_input = st.text_area(
-            "Or type match result (e.g., 'Alice beat Bob 3-1')",
-            value=st.session_state.ai_match_transcript or "",
-            key="manual_match_text",
-            height=100,
-            help="Type a match result in natural language"
-        )
-        
-        if st.button("🔍 Parse Text", key="parse_text_btn") and text_input:
-            st.session_state.ai_match_transcript = text_input
-            st.session_state.ai_match_parsed = None
-            st.session_state.ai_match_error = None
-            
-            with st.status("Parsing with AI...", expanded=True) as status:
-                try:
-                    ai_engine = get_ai_engine()
-                    parsed_result_pydantic = ai_engine.parse_match_result(text_input)
-                    st.session_state.ai_match_parsed = parsed_result_pydantic
-                    status.update(label="Parsing complete", state="complete", expanded=False)
-                except Exception as e:
-                    st.session_state.ai_match_error = f"Error parsing match result: {e}"
-                    status.update(label="Error occurred", state="error", expanded=True)
-    
-    # Step 2: Review - Show parsed result for human confirmation
+
+    # Step 1: Input
+    render_voice_or_text_parser()
+
+    # Step 2 & 3: Review and confirm
     if st.session_state.ai_match_parsed:
-        st.divider()
-        st.markdown("**Step 2: Review AI-Parsed Result**")
-        st.caption("Please verify the AI correctly understood the match. Edit if needed before submitting.")
-        
-        parsed = st.session_state.ai_match_parsed
-        
-        # Check for validation issues
-        if not parsed.player_a or not parsed.player_b:
-            st.warning("⚠️ AI could not identify both players. Please check the transcript and edit below.")
-        
-        # Review card with all parsed data
-        with st.container(border=True):
-            st.markdown(f"**Player A:** {parsed.player_a or 'Not detected'}")
-            st.markdown(f"**Player B:** {parsed.player_b or 'Not detected'}")
-            st.markdown(f"**Score:** {parsed.player_a_score} - {parsed.player_b_score}")
-            st.markdown(f"**Winner:** {parsed.winner or 'Not detected'}")
-        
-        # Step 3: Edit and Submit
-        st.markdown("**Step 3: Confirm or Edit**")
-        st.caption("Review the match details and click Submit to save to the database.")
-        
-        with st.form("ai_match_form"):
-            col_p1, col_p2 = st.columns(2)
-            with col_p1:
-                p1 = st.text_input("Player A", value=parsed.player_a or "")
-            with col_p2:
-                p2 = st.text_input("Player B", value=parsed.player_b or "")
-            
-            col_s1, col_s2 = st.columns(2)
-            with col_s1:
-                s1 = st.number_input("Player A Score", min_value=0, max_value=10, value=parsed.player_a_score or 0, key="ai_score_a")
-            with col_s2:
-                s2 = st.number_input("Player B Score", min_value=0, max_value=10, value=parsed.player_b_score or 0, key="ai_score_b")
-            
-            # Validate winner
-            winner_options = ["Select winner", p1, p2] if p1 and p2 else ["Select Players First"]
-            winner_index = 0
-            if parsed.winner in winner_options:
-                winner_index = winner_options.index(parsed.winner)
-            
-            winner = st.selectbox("Winner", winner_options, index=winner_index)
-            score = f"{s1}-{s2}"
-            
-            # Tournament selection
-            db = SessionLocal()
-            tournaments = db.query(Tournament).all()
-            tournament_options = {t.name: t.id for t in tournaments}
-            selected_tournament = st.selectbox(
-                "Tournament (optional)",
-                options=["None"] + list(tournament_options.keys())
-            )
-            
-            # Validation warning
-            if p1 and p2 and winner != "Select winner":
-                if winner != p1 and winner != p2:
-                    st.warning("⚠️ Winner must be one of the players")
-            
-            submitted = st.form_submit_button("📤 Submit Result")
-            
-            if submitted:
-                # Validate all required fields
-                if not p1 or not p2:
-                    st.error("Please provide both player names")
-                elif winner == "Select winner":
-                    st.error("Please select a winner")
-                elif winner != p1 and winner != p2:
-                    st.error("Winner must be one of the players")
-                else:
-                    try:
-                        payload = {
-                            "player1": p1,
-                            "player2": p2,
-                            "score": score,
-                            "winner": winner,
-                            "tournament_id": tournament_options.get(selected_tournament) if selected_tournament != "None" else None
-                        }
-                        
-                        with st.status("Submitting result...", expanded=False) as status:
-                            response = api_request(
-                                "post",
-                                "/api/report",
-                                json=payload,
-                                error_context="match result submission"
-                            )
-                            
-                            if response is not None:
-                                st.session_state.ai_match_transcript = None
-                                st.session_state.ai_match_parsed = None
-                                st.session_state.ai_match_error = None
-                                if 'parsed_result' in st.session_state:
-                                    del st.session_state['parsed_result']
-                                status.update(label="Result submitted!", state="complete", expanded=False)
-                                st.success("✅ Match result submitted successfully!")
-                                st.rerun()
-                    except Exception as e:
-                        st.error(f"Connection error: {e}")
-                    finally:
-                        db.close()
-    
+        tournaments = db.query(Tournament).all()
+        payload = render_confirmed_result_form(st.session_state.ai_match_parsed, tournaments)
+        if payload:
+            if submit_match_result(payload):
+                # Clear session state on success
+                st.session_state.ai_match_transcript = None
+                st.session_state.ai_match_parsed = None
+                st.session_state.ai_match_error = None
+                st.rerun()
+
     # Show error if any
     if st.session_state.ai_match_error:
         st.error(st.session_state.ai_match_error)
-    
-    # Clear button
+
+    # Clear parsed result button
     if st.session_state.ai_match_parsed or st.session_state.ai_match_error:
-        if st.button("🔄 Start Over", key="clear_ai_match"):
+        if st.button("🔄 Clear parsed result", key="clear_parsed_result"):
             st.session_state.ai_match_transcript = None
             st.session_state.ai_match_parsed = None
             st.session_state.ai_match_error = None
@@ -603,7 +668,11 @@ with st.sidebar:
 tab_reporting, tab_tournaments = st.tabs(["🎾 Match Reporting", "🏆 Active Tournaments"])
 
 with tab_reporting:
-    render_ai_match_reporting()
+    db = SessionLocal()
+    try:
+        render_match_reporting_tab(db)
+    finally:
+        db.close()
 
 with tab_tournaments:
     render_active_tournaments()
