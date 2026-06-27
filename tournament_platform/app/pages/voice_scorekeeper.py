@@ -21,6 +21,7 @@ from tournament_platform.services.match_manager import MatchManager, MatchState
 from tournament_platform.services.umpire_engine import UmpireEngine, UmpireConfig
 from tournament_platform.models import SessionLocal, Match, MatchStatus, Player, Tournament
 from tournament_platform.app.utils import format_player_label, api_request
+from tournament_platform.services.settings import KEEP_AUDIO_FILES
 
 
 # ============================================================================
@@ -149,8 +150,8 @@ def process_voice_command(audio_bytes: bytes) -> Tuple[str, str]:
         return transcript, response
         
     finally:
-        # Clean up temp file
-        if os.path.exists(temp_path):
+        # Clean up temp file unless configured to keep for debugging
+        if not KEEP_AUDIO_FILES and os.path.exists(temp_path):
             os.unlink(temp_path)
 
 
@@ -325,6 +326,13 @@ if st.button("🔄 Reset Match", use_container_width=True):
 st.divider()
 st.subheader("Voice Input")
 
+# Privacy notice
+st.info(
+    "🔒 **Privacy:** Audio is processed locally using faster-whisper. "
+    "Temporary audio files are deleted by default after transcription. "
+    "You must confirm the parsed result before it is submitted."
+)
+
 audio_input = st.audio_input("Click to record your score command")
 
 if audio_input:
@@ -383,8 +391,11 @@ with col_report_input:
                     transcript = reporter.transcribe_audio(audio_path)
                     st.session_state.report_transcript = transcript
                     trans_status.update(label="Transcription complete", state="complete", expanded=False)
-                if os.path.exists(audio_path):
+                # Cleanup temp file unless configured to keep for debugging
+                if not KEEP_AUDIO_FILES and os.path.exists(audio_path):
                     os.remove(audio_path)
+                elif KEEP_AUDIO_FILES and os.path.exists(audio_path):
+                    st.caption(f"🔧 Debug: audio saved to `{audio_path}` (KEEP_AUDIO_FILES=true)")
             except Exception as e:
                 st.session_state.report_status = f"Error: {e}"
                 status.update(label="Error occurred", state="error", expanded=True)

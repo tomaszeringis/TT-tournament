@@ -194,6 +194,7 @@ def render_voice_or_text_parser():
     Stores parsed result in session state for confirmation.
     """
     st.markdown("**Step 1: Provide Match Result**")
+    st.caption("🔒 Audio is processed locally. Temp files are deleted by default. You must confirm before submitting.")
     col_input, col_text = st.columns([1, 2])
 
     with col_input:

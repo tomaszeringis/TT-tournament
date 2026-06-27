@@ -102,7 +102,8 @@ async def report_match(request: Request, db: Session = Depends(get_db)):
     """
     try:
         data = await request.json()
-        logger.info(f"Received match report: {data}")
+        # Defensive logging: avoid logging full request body (may contain PII)
+        logger.info(f"Received match report: match_id={data.get('match_id')}, has_winner={bool(data.get('winner'))}")
 
         command = ReportMatchCommand(**data)
         match = report_existing_match(db, command)
@@ -180,7 +181,9 @@ async def parse_match(request: Request):
     """
     try:
         data = await request.json()
-        logger.info(f"Received match parse request: {data}")
+        # Defensive logging: avoid logging full transcript (may contain PII)
+        transcript_preview = data.get("text", "")[:50] + "..." if data.get("text") else ""
+        logger.info(f"Received match parse request: transcript_preview={transcript_preview!r}, tournament_id={data.get('tournament_id')}, match_id={data.get('match_id')}")
 
         # Validate request body
         try:

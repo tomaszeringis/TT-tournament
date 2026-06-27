@@ -113,3 +113,32 @@ Look for `[RAG]` checks passing. If the knowledge base is empty or missing, re-r
 - **"No relevant rules found"**: The knowledge base may be empty. Re-run `initialize_rag.py`.
 - **Ollama connection errors**: Ensure `ollama serve` is running and the model is pulled.
 - **ChromaDB path**: Set `CHROMA_DB_PATH` in `.env` if you want to store the vector DB elsewhere.
+
+## Voice privacy behavior
+
+The voice/text match entry system is designed with a local-first, minimal-retention privacy model.
+
+### Audio processing
+
+- **Local transcription**: When using the default `faster-whisper` backend, audio is transcribed entirely on the local machine. No audio data is sent to external services.
+- **Temporary files**: Audio is written to a temporary file (`.wav`) only for the duration of transcription.
+- **Default deletion**: Temporary audio files are **deleted immediately after transcription** by default.
+- **Debug retention**: Set `KEEP_AUDIO_FILES=true` in `.env` to retain temp audio files for debugging. When enabled, the UI shows the file path where audio was saved.
+
+### Data retention
+
+- **No raw audio in database**: Raw audio bytes or file paths are never stored in the database.
+- **Transcripts**: Transcripts are held in Streamlit session state only (`st.session_state`). They are not persisted to the database unless an operator explicitly submits a match result through the confirm-and-submit flow.
+- **Match results**: Only the structured result (player names, score, winner, tournament) is stored when the operator confirms and submits.
+
+### Logging
+
+- **Defensive logging**: API endpoints log only metadata (match IDs, status, previews) — not full transcripts, player emails, or raw audio paths.
+- **Debug mode**: Sensitive path information is only surfaced in the UI when `KEEP_AUDIO_FILES=true`.
+
+### User-facing notices
+
+- A privacy notice is displayed near the voice entry UI in both:
+  - `tournament_platform/app/pages/voice_scorekeeper.py`
+  - `tournament_platform/app/pages/tournament_setup.py`
+- The notice informs users that audio is processed locally, temp files are deleted by default, and confirmation is required before submission.
