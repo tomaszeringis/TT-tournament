@@ -42,6 +42,26 @@ def render_tournament_creation():
     """
     st.subheader("📝 Create New Tournament")
     
+    # Get players data for seeding button (outside form)
+    db_temp = SessionLocal()
+    all_players = db_temp.query(Player).all()
+    player_names = [p.name for p in all_players]
+    db_temp.close()
+    
+    # Seeding suggestion button - OUTSIDE the form
+    if ENABLE_RANKING_INTELLIGENCE:
+        if st.button("🎯 Suggest Seeding by Rating", key="suggest_seeding_btn"):
+            if not all_players:
+                st.warning("No players with ratings available for seeding.")
+            else:
+                sorted_players = sorted(all_players, key=lambda p: p.rating, reverse=True)
+                seeded_names = [p.name for p in sorted_players]
+                # Filter to only those currently selected, preserving rating order
+                current_selection = st.session_state.get("participants_multiselect", [])
+                selected_sorted = [name for name in seeded_names if name in current_selection]
+                st.session_state["seeded_players"] = selected_sorted
+                st.rerun()
+    
     with st.form("tournament_creation_form", clear_on_submit=True):
         tournament_name = st.text_input(
             "Tournament Name",
@@ -77,31 +97,17 @@ def render_tournament_creation():
             )
         
         # Player selection for initial generation
-        db = SessionLocal()
-        all_players = db.query(Player).all()
-        player_names = [p.name for p in all_players]
         selected_players = st.multiselect(
             "Select Participants",
             options=player_names,
             default=player_names[:8] if len(player_names) >= 8 else player_names,
-            help="Choose at least 2 players to create a tournament"
+            help="Choose at least 2 players to create a tournament",
+            key="participants_multiselect"
         )
-
-        # Seeding suggestion button
-        if ENABLE_RANKING_INTELLIGENCE and st.button("🎯 Suggest Seeding by Rating", key="suggest_seeding_btn"):
-            if not all_players:
-                st.warning("No players with ratings available for seeding.")
-            else:
-                sorted_players = sorted(all_players, key=lambda p: p.rating, reverse=True)
-                seeded_names = [p.name for p in sorted_players]
-                # Filter to only those currently selected, preserving rating order
-                selected_sorted = [name for name in seeded_names if name in selected_players]
-                st.session_state["seeded_players"] = selected_sorted
-                st.rerun()
 
         # Restore seeded selection if available
         if "seeded_players" in st.session_state and st.session_state["seeded_players"]:
-            selected_players = st.session_state["seeded_players"]
+            st.session_state["participants_multiselect"] = st.session_state["seeded_players"]
             st.caption("🔽 Players are ordered by rating (highest first).")
         
         submitted = st.form_submit_button("🏆 Create Tournament")
@@ -130,6 +136,7 @@ def render_tournament_creation():
                         description=tournament_desc,
                         tournament_type=t_type
                     )
+                    db = SessionLocal()
                     db.add(new_tournament)
                     db.flush()  # Get the new ID
                     

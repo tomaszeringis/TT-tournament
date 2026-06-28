@@ -43,6 +43,7 @@ SpeechRecognition>=3.10.4
 PyAudio>=0.2.14
 RealtimeTTS>=0.4.1
 pyttsx3>=2.90
+vosk>=0.3.45
 
 # Tournament/Bracket Management
 bracketool>=0.1

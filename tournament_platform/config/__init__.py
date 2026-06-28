@@ -5,7 +5,9 @@ Uses pydantic-settings to load values from environment variables,
 with sensible local defaults for non-secret values.
 """
 
+import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import model_validator
 from typing import Optional
 
 
@@ -109,6 +111,13 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     SEMANTIC_KERNEL_OLLAMA_HOST: str = "http://localhost:11434"
     SEMANTIC_KERNEL_MODEL_ID: str = "llama3.1:latest"
+
+    @model_validator(mode='after')
+    def resolve_absolute_paths(self):
+        """Resolve relative paths to absolute paths at runtime."""
+        if not os.path.isabs(self.CHROMA_DB_PATH):
+            self.CHROMA_DB_PATH = os.path.abspath(self.CHROMA_DB_PATH)
+        return self
 
 
 # Singleton instance

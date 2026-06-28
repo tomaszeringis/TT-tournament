@@ -7,6 +7,10 @@ from sqlalchemy import text
 
 from tournament_platform.models import SessionLocal, Player, Match, Tournament, MatchStatus, engine
 from tournament_platform.services.player_stats import get_player_statistics
+from tournament_platform.services.test_data_cleanup_service import (
+    preview_test_data_cleanup,
+    cleanup_test_data,
+)
 from tournament_platform.app.utils import (
     render_interactive_table,
     api_request,
@@ -64,7 +68,7 @@ except Exception as e:
     render_database_connection_error(e)
 
 # Admin dashboard tabs
-admin_tabs = st.tabs(["Database Overview", "Match Management", "System Health"])
+admin_tabs = st.tabs(["Database Overview", "Match Management", "System Health", "Danger Zone"])
 
 # Tab 1: Database Overview
 with admin_tabs[0]:
@@ -295,7 +299,111 @@ with admin_tabs[2]:
     st.space("medium")
     st.write("**Last Updated**")
     st.caption(f"System health checked at: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
-    
+
+# Tab 4: Danger Zone
+with admin_tabs[3]:
+    st.subheader(" Danger Zone")
+    st.warning(
+        "Actions in this section are destructive and cannot be undone. "
+        "Only test/demo/generated data will be affected."
+    )
+    st.space("medium")
+
+    with st.expander("Remove test/demo generated data", expanded=False):
+        st.markdown(
+            """
+            This tool removes **only** records that are clearly identified as test, demo, or generated data:
+
+            - Tournaments whose name or description matches test/demo patterns
+            - Matches belonging to those tournaments
+            - Announcements linked to those tournaments or matches
+            - Audit logs related to those entities
+            - Players whose name/email matches test patterns **and** who are not connected to any real (non-test) tournament or match
+            - Rating history for those players
+            - Venue tables that are clearly marked as test data and are not used by real matches
+
+            **Real tournaments, real players, real matches, and normal venue tables are never deleted.**
+            """
+        )
+        st.space("small")
+
+        # Preview button
+        if st.button("Preview cleanup", key="preview_cleanup_btn"):
+            try:
+                db = SessionLocal()
+                preview = preview_test_data_cleanup(db)
+                db.close()
+
+                total_items = sum(v["count"] for v in preview.values())
+                if total_items == 0:
+                    st.info("No test/demo data found. Nothing to delete.")
+                else:
+                    st.write(f"**Found {total_items} record(s) that would be deleted:**")
+                    for category, data in preview.items():
+                        if data["count"] > 0:
+                            st.write(f"**{category.replace('_', ' ').title()}:** {data['count']} record(s)")
+                            for sample in data["samples"][:5]:
+                                if "name" in sample:
+                                    st.write(f"  - ID {sample['id']}: {sample['name']}")
+                                elif "message" in sample:
+                                    st.write(f"  - ID {sample['id']}: {sample['message']}")
+                                elif "player1" in sample:
+                                    st.write(
+                                        f"  - ID {sample['id']}: {sample['player1']} vs {sample['player2']} "
+                                        f"(tournament {sample['tournament_id']})"
+                                    )
+                                elif "action" in sample:
+                                    st.write(
+                                        f"  - ID {sample['id']}: {sample['action']} on {sample['entity_type']} {sample['entity_id']}"
+                                    )
+                                else:
+                                    st.write(f"  - ID {sample['id']}")
+                            if data["count"] > 5:
+                                st.write(f"  ... and {data['count'] - 5} more")
+            except Exception as e:
+                st.error(f"Failed to generate preview: {e}")
+
+        st.space("medium")
+
+        # Confirmation controls
+        confirm_checkbox = st.checkbox(
+            "I understand this permanently deletes test/demo data.",
+            key="confirm_cleanup_checkbox",
+        )
+        confirm_text = st.text_input(
+            'Type "DELETE TEST DATA" to confirm:',
+            key="confirm_cleanup_text",
+            placeholder="DELETE TEST DATA",
+        )
+
+        delete_disabled = not (confirm_checkbox and confirm_text == "DELETE TEST DATA")
+
+        if st.button(
+            "Remove test/demo data",
+            key="execute_cleanup_btn",
+            type="primary",
+            disabled=delete_disabled,
+        ):
+            try:
+                db = SessionLocal()
+                result = cleanup_test_data(
+                    db,
+                    confirmed=True,
+                    confirmation_text=confirm_text,
+                )
+                db.close()
+
+                st.success("Test/demo data removed successfully!")
+                counts = result.get("deleted_counts", {})
+                for table, count in counts.items():
+                    if count > 0:
+                        st.write(f"- **{table}**: {count} record(s) deleted")
+                st.rerun()
+            except ValueError as e:
+                st.error(f"Cleanup aborted: {e}")
+            except Exception as e:
+                st.error(f"Cleanup failed: {e}")
+
     # AI Testing Section
     st.divider()
     st.subheader("🧪 AI Testing")

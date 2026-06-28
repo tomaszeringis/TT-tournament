@@ -62,6 +62,32 @@ class Tournament(Base):
     # Relationship
     matches = relationship("Match", back_populates="tournament")
 
+class RatingHistory(Base):
+    __tablename__ = "rating_history"
+    id = Column(Integer, primary_key=True, index=True)
+    player_id = Column(Integer, ForeignKey("players.id"))
+    rating = Column(Integer)
+    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationship
+    player = relationship("Player", back_populates="rating_history")
+
+
+# ============================================================================
+# Operator Workflow Models
+# ============================================================================
+
+class VenueTable(Base):
+    """Represents a physical table at the venue."""
+    __tablename__ = "venue_tables"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    is_active = Column(Integer, default=1)  # SQLite boolean as Integer
+    notes = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
+
 class Match(Base):
     __tablename__ = "matches"
     id = Column(Integer, primary_key=True, index=True)
@@ -84,6 +110,15 @@ class Match(Base):
     player2_id = Column(Integer, ForeignKey("players.id"), nullable=True)
     winner_id = Column(Integer, ForeignKey("players.id"), nullable=True)
 
+    # Operator workflow fields
+    call_status = Column(String, default="not_called")  # not_called, queued, called, active, delayed, completed, cancelled
+    called_at = Column(DateTime, nullable=True)
+    started_at = Column(DateTime, nullable=True)
+    completed_at = Column(DateTime, nullable=True)
+    delayed_until = Column(DateTime, nullable=True)
+    operator_note = Column(String, nullable=True)
+    updated_at = Column(DateTime, default=datetime.datetime.utcnow, onupdate=datetime.datetime.utcnow)
+
     # Relationships
     tournament = relationship("Tournament", back_populates="matches")
     next_match = relationship("Match", remote_side=[id], backref="previous_matches")
@@ -91,15 +126,35 @@ class Match(Base):
     player2_rel = relationship("Player", foreign_keys=[player2_id])
     winner_rel = relationship("Player", foreign_keys=[winner_id])
 
-class RatingHistory(Base):
-    __tablename__ = "rating_history"
-    id = Column(Integer, primary_key=True, index=True)
-    player_id = Column(Integer, ForeignKey("players.id"))
-    rating = Column(Integer)
-    timestamp = Column(DateTime, default=datetime.datetime.utcnow)
 
-    # Relationship
-    player = relationship("Player", back_populates="rating_history")
+class Announcement(Base):
+    """Tracks announcements sent for matches/tournaments."""
+    __tablename__ = "announcements"
+    id = Column(Integer, primary_key=True, index=True)
+    match_id = Column(Integer, ForeignKey("matches.id"), nullable=True)
+    tournament_id = Column(Integer, ForeignKey("tournaments.id"), nullable=True)
+    message = Column(String)
+    channel = Column(String, default="local")
+    sent_status = Column(String, default="pending")
+    error = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    match = relationship("Match", foreign_keys=[match_id])
+    tournament = relationship("Tournament", foreign_keys=[tournament_id])
+
+
+class AuditLog(Base):
+    """Audit trail for operator state-changing actions."""
+    __tablename__ = "audit_log"
+    id = Column(Integer, primary_key=True, index=True)
+    actor = Column(String, default="operator")
+    action = Column(String)
+    entity_type = Column(String)
+    entity_id = Column(Integer, nullable=True)
+    payload_json = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
 
 def init_db():
     Base.metadata.create_all(bind=engine)

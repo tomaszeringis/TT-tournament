@@ -16,17 +16,9 @@ def _get_chroma_client(chroma_path: str):
         if not os.path.exists(chroma_path):
             os.makedirs(chroma_path, exist_ok=True)
         
-        # Use chromadb.Client with settings to avoid Rust bindings issues
-        try:
-            _chroma_client = chromadb.PersistentClient(path=chroma_path)
-        except Exception as e:
-            # If PersistentClient fails due to Rust bindings, try with explicit settings
-            print(f"Warning: PersistentClient failed, trying with settings: {e}")
-            settings_obj = chromadb.Settings(
-                is_persistent=True,
-                persist_directory=chroma_path,
-            )
-            _chroma_client = chromadb.Client(settings=settings_obj)
+        # Use chromadb.PersistentClient (modern API)
+        # This is the recommended way for persistent local storage
+        _chroma_client = chromadb.PersistentClient(path=chroma_path)
     
     return _chroma_client
 

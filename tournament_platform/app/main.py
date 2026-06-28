@@ -70,6 +70,8 @@ if authentication_status:
     pages = [
         st.Page(os.path.join(app_dir, "pages", "dashboard.py"), title="Dashboard", icon="📊"),
         st.Page(os.path.join(app_dir, "pages", "rankings.py"), title="Rankings", icon="🏆"),
+        st.Page(os.path.join(app_dir, "pages", "public_board.py"), title="Public Board", icon="📺"),
+        st.Page(os.path.join(app_dir, "pages", "operator_console.py"), title="Operator Console", icon="🎛️"),
         st.Page(os.path.join(app_dir, "pages", "tournament_setup.py"), title="Tournament Setup", icon="⚙️"),
         st.Page(os.path.join(app_dir, "pages", "ai_assistant.py"), title="AI Assistant", icon="🤖"),
         st.Page(os.path.join(app_dir, "pages", "voice_scorekeeper.py"), title="Voice Scorekeeper", icon="🔊"),

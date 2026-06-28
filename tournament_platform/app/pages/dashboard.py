@@ -189,7 +189,7 @@ def render_dashboard():
         st.subheader("👥 Players")
 
         if not player_df.empty:
-            render_interactive_table(player_df.drop(columns=["ID"]))
+            render_interactive_table(player_df.drop(columns=["ID"], errors="ignore"))
         else:
             st.info("No players registered yet.")
 
@@ -208,7 +208,7 @@ def render_dashboard():
                     render_status_badge(m['status'], key=f"dash_status_{m['id']}")
 
             st.space("medium")
-            render_interactive_table(match_df.drop(columns=["ID", "Scheduled Time"]))
+            render_interactive_table(match_df.drop(columns=["ID", "Scheduled Time"], errors="ignore"))
         else:
             st.info("No matches recorded yet.")
 

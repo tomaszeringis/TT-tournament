@@ -10,8 +10,14 @@ import pandas as pd
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 
-from tournament_platform.models import SessionLocal, Tournament, Match, MatchStatus, Player
-from tournament_platform.app.utils import format_match_label, format_match_score, render_database_error
+from tournament_platform.models import SessionLocal
+from tournament_platform.app.utils import render_database_error
+from tournament_platform.services.tournament_read_models import (
+    list_tournaments,
+    get_public_schedule,
+    get_public_rankings,
+)
+from tournament_platform.app.components.player_path import render_player_path
 
 
 # ============================================================================
@@ -23,16 +29,7 @@ def load_tournaments() -> List[Dict[str, Any]]:
     """Load all tournaments from the database."""
     db = SessionLocal()
     try:
-        tournaments = db.query(Tournament).order_by(Tournament.created_at.desc()).all()
-        return [
-            {
-                "id": t.id,
-                "name": t.name,
-                "type": t.tournament_type.value if t.tournament_type else "knockout",
-                "created_at": t.created_at,
-            }
-            for t in tournaments
-        ]
+        return list_tournaments(db)
     finally:
         db.close()
 
@@ -41,34 +38,38 @@ def load_tournaments() -> List[Dict[str, Any]]:
 def load_tournament_matches(tournament_id: Optional[int]) -> Dict[str, Any]:
     """
     Load matches for a specific tournament, or all matches if tournament_id is None.
-    Returns dict with current, next, and recent matches.
+    Returns dict with current, next, coming_up, delayed, and recent matches.
     """
     db = SessionLocal()
     try:
-        query = db.query(Match)
-        if tournament_id is not None:
-            query = query.filter(Match.tournament_id == tournament_id)
+        matches = get_public_schedule(db, tournament_id=tournament_id)
 
-        matches = query.order_by(Match.scheduled_time.asc()).all()
+        # Categorize matches by call_status
+        current_matches = [m for m in matches if m.get("call_status") == "active"]
+        called_matches = [m for m in matches if m.get("call_status") == "called"]
+        next_matches = [m for m in matches if m.get("call_status") in ("queued", "pending", "not_called")]
+        delayed_matches = [m for m in matches if m.get("call_status") == "delayed"]
+        completed_matches = [m for m in matches if m.get("status") == "completed"]
 
-        # Categorize matches
-        current_matches = [m for m in matches if m.status == MatchStatus.active]
-        pending_matches = [m for m in matches if m.status == MatchStatus.pending]
-        completed_matches = [m for m in matches if m.status == MatchStatus.completed]
+        # Next match = first queued/called/pending match
+        next_match = next_matches[0] if next_matches else None
 
-        # Next match = first pending match
-        next_match = pending_matches[0] if pending_matches else None
+        # Coming Up = next 3 pending matches
+        coming_up = next_matches[:3] if len(next_matches) > 1 else []
 
         # Recent completed = last 5 completed, ordered by scheduled_time desc
         recent_completed = sorted(
             completed_matches,
-            key=lambda m: m.scheduled_time or datetime.min.replace(tzinfo=timezone.utc),
+            key=lambda m: m.get("scheduled_time") or "",
             reverse=True,
         )[:5]
 
         return {
             "current": current_matches,
+            "called": called_matches,
             "next": next_match,
+            "coming_up": coming_up,
+            "delayed": delayed_matches,
             "recent": recent_completed,
             "all": matches,
         }
@@ -80,45 +81,40 @@ def load_tournament_matches(tournament_id: Optional[int]) -> Dict[str, Any]:
 def load_standings(tournament_id: Optional[int]) -> pd.DataFrame:
     """
     Compute standings from completed matches.
-    Uses the same logic as the dashboard for consistency.
+    Uses the read model for consistency.
     """
     db = SessionLocal()
     try:
-        query = db.query(Match)
-        if tournament_id is not None:
-            query = query.filter(Match.tournament_id == tournament_id)
+        rankings = get_public_rankings(db, tournament_id=tournament_id)
 
-        matches = query.filter(Match.status == MatchStatus.completed).all()
-
-        # Build stats: player_name -> {wins, losses, matches}
-        stats: Dict[str, Dict[str, Any]] = {}
-        for m in matches:
-            for p_name in (m.player1, m.player2):
-                if p_name not in stats:
-                    stats[p_name] = {"wins": 0, "losses": 0, "matches": 0, "name": p_name}
-                stats[p_name]["matches"] += 1
-                if m.winner == p_name:
-                    stats[p_name]["wins"] += 1
-                else:
-                    stats[p_name]["losses"] += 1
-
-        if not stats:
-            return pd.DataFrame(columns=["Player", "Matches", "Wins", "Losses", "Win Rate"])
+        if not rankings:
+            return pd.DataFrame(columns=["Rank", "Player", "Rating", "Matches", "Wins", "Losses", "Win Rate"])
 
         rows = []
-        for name, s in stats.items():
-            win_rate = (s["wins"] / s["matches"] * 100) if s["matches"] > 0 else 0.0
+        for i, r in enumerate(rankings, 1):
             rows.append({
-                "Player": name,
-                "Matches": s["matches"],
-                "Wins": s["wins"],
-                "Losses": s["losses"],
-                "Win Rate": f"{win_rate:.0f}%",
+                "Rank": i,
+                "Player": r["name"],
+                "Rating": r["rating"],
+                "Matches": r["matches_played"],
+                "Wins": r["wins"],
+                "Losses": r["losses"],
+                "Win Rate": f"{r['win_rate']:.0f}%",
             })
 
         df = pd.DataFrame(rows)
-        df = df.sort_values(by=["Wins", "Win Rate"], ascending=[False, False]).reset_index(drop=True)
         return df
+    finally:
+        db.close()
+
+
+@st.cache_data(ttl=30, show_spinner="Loading announcements...")
+def load_announcements(limit: int = 10) -> List[Dict[str, Any]]:
+    """Load recent announcements from the database."""
+    db = SessionLocal()
+    try:
+        from tournament_platform.services.announcement_service import get_announcements
+        return get_announcements(db, limit=limit)
     finally:
         db.close()
 
@@ -127,24 +123,35 @@ def load_standings(tournament_id: Optional[int]) -> pd.DataFrame:
 # UI Rendering
 # ============================================================================
 
-def render_match_card(match: Match, label: str = "Match") -> None:
+def render_match_card(match: Dict[str, Any], label: str = "Match") -> None:
     """Render a large match card for TV/projector display."""
-    p1 = match.player1 or "TBD"
-    p2 = match.player2 or "TBD"
-    score = match.score or "vs"
-    winner = match.winner or "Pending"
-    status = match.status.value if match.status else "pending"
+    p1 = match.get("player1") or "TBD"
+    p2 = match.get("player2") or "TBD"
+    score = match.get("score") or "vs"
+    winner = match.get("winner") or "Pending"
+    status = match.get("status") or "pending"
+    call_status = match.get("call_status") or "not_called"
+    location = match.get("location") or "No table"
+    round_num = match.get("round_number")
 
     # Determine status color
     if status == "completed":
         status_icon = "🟢"
         border_color = "#4CAF50"
-    elif status == "active":
+    elif call_status == "active":
         status_icon = "🔴"
         border_color = "#f44336"
-    else:
+    elif call_status == "called":
         status_icon = "🟡"
         border_color = "#FFC107"
+    else:
+        status_icon = "🔵"
+        border_color = "#2196F3"
+
+    # Build round label
+    round_str = f"Round {round_num}" if round_num else ""
+    table_str = f"Table {location}" if location and location != "No table" else "No table"
+    label_str = " · ".join([x for x in [round_str, table_str] if x])
 
     st.markdown(
         f"""
@@ -156,7 +163,7 @@ def render_match_card(match: Match, label: str = "Match") -> None:
             background-color: #1e1e1e;
         ">
             <div style="text-align: center; font-size: 14px; color: #aaa; margin-bottom: 8px;">
-                {status_icon} {label} &nbsp;|&nbsp; {status.upper()}
+                {status_icon} {label} &nbsp;|&nbsp; {label_str}
             </div>
             <div style="display: flex; justify-content: space-around; align-items: center;">
                 <div style="text-align: center; flex: 1;">
@@ -180,6 +187,64 @@ def render_match_card(match: Match, label: str = "Match") -> None:
             <div style="text-align: center; font-size: 16px; color: #aaa; margin-top: 8px;">
                 Winner: {winner}
             </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_coming_up_card(match: Dict[str, Any]) -> None:
+    """Render a smaller card for coming up matches."""
+    p1 = match.get("player1") or "TBD"
+    p2 = match.get("player2") or "TBD"
+    location = match.get("location") or "No table"
+    round_num = match.get("round_number")
+    scheduled = match.get("scheduled_time")
+    time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
+
+    st.markdown(
+        f"""
+        <div style="
+            border: 2px solid #2196F3;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 8px 0;
+            background-color: #1e1e1e;
+        ">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <span style="color: #aaa; font-size: 12px;">{time_str} · Table {location}</span>
+                <span style="font-size: 14px;"><b>{p1}</b> vs <b>{p2}</b></span>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_delayed_card(match: Dict[str, Any]) -> None:
+    """Render a card for delayed matches."""
+    p1 = match.get("player1") or "TBD"
+    p2 = match.get("player2") or "TBD"
+    location = match.get("location") or "No table"
+    operator_note = match.get("operator_note") or ""
+    scheduled = match.get("scheduled_time")
+    time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
+
+    st.markdown(
+        f"""
+        <div style="
+            border: 2px solid #FF9800;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 8px 0;
+            background-color: #1e1e1e;
+        ">
+            <div style="font-size: 14px; color: #FF9800; margin-bottom: 4px;">
+                ⏸️ DELAYED
+            </div>
+            <div style="font-size: 16px;"><b>{p1}</b> vs <b>{p2}</b></div>
+            <div style="color: #aaa; font-size: 12px;">Table: {location} | Scheduled: {time_str}</div>
+            {f'<div style="color: #888; font-size: 12px; margin-top: 4px;">Note: {operator_note}</div>' if operator_note else ''}
         </div>
         """,
         unsafe_allow_html=True,
@@ -211,7 +276,7 @@ def render_public_board() -> None:
     # Title with timestamp
     now = datetime.now(timezone.utc)
     st.markdown(
-        f"<h1 style='text-align: center;'>🏆 Tournament Board</h1>",
+        f"<h1 style='text-align: center;'>🏆 Public Tournament Board</h1>",
         unsafe_allow_html=True,
     )
     st.caption(f"Last updated: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
@@ -262,39 +327,60 @@ def render_public_board() -> None:
         st.stop()
 
     # -------------------------------------------------------------------------
-    # Current / Next Match Section
+    # Now Playing Section
     # -------------------------------------------------------------------------
-    st.subheader("🎾 Current & Next Match")
+    st.subheader("🎾 Now Playing")
 
     current_matches = match_data.get("current", [])
-    next_match = match_data.get("next")
+    called_matches = match_data.get("called", [])
 
     if current_matches:
         for m in current_matches:
             render_match_card(m, label="LIVE")
-    elif next_match:
-        render_match_card(next_match, label="UP NEXT")
+    elif called_matches:
+        for m in called_matches:
+            render_match_card(m, label="CALLED")
     else:
-        st.info("No active or upcoming matches scheduled.")
+        st.info("No active matches at the moment.")
+
+    # -------------------------------------------------------------------------
+    # Coming Up Section
+    # -------------------------------------------------------------------------
+    st.divider()
+    st.subheader("⏭️ Coming Up")
+
+    coming_up = match_data.get("coming_up", [])
+    if coming_up:
+        for m in coming_up:
+            render_coming_up_card(m)
+    else:
+        st.info("No upcoming matches scheduled.")
+
+    # -------------------------------------------------------------------------
+    # Delayed Section
+    # -------------------------------------------------------------------------
+    delayed = match_data.get("delayed", [])
+    if delayed:
+        st.divider()
+        st.subheader("⏸️ Delayed")
+        for m in delayed:
+            render_delayed_card(m)
 
     # -------------------------------------------------------------------------
     # Standings Section
     # -------------------------------------------------------------------------
     st.divider()
-    st.subheader("📊 Standings")
+    st.subheader("📊 Rankings")
 
     if not standings_df.empty:
-        # Format for display
-        display_df = standings_df.copy()
-        display_df.index = display_df.index + 1  # 1-based ranking
-        display_df.index.name = "Rank"
         st.dataframe(
-            display_df,
+            standings_df,
             use_container_width=True,
-            hide_index=False,
+            hide_index=True,
             column_config={
                 "Rank": st.column_config.NumberColumn("Rank", width="small"),
                 "Player": st.column_config.TextColumn("Player", width="medium"),
+                "Rating": st.column_config.NumberColumn("Rating", width="small"),
                 "Matches": st.column_config.NumberColumn("Matches", width="small"),
                 "Wins": st.column_config.NumberColumn("Wins", width="small"),
                 "Losses": st.column_config.NumberColumn("Losses", width="small"),
@@ -313,12 +399,12 @@ def render_public_board() -> None:
     recent = match_data.get("recent", [])
     if recent:
         for m in recent:
-            p1 = m.player1 or "TBD"
-            p2 = m.player2 or "TBD"
-            score = m.score or "vs"
-            winner = m.winner or "Pending"
-            scheduled = m.scheduled_time
-            time_str = scheduled.strftime("%H:%M") if scheduled else "--:--"
+            p1 = m.get("player1") or "TBD"
+            p2 = m.get("player2") or "TBD"
+            score = m.get("score") or "vs"
+            winner = m.get("winner") or "Pending"
+            scheduled = m.get("scheduled_time")
+            time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
 
             st.markdown(
                 f"""
@@ -340,6 +426,66 @@ def render_public_board() -> None:
             )
     else:
         st.info("No completed matches yet.")
+
+    # -------------------------------------------------------------------------
+    # Player Lookup Section
+    # -------------------------------------------------------------------------
+    st.divider()
+    st.subheader("🔍 Player Lookup")
+
+    player_name = st.text_input(
+        "Enter player name to see their path",
+        key="player_lookup_input",
+        label_visibility="collapsed",
+        placeholder="Type player name...",
+    )
+
+    if player_name:
+        db = SessionLocal()
+        try:
+            found = render_player_path(db, player_name, tournament_id=selected_id, key_prefix="public_lookup")
+            if not found:
+                st.info(f"No matches found for player '{player_name}'")
+        except Exception as e:
+            st.error(f"Failed to get player path: {e}")
+        finally:
+            db.close()
+
+    # -------------------------------------------------------------------------
+    # Announcements Section
+    # -------------------------------------------------------------------------
+    st.divider()
+    st.subheader("📢 Announcements")
+
+    try:
+        announcements = load_announcements(limit=5)
+    except Exception as e:
+        st.error(f"Failed to load announcements: {e}")
+        announcements = []
+
+    if announcements:
+        for ann in announcements:
+            st.markdown(
+                f"""
+                <div style="
+                    border: 2px solid #4CAF50;
+                    border-radius: 8px;
+                    padding: 12px;
+                    margin: 8px 0;
+                    background-color: #1e1e1e;
+                ">
+                    <div style="font-size: 18px; font-weight: bold; color: #4CAF50;">
+                        📣 {ann.get('message', '')}
+                    </div>
+                    <div style="color: #aaa; font-size: 12px; margin-top: 4px;">
+                        {ann.get('created_at', 'N/A')}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    else:
+        st.info("No announcements yet.")
 
     # -------------------------------------------------------------------------
     # Footer timestamp
