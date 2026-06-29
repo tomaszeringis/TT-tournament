@@ -6,6 +6,7 @@ A simple, privacy-focused scorekeeping system using:
 - faster-whisper for local transcription
 - Keyword matching for intent parsing
 - pyttsx3 for offline TTS feedback
+- Game-by-game scoring workflow
 """
 
 import streamlit as st
@@ -23,6 +24,13 @@ from tournament_platform.models import SessionLocal, Match, MatchStatus, Player,
 from tournament_platform.app.utils import format_player_label, api_request
 from tournament_platform.services.settings import KEEP_AUDIO_FILES
 from tournament_platform.services.schemas import ActiveMatchResponse
+# Import game-by-game scoring utilities
+from tournament_platform.app.services.match_score import (
+    parse_game_score,
+    validate_game_score,
+    summarize_match,
+)
+from tournament_platform.app.api_client import api_client
 
 
 # ============================================================================
@@ -559,6 +567,111 @@ if st.button("🔄 Reset Match", use_container_width=True):
     st.toast(msg, icon="🔄")
     speak_text(msg)
     st.rerun()
+
+# ============================================================================
+# Game-by-Game Scoring Section
+# ============================================================================
+
+# Initialize in-progress game scores in session state (keyed by match_id)
+if 'in_progress_game_scores' not in st.session_state:
+    st.session_state.in_progress_game_scores = {}
+
+def get_in_progress_games(match_id: int) -> List[Tuple[int, int]]:
+    """Get the list of in-progress game scores for a match."""
+    return st.session_state.in_progress_game_scores.get(match_id, [])
+
+def add_game_score(match_id: int, score1: int, score2: int) -> None:
+    """Add a game score to the in-progress list for a match."""
+    if match_id not in st.session_state.in_progress_game_scores:
+        st.session_state.in_progress_game_scores[match_id] = []
+    st.session_state.in_progress_game_scores[match_id].append((score1, score2))
+
+def clear_in_progress_games(match_id: int) -> None:
+    """Clear in-progress game scores for a match."""
+    st.session_state.in_progress_game_scores.pop(match_id, None)
+
+# Game-by-game scoring UI (only show if a match is selected)
+if st.session_state.voice_selected_match_id:
+    st.divider()
+    st.subheader("🎮 Game-by-Game Scoring")
+    st.caption("Enter each game score as it's completed. The system will track games and determine the match winner.")
+    
+    match_id = st.session_state.voice_selected_match_id
+    p1_name = st.session_state.voice_selected_player1_name or "Player A"
+    p2_name = st.session_state.voice_selected_player2_name or "Player B"
+    
+    # Display current game scores
+    in_progress_games = get_in_progress_games(match_id)
+    if in_progress_games:
+        st.markdown("**Games played:**")
+        for i, (s1, s2) in enumerate(in_progress_games, 1):
+            winner = "P1" if s1 > s2 else "P2"
+            st.markdown(f"  Game {i}: {s1}-{s2} ({winner} wins)")
+        
+        # Show match summary
+        summary = summarize_match(in_progress_games)
+        if summary["is_complete"]:
+            winner_name = p1_name if summary["winner_side"] == 1 else p2_name
+            st.success(f"🏆 Match complete! {winner_name} wins {summary['player1_games']}-{summary['player2_games']}")
+    
+    # Game entry form
+    with st.form("game_score_form"):
+        st.markdown("**Enter completed game score:**")
+        col_g1, col_g2 = st.columns(2)
+        with col_g1:
+            game_score1 = st.number_input(
+                f"{p1_name} score",
+                min_value=0,
+                max_value=21,
+                value=11,
+                key="game_score1_input"
+            )
+        with col_g2:
+            game_score2 = st.number_input(
+                f"{p2_name} score",
+                min_value=0,
+                max_value=21,
+                value=0,
+                key="game_score2_input"
+            )
+        
+        add_game_btn = st.form_submit_button("➕ Add Game", use_container_width=True)
+        
+        if add_game_btn:
+            # Validate the game score
+            if not validate_game_score(game_score1, game_score2):
+                st.error("❌ Invalid game score. Winner must have ≥11 points and a 2-point lead.")
+            else:
+                add_game_score(match_id, game_score1, game_score2)
+                st.toast(f"Game added: {game_score1}-{game_score2}", icon="✅")
+                st.rerun()
+    
+    # Clear games button
+    if in_progress_games:
+        if st.button("🗑️ Clear All Games", key="clear_games_btn", use_container_width=True):
+            clear_in_progress_games(match_id)
+            st.toast("All games cleared", icon="↩️")
+            st.rerun()
+    
+    # Submit match result button (only if match is complete)
+    if in_progress_games:
+        summary = summarize_match(in_progress_games)
+        if summary["is_complete"]:
+            if st.button("📤 Submit Match Result", key="submit_match_btn", use_container_width=True, type="primary"):
+                winner_name = p1_name if summary["winner_side"] == 1 else p2_name
+                score_str = summary["score_string"]
+                
+                with st.status("Submitting match result...", expanded=False) as status:
+                    response = api_client.report_match_legacy(match_id, score_str, winner_name)
+                    if response is not None:
+                        clear_in_progress_games(match_id)
+                        clear_selected_match()
+                        status.update(label="Match result submitted!", state="complete", expanded=False)
+                        st.success(f"✅ Match result submitted! {winner_name} wins {score_str}")
+                        st.rerun()
+                    else:
+                        status.update(label="Submission failed", state="error", expanded=False)
+                        st.error("❌ Failed to submit match result. Check API connection.")
 
 # Voice input section
 st.divider()

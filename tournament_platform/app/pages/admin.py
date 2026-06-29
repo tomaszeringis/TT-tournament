@@ -1,24 +1,32 @@
 import streamlit as st
 import streamlit_shadcn_ui as ui
 import pandas as pd
-import importlib.metadata
 from datetime import datetime, timezone
-from sqlalchemy import text
 
-from tournament_platform.models import SessionLocal, Player, Match, Tournament, MatchStatus, engine
-from tournament_platform.services.player_stats import get_player_statistics
+from tournament_platform.models import SessionLocal, Match, Tournament, MatchStatus
+from tournament_platform.services.admin_maintenance import (
+    get_admin_counts,
+    get_player_statistics,
+    get_filtered_matches,
+    clear_streamlit_cache,
+    get_runtime_versions,
+    get_safe_database_status,
+    get_safe_api_status,
+    get_safe_teams_status,
+    get_safe_azure_status,
+    safe_error_message,
+    get_environment_warnings,
+)
 from tournament_platform.services.test_data_cleanup_service import (
     preview_test_data_cleanup,
     cleanup_test_data,
 )
 from tournament_platform.app.utils import (
     render_interactive_table,
-    api_request,
-    render_database_connection_error,
     render_status_badge,
-    format_match_label,
 )
 from tournament_platform.config import settings
+from tournament_platform.app.settings import API_BASE_URL, SHOW_DEBUG_DETAILS
 
 
 @st.cache_data(ttl=30, show_spinner="Loading database summary...")
@@ -26,12 +34,7 @@ def get_database_summary():
     """Get cached database summary counts."""
     db = SessionLocal()
     try:
-        return {
-            "player_count": db.query(Player).count(),
-            "match_count": db.query(Match).count(),
-            "tournament_count": db.query(Tournament).count(),
-            "completed_matches": db.query(Match).filter(Match.status == MatchStatus.completed).count(),
-        }
+        return get_admin_counts(db)
     finally:
         db.close()
 
@@ -59,13 +62,13 @@ def get_cached_tournaments():
         db.close()
 
 
-st.title("👨‍💼 Admin Panel")
+st.title("👨\u200d💼 Admin / Operator Console")
 st.space("medium")
 
 try:
     db = SessionLocal()
 except Exception as e:
-    render_database_connection_error(e)
+    st.error("Database connection failed. Please check logs for details.")
 
 # Admin dashboard tabs
 admin_tabs = st.tabs(["Database Overview", "Match Management", "System Health", "Danger Zone"])
@@ -125,18 +128,8 @@ with admin_tabs[1]:
             ["All"] + tournament_names
         )
     
-    # Get filtered matches
-    query = db.query(Match)
-    
-    if status_filter != "All":
-        query = query.filter(Match.status == MatchStatus[status_filter])
-    
-    if tournament_filter != "All":
-        tournament = db.query(Tournament).filter(Tournament.name == tournament_filter).first()
-        if tournament:
-            query = query.filter(Match.tournament_id == tournament.id)
-    
-    matches = query.all()
+    # Get filtered matches using extracted helper
+    matches = get_filtered_matches(db, status_filter, tournament_filter)
     
     if matches:
         match_data = []
@@ -180,61 +173,18 @@ with admin_tabs[1]:
     
     with col2:
         if ui.button("🗑️ Clear All Cache", key="admin_clear_btn"):
-            st.cache_data.clear()
+            clear_streamlit_cache()
             st.toast("Cache cleared!", icon="✅")
-
-# Helper functions for system health checks
-def get_package_version(package_name: str) -> str:
-    """Get the installed version of a package, or 'unknown' if not found."""
-    try:
-        return importlib.metadata.version(package_name)
-    except importlib.metadata.PackageNotFoundError:
-        return "not installed"
-
-def check_database_health() -> tuple[bool, str]:
-    """Check if database is accessible and return status with details."""
-    try:
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
-        return True, "Connected"
-    except Exception as e:
-        return False, f"Error: {str(e)[:50]}"
-
-def check_api_health() -> tuple[bool, str]:
-    """Check if FastAPI health endpoint is responding."""
-    response = api_request(
-        "get",
-        "/health",
-        error_context="API health check",
-        timeout=3.0,
-        parse_json=True,
-    )
-    if response is not None:
-        status = response.get("status", "unknown")
-        return True, f"Running - {status}"
-    return False, "Unavailable"
-
-def check_teams_webhook() -> tuple[bool, str]:
-    """Check if Teams webhook is configured."""
-    if settings.TEAMS_WEBHOOK_URL:
-        return True, "Configured"
-    return False, "Not configured"
-
-def check_azure_config() -> tuple[bool, str]:
-    """Check if Azure integration is configured."""
-    if settings.AZURE_CLIENT_ID and settings.AZURE_CLIENT_SECRET:
-        return True, "Configured"
-    return False, "Not configured"
 
 # Tab 3: System Health
 with admin_tabs[2]:
     st.subheader("💚 System Health")
     
-    # Perform real health checks
-    db_healthy, db_status = check_database_health()
-    api_healthy, api_status = check_api_health()
-    teams_configured, teams_status = check_teams_webhook()
-    azure_configured, azure_status = check_azure_config()
+    # Perform real health checks using extracted helpers
+    db_healthy, db_status = get_safe_database_status()
+    api_healthy, api_status = get_safe_api_status()
+    teams_configured, teams_status = get_safe_teams_status()
+    azure_configured, azure_status = get_safe_azure_status()
     
     col1, col2 = st.columns([1, 1])
     
@@ -258,7 +208,7 @@ with admin_tabs[2]:
             
             retrieval_icon = "✅" if ai_health.retrieval_available else "⚪"
             st.metric("Rules Retrieval", f"{retrieval_icon} {'Available' if ai_health.retrieval_available else 'Unavailable'}")
-        except Exception as e:
+        except Exception:
             st.metric("Ollama Status", "❌ Disconnected", delta="Error checking status")
             st.metric("Rules Retrieval", "⚪ Unavailable")
     
@@ -273,13 +223,14 @@ with admin_tabs[2]:
     except Exception:
         model_display = settings.OLLAMA_MODEL
     
+    versions = get_runtime_versions()
     system_info = {
         "Database Type": "SQLite",
         "AI Model": model_display,
-        "Streamlit Version": get_package_version("streamlit"),
-        "FastAPI Version": get_package_version("fastapi"),
-        "SQLAlchemy Version": get_package_version("sqlalchemy"),
-        "ChromaDB Version": get_package_version("chromadb"),
+        "Streamlit Version": versions.get("streamlit", "unknown"),
+        "FastAPI Version": versions.get("fastapi", "unknown"),
+        "SQLAlchemy Version": versions.get("sqlalchemy", "unknown"),
+        "ChromaDB Version": versions.get("chromadb", "unknown"),
     }
     
     info_df = pd.DataFrame(list(system_info.items()), columns=["Parameter", "Value"])
@@ -297,6 +248,17 @@ with admin_tabs[2]:
     st.table(integrations_df)
     
     st.space("medium")
+    st.write("**Environment Warnings**")
+    
+    # Show environment warnings
+    env_warnings = get_environment_warnings()
+    if env_warnings:
+        for warning in env_warnings:
+            st.warning(warning)
+    else:
+        st.success("No environment warnings detected.")
+    
+    st.space("medium")
     st.write("**Last Updated**")
     st.caption(f"System health checked at: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
@@ -308,7 +270,7 @@ with admin_tabs[3]:
         "Only test/demo/generated data will be affected."
     )
     st.space("medium")
-
+    
     with st.expander("Remove test/demo generated data", expanded=False):
         st.markdown(
             """
@@ -326,14 +288,14 @@ with admin_tabs[3]:
             """
         )
         st.space("small")
-
+        
         # Preview button
         if st.button("Preview cleanup", key="preview_cleanup_btn"):
             try:
                 db = SessionLocal()
                 preview = preview_test_data_cleanup(db)
                 db.close()
-
+                
                 total_items = sum(v["count"] for v in preview.values())
                 if total_items == 0:
                     st.info("No test/demo data found. Nothing to delete.")
@@ -362,9 +324,9 @@ with admin_tabs[3]:
                                 st.write(f"  ... and {data['count'] - 5} more")
             except Exception as e:
                 st.error(f"Failed to generate preview: {e}")
-
+        
         st.space("medium")
-
+        
         # Confirmation controls
         confirm_checkbox = st.checkbox(
             "I understand this permanently deletes test/demo data.",
@@ -375,9 +337,9 @@ with admin_tabs[3]:
             key="confirm_cleanup_text",
             placeholder="DELETE TEST DATA",
         )
-
+        
         delete_disabled = not (confirm_checkbox and confirm_text == "DELETE TEST DATA")
-
+        
         if st.button(
             "Remove test/demo data",
             key="execute_cleanup_btn",
@@ -392,7 +354,7 @@ with admin_tabs[3]:
                     confirmation_text=confirm_text,
                 )
                 db.close()
-
+                
                 st.success("Test/demo data removed successfully!")
                 counts = result.get("deleted_counts", {})
                 for table, count in counts.items():
@@ -403,7 +365,7 @@ with admin_tabs[3]:
                 st.error(f"Cleanup aborted: {e}")
             except Exception as e:
                 st.error(f"Cleanup failed: {e}")
-
+    
     # AI Testing Section
     st.divider()
     st.subheader("🧪 AI Testing")

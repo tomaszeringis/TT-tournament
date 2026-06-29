@@ -107,73 +107,44 @@ def load_audit_log(limit: int = 100) -> List[Dict[str, Any]]:
 # API Helper Functions
 # ============================================================================
 
+# Import the centralized API client
+from tournament_platform.app.api_client import api_client
+
+
 def call_match(match_id: int, table: Optional[str] = None) -> Dict[str, Any]:
     """Call a match via API."""
-    import requests
-    try:
-        resp = requests.post(
-            f"http://localhost:8000/api/operator/matches/{match_id}/call",
-            json={"table": table} if table else {}
-        )
-        return resp.json()
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    result = api_client.call_match(match_id, table)
+    return result if result is not None else {"status": "error", "message": "API request failed"}
 
 
 def start_match(match_id: int) -> Dict[str, Any]:
     """Start a match via API."""
-    import requests
-    try:
-        resp = requests.post(f"http://localhost:8000/api/operator/matches/{match_id}/start")
-        return resp.json()
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    result = api_client.start_match(match_id)
+    return result if result is not None else {"status": "error", "message": "API request failed"}
 
 
 def complete_match(match_id: int) -> Dict[str, Any]:
     """Complete a match via API."""
-    import requests
-    try:
-        resp = requests.post(f"http://localhost:8000/api/operator/matches/{match_id}/complete")
-        return resp.json()
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    result = api_client.complete_match(match_id)
+    return result if result is not None else {"status": "error", "message": "API request failed"}
 
 
 def delay_match(match_id: int, delay_minutes: int = 15) -> Dict[str, Any]:
     """Delay a match via API."""
-    import requests
-    try:
-        resp = requests.post(
-            f"http://localhost:8000/api/operator/matches/{match_id}/delay",
-            json={"delay_minutes": delay_minutes}
-        )
-        return resp.json()
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    result = api_client.delay_match(match_id, delay_minutes)
+    return result if result is not None else {"status": "error", "message": "API request failed"}
 
 
 def reschedule_match(match_id: int, scheduled_time: str, table: Optional[str] = None) -> Dict[str, Any]:
     """Reschedule a match via API."""
-    import requests
-    try:
-        resp = requests.patch(
-            f"http://localhost:8000/api/operator/matches/{match_id}/reschedule",
-            json={"scheduled_time": scheduled_time, "table": table}
-        )
-        return resp.json()
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    result = api_client.reschedule_match(match_id, scheduled_time, table)
+    return result if result is not None else {"status": "error", "message": "API request failed"}
 
 
 def reset_call_match(match_id: int) -> Dict[str, Any]:
     """Reset call status to pending via API."""
-    import requests
-    try:
-        resp = requests.post(f"http://localhost:8000/api/operator/matches/{match_id}/reset-call")
-        return resp.json()
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+    result = api_client.reset_call_match(match_id)
+    return result if result is not None else {"status": "error", "message": "API request failed"}
 
 
 # ============================================================================
