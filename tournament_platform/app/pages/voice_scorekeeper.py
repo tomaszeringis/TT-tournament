@@ -15,7 +15,9 @@ import tempfile
 import hashlib
 import os
 import requests
-from typing import Optional, Tuple, Dict, List
+import copy
+import uuid
+from typing import Any, Optional, Tuple, Dict, List
 
 # Import the MatchManager and UmpireEngine
 from tournament_platform.services.match_manager import MatchManager, MatchState
@@ -35,6 +37,14 @@ from tournament_platform.app.services.match_score import (
     summarize_match,
 )
 from tournament_platform.app.api_client import api_client
+from tournament_platform.services.commentary_service import (
+    CommentaryService,
+    CommentarySettings,
+    CommentaryStyle,
+    CommentaryVerbosity,
+    SpokenScoreState,
+)
+from tournament_platform.app.components.spoken_commentary import speak_commentary
 
 
 # ============================================================================
@@ -141,6 +151,155 @@ if 'voice_parsed_result' not in st.session_state:
     st.session_state.voice_parsed_result = None
 if 'voice_score_input' not in st.session_state:
     st.session_state.voice_score_input = "0-0"
+
+# ============================================================================
+# Commentary Settings Initialization
+# ============================================================================
+if 'commentary_enabled' not in st.session_state:
+    st.session_state.commentary_enabled = False
+if 'commentary_style' not in st.session_state:
+    st.session_state.commentary_style = CommentaryStyle.NEUTRAL.value
+if 'commentary_verbosity' not in st.session_state:
+    st.session_state.commentary_verbosity = CommentaryVerbosity.STANDARD.value
+if 'commentary_voice' not in st.session_state:
+    st.session_state.commentary_voice = "default"
+if 'commentary_language' not in st.session_state:
+    st.session_state.commentary_language = "en-US"
+if 'commentary_muted' not in st.session_state:
+    st.session_state.commentary_muted = False
+if 'last_commentary_event_id' not in st.session_state:
+    st.session_state.last_commentary_event_id = None
+if 'pending_commentary' not in st.session_state:
+    st.session_state.pending_commentary = None
+if 'last_commentary_text' not in st.session_state:
+    st.session_state.last_commentary_text = None
+
+
+# ============================================================================
+# Commentary Helpers
+# ============================================================================
+
+_commentary_service = CommentaryService()
+
+
+def _get_commentary_settings() -> CommentarySettings:
+    """Build CommentarySettings from current session state."""
+    return CommentarySettings(
+        enabled=st.session_state.get("commentary_enabled", False),
+        style=CommentaryStyle(st.session_state.get("commentary_style", CommentaryStyle.NEUTRAL.value)),
+        verbosity=CommentaryVerbosity(st.session_state.get("commentary_verbosity", CommentaryVerbosity.STANDARD.value)),
+        voice=st.session_state.get("commentary_voice", "default"),
+        language=st.session_state.get("commentary_language", "en-US"),
+        muted=st.session_state.get("commentary_muted", False),
+    )
+
+
+def _build_and_store_commentary(
+    event_type: str,
+    state: Any,
+    previous_state: Optional[Any] = None,
+) -> None:
+    """
+    Build a commentary line and store it in session_state.pending_commentary
+    if it should be spoken (respects dedupe and settings).
+    """
+    event_id = str(uuid.uuid4())
+    settings = _get_commentary_settings()
+
+    spoken_state = SpokenScoreState.from_match_state(state)
+    prev_spoken = SpokenScoreState.from_match_state(previous_state) if previous_state else None
+
+    line = _commentary_service.build_score_commentary(
+        event_type=event_type,
+        state=spoken_state,
+        settings=settings,
+        event_id=event_id,
+        previous_state=prev_spoken,
+    )
+
+    if _commentary_service.should_speak_commentary(
+        last_event_id=st.session_state.get("last_commentary_event_id"),
+        current_event_id=event_id,
+        settings=settings,
+    ):
+        st.session_state.pending_commentary = line
+        st.session_state.last_commentary_event_id = event_id
+        st.session_state.last_commentary_text = line.text
+    else:
+        st.session_state.pending_commentary = None
+
+
+def render_commentary_settings() -> None:
+    """Render the commentary settings UI."""
+    with st.expander("🔊 Spoken Commentary", expanded=False):
+        col1, col2 = st.columns(2)
+        with col1:
+            st.session_state.commentary_enabled = st.toggle(
+                "Enable commentary",
+                value=st.session_state.commentary_enabled,
+                help="Turn spoken commentary on or off.",
+            )
+            st.session_state.commentary_style = st.selectbox(
+                "Voice style",
+                options=[s.value for s in CommentaryStyle],
+                index=[s.value for s in CommentaryStyle].index(st.session_state.commentary_style),
+            )
+        with col2:
+            st.session_state.commentary_verbosity = st.selectbox(
+                "Verbosity",
+                options=[v.value for v in CommentaryVerbosity],
+                index=[v.value for v in CommentaryVerbosity].index(st.session_state.commentary_verbosity),
+            )
+            st.session_state.commentary_voice = st.selectbox(
+                "Voice",
+                options=["default"],
+                index=0,
+            )
+
+        col_mute, col_replay = st.columns(2)
+        with col_mute:
+            mute_label = "Unmute" if st.session_state.commentary_muted else "Mute"
+            if st.button(mute_label, use_container_width=True):
+                st.session_state.commentary_muted = not st.session_state.commentary_muted
+                st.rerun()
+        with col_replay:
+            if st.button("🔊 Replay last", use_container_width=True):
+                last_text = st.session_state.get("last_commentary_text")
+                if last_text:
+                    st.session_state.pending_commentary = CommentaryLine(
+                        text=last_text,
+                        event_type="replay",
+                        priority=2,
+                        should_speak=True,
+                        dedupe_key=f"replay:{uuid.uuid4()}",
+                        event_id=str(uuid.uuid4()),
+                    )
+                    st.rerun()
+
+
+def render_pending_commentary() -> None:
+    """Render the pending commentary line (speech + text preview) and clear it."""
+    pending = st.session_state.get("pending_commentary")
+    if not pending:
+        return
+
+    settings = _get_commentary_settings()
+    if settings.enabled and not settings.muted and pending.should_speak:
+        try:
+            speak_commentary(
+                text=pending.text,
+                key=f"commentary_{pending.event_id}",
+                voice=settings.voice,
+                lang=settings.language,
+            )
+        except Exception as e:
+            st.warning(f"Commentary unavailable: {e}")
+
+    if pending.text:
+        st.caption(f"🔊 {pending.text}")
+
+    # Clear after rendering so it doesn't repeat on next rerun
+    st.session_state.pending_commentary = None
 
 
 # ============================================================================
@@ -432,6 +591,9 @@ def render_selected_match_summary() -> None:
 st.title("🎤 Voice Scorekeeper")
 st.caption("Speak to update scores. The system uses local transcription - no data leaves your machine.")
 
+# Commentary Settings
+render_commentary_settings()
+
 # Active Tournament Match Selector
 render_active_match_selector()
 render_selected_match_summary()
@@ -556,10 +718,11 @@ with score_col1:
     btn_col1, btn_col2 = st.columns(2)
     with btn_col1:
         if st.button("➕", key="add_point_a", use_container_width=True):
+            prev_state = copy.deepcopy(st.session_state.match_manager.state)
             success, msg = st.session_state.match_manager._add_point("A")
             st.session_state.last_feedback = msg
             st.toast(msg, icon="✅")
-            speak_text(msg)
+            _build_and_store_commentary("point_a", st.session_state.match_manager.state, prev_state)
             st.rerun()
     with btn_col2:
         if st.button("➖", key="sub_point_a", use_container_width=True):
@@ -567,25 +730,27 @@ with score_col1:
             if st.session_state.match_manager.state.match_history:
                 last = st.session_state.match_manager.state.match_history[-1]
                 if last.get("player") == "A":
+                    prev_state = copy.deepcopy(st.session_state.match_manager.state)
                     st.session_state.match_manager.undo_last_point()
                     st.session_state.last_feedback = f"Point removed from {st.session_state.match_manager.state.player_a}"
                     st.toast(st.session_state.last_feedback, icon="↩️")
-                    speak_text(st.session_state.last_feedback)
+                    _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
             st.rerun()
 
 with score_col2:
     st.markdown(f"### {st.session_state.match_manager.state.player_b}")
-    st.markdown(f"<h1 style='text-align: center; color: #ff7f0e;'>{st.session_state.match_manager.state.score_b}</h1>", 
+    st.markdown(f"<h1 style='text-align: center; color: #ff7f0e;'>{st.session_state.match_manager.state.score_b}</h1>",
                 unsafe_allow_html=True)
     
     # Manual override buttons
     btn_col1, btn_col2 = st.columns(2)
     with btn_col1:
         if st.button("➕", key="add_point_b", use_container_width=True):
+            prev_state = copy.deepcopy(st.session_state.match_manager.state)
             success, msg = st.session_state.match_manager._add_point("B")
             st.session_state.last_feedback = msg
             st.toast(msg, icon="✅")
-            speak_text(msg)
+            _build_and_store_commentary("point_b", st.session_state.match_manager.state, prev_state)
             st.rerun()
     with btn_col2:
         if st.button("➖", key="sub_point_b", use_container_width=True):
@@ -593,27 +758,30 @@ with score_col2:
             if st.session_state.match_manager.state.match_history:
                 last = st.session_state.match_manager.state.match_history[-1]
                 if last.get("player") == "B":
+                    prev_state = copy.deepcopy(st.session_state.match_manager.state)
                     st.session_state.match_manager.undo_last_point()
                     st.session_state.last_feedback = f"Point removed from {st.session_state.match_manager.state.player_b}"
                     st.toast(st.session_state.last_feedback, icon="↩️")
-                    speak_text(st.session_state.last_feedback)
+                    _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
             st.rerun()
 
 # Undo button
 st.divider()
 if st.button("↩️ Undo Last Point", use_container_width=True):
+    prev_state = copy.deepcopy(st.session_state.match_manager.state)
     success, msg = st.session_state.match_manager.undo_last_point()
     st.session_state.last_feedback = msg
     st.toast(msg, icon="↩️")
-    speak_text(msg)
+    _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
     st.rerun()
 
 # Reset match button
 if st.button("🔄 Reset Match", use_container_width=True):
+    prev_state = copy.deepcopy(st.session_state.match_manager.state)
     success, msg = st.session_state.match_manager.reset_match()
     st.session_state.last_feedback = msg
     st.toast(msg, icon="🔄")
-    speak_text(msg)
+    _build_and_store_commentary("reset", st.session_state.match_manager.state, prev_state)
     st.rerun()
 
 # ============================================================================
@@ -1081,6 +1249,7 @@ if st.session_state.report_parsed:
                                 clear_selected_match()
                             status.update(label="Result submitted!", state="complete", expanded=False)
                             st.success("✅ Match result submitted successfully!")
+                            _build_and_store_commentary("match_submitted", st.session_state.match_manager.state)
                             st.rerun()
                 except Exception as e:
                     st.error(f"Connection error: {e}")
@@ -1088,6 +1257,9 @@ if st.session_state.report_parsed:
 # Display last feedback
 if st.session_state.last_feedback:
     st.info(f"Last action: {st.session_state.last_feedback}")
+
+# Render pending commentary (speech + text preview)
+render_pending_commentary()
 
 # Instructions
 st.divider()
