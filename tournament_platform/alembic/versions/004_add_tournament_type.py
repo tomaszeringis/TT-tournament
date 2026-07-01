@@ -1,7 +1,7 @@
 """Add tournament_type to Tournament
 
-Revision ID: 004
-Revises: 003
+Revision ID: 004_add_tournament_type
+Revises: 003_add_location
 Create Date: 2026-06-19 10:00:00.000000
 
 """
@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '004'
-down_revision = '003'
+revision = '004_add_tournament_type'
+down_revision = '003_add_location'
 branch_labels = None
 depends_on = None
 

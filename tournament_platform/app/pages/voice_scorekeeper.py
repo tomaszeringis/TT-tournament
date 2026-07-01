@@ -24,6 +24,10 @@ from tournament_platform.models import SessionLocal, Match, MatchStatus, Player,
 from tournament_platform.app.utils import format_player_label, api_request
 from tournament_platform.services.settings import KEEP_AUDIO_FILES
 from tournament_platform.services.schemas import ActiveMatchResponse
+# Import intent classifier for voice command classification
+from tournament_platform.multimodal_ai.intent_classifier import IntentClassifier, IntentType, IntentResult
+# Import coaching service for RAG-based feedback
+from tournament_platform.services.coaching_service import CoachingService
 # Import game-by-game scoring utilities
 from tournament_platform.app.services.match_score import (
     parse_game_score,
@@ -94,6 +98,14 @@ if 'match_manager' not in st.session_state:
 if 'umpire_engine' not in st.session_state:
     st.session_state.umpire_engine = UmpireEngine()
 
+# Initialize IntentClassifier for voice command classification
+if 'intent_classifier' not in st.session_state:
+    st.session_state.intent_classifier = IntentClassifier(threshold=0.3)
+
+# Initialize CoachingService for RAG-based feedback
+if 'coaching_service' not in st.session_state:
+    st.session_state.coaching_service = CoachingService()
+
 # Initialize audio processing guard
 if 'last_audio_hash' not in st.session_state:
     st.session_state.last_audio_hash = None
@@ -101,6 +113,14 @@ if 'last_audio_hash' not in st.session_state:
 # Initialize feedback message
 if 'last_feedback' not in st.session_state:
     st.session_state.last_feedback = None
+
+# Real-time mode state
+if 'realtime_mode' not in st.session_state:
+    st.session_state.realtime_mode = False
+if 'listening' not in st.session_state:
+    st.session_state.listening = False
+if 'audio_level' not in st.session_state:
+    st.session_state.audio_level = 0.0
 
 # Voice scorekeeper match selector state
 if 'voice_selected_tournament_id' not in st.session_state:
@@ -151,15 +171,15 @@ def get_current_match_context() -> Optional[dict]:
     return None
 
 
-def process_voice_command(audio_bytes: bytes) -> Tuple[str, str]:
+def process_voice_command(audio_bytes: bytes) -> Tuple[str, str, IntentResult]:
     """
-    Process voice input and return transcript and response.
+    Process voice input and return transcript, response, and intent classification.
     
     Args:
         audio_bytes: Raw audio bytes from st.audio_input
         
     Returns:
-        Tuple of (transcript, response_text)
+        Tuple of (transcript, response_text, intent_result)
     """
     # Save audio to temp file
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
@@ -171,12 +191,40 @@ def process_voice_command(audio_bytes: bytes) -> Tuple[str, str]:
         transcript = st.session_state.umpire_engine.transcribe_audio_file(temp_path)
         
         if not transcript:
-            return "", "Sorry, I couldn't understand the audio."
+            return "", "Sorry, I couldn't understand the audio.", IntentResult(
+                intent_type=IntentType.UNKNOWN,
+                confidence=0.0,
+                raw_text=""
+            )
         
-        # Process the transcript with MatchManager
-        success, response = st.session_state.match_manager.update_score(transcript)
+        # Classify intent using IntentClassifier
+        intent_result = st.session_state.intent_classifier.classify(transcript)
         
-        return transcript, response
+        # Process based on intent type
+        if intent_result.intent_type == IntentType.SCORE_UPDATE:
+            success, response = st.session_state.match_manager.update_score(transcript)
+        elif intent_result.intent_type == IntentType.COACHING_QUERY:
+            # Use CoachingService to generate RAG-based feedback
+            stroke_type = intent_result.entities.get('stroke_type', 'general')
+            try:
+                feedback = st.session_state.coaching_service.generate_feedback(
+                    session_id=0,  # No session ID for voice queries
+                    transcript=transcript,
+                    stroke_type=stroke_type
+                )
+                response = feedback.feedback_text
+            except Exception as e:
+                response = f"Coaching query received. Stroke type: {stroke_type}. (AI feedback unavailable: {e})"
+        elif intent_result.intent_type == IntentType.SESSION_CONTROL:
+            action = intent_result.entities.get('action', 'unknown')
+            response = f"Session control: {action}"
+        elif intent_result.intent_type == IntentType.PLAYER_INFO:
+            response = f"Player info query: {intent_result.entities.get('player', 'unknown')}"
+        else:
+            # Default to score update for unknown intents (backward compatibility)
+            success, response = st.session_state.match_manager.update_score(transcript)
+        
+        return transcript, response, intent_result
         
     finally:
         # Clean up temp file unless configured to keep for debugging
@@ -673,9 +721,28 @@ if st.session_state.voice_selected_match_id:
                         status.update(label="Submission failed", state="error", expanded=False)
                         st.error("❌ Failed to submit match result. Check API connection.")
 
-# Voice input section
+# ============================================================================
+# Voice Input Section
+# ============================================================================
+
 st.divider()
-st.subheader("Voice Input")
+st.subheader("🎤 Voice Input")
+
+# Real-time mode controls
+col_mode1, col_mode2 = st.columns(2)
+with col_mode1:
+    if st.button("🎙️ Push to Talk", key="push_to_talk_btn", use_container_width=True, type="primary"):
+        st.session_state.listening = True
+        st.session_state.realtime_mode = False
+with col_mode2:
+    if st.button("🔴 Continuous Mode", key="continuous_mode_btn", use_container_width=True):
+        st.session_state.realtime_mode = True
+        st.session_state.listening = True
+
+# Audio level indicator (for continuous mode)
+if st.session_state.realtime_mode:
+    st.progress(st.session_state.get('audio_level', 0.0), text="Audio Level")
+    st.caption("Listening continuously... Speak clearly into your microphone.")
 
 # Privacy notice
 st.info(
@@ -698,12 +765,33 @@ if audio_input:
         
         with st.spinner("Processing voice command..."):
             # Process the audio
-            transcript, response = process_voice_command(audio_bytes)
+            transcript, response, intent_result = process_voice_command(audio_bytes)
             
             if transcript:
                 st.session_state.last_feedback = response
                 st.toast(response, icon="✅")
                 speak_text(response)
+                
+                # Display intent classification info
+                if intent_result:
+                    intent_color = {
+                        IntentType.SCORE_UPDATE: "🔵",
+                        IntentType.COACHING_QUERY: "🟢",
+                        IntentType.SESSION_CONTROL: "🟡",
+                        IntentType.PLAYER_INFO: "🟣",
+                        IntentType.UNKNOWN: "⚪"
+                    }.get(intent_result.intent_type, "⚪")
+                    
+                    st.caption(f"{intent_color} Intent: {intent_result.intent_type.value} (confidence: {intent_result.confidence:.2f})")
+                    if intent_result.entities:
+                        st.caption(f"Entities: {intent_result.entities}")
+                
+                # Display coaching feedback in a structured way
+                if intent_result and intent_result.intent_type == IntentType.COACHING_QUERY:
+                    st.divider()
+                    st.subheader("💡 Coaching Feedback")
+                    st.markdown(f"**{response}**")
+                
                 st.rerun()
 else:
     # Reset hash when audio is cleared

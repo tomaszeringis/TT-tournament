@@ -1,7 +1,7 @@
 """Add rating_history table
 
-Revision ID: 005
-Revises: 004
+Revision ID: 005_add_rating_history
+Revises: 004_add_tournament_type
 Create Date: 2026-06-19 11:00:00.000000
 
 """
@@ -9,8 +9,8 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '005'
-down_revision = '004'
+revision = '005_add_rating_history'
+down_revision = '004_add_tournament_type'
 branch_labels = None
 depends_on = None
 

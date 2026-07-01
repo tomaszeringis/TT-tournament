@@ -17,3 +17,29 @@ tournament_platform/data/chroma_db/
 .env
 .env.local
 .env.*.local
+
+# Multimodal AI - Large data files
+tt_ai_data/
+**/raw/
+**/processed/
+**/features/
+**/models/
+**/cache/
+# Model weights
+*.pt
+*.bin
+*.onnx
+# Large binary files
+*.h5
+*.ckpt
+# Media files
+*.mp4
+*.avi
+*.mov
+*.wav
+*.flac
+*.mp3
+# Archives
+*.zip
+*.tar
+*.tar.gz

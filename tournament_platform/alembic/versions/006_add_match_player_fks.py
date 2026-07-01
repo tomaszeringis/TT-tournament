@@ -1,16 +1,16 @@
 """Add player foreign keys to Match
 
- Revision ID: 006
- Revises: 005
- Create Date: 2026-06-26 08:34:00.000000
+Revision ID: 006_add_match_player_fks
+Revises: 005_add_rating_history
+Create Date: 2026-06-26 08:34:00.000000
 
- """
+"""
 from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '006'
-down_revision = '005'
+revision = '006_add_match_player_fks'
+down_revision = '005_add_rating_history'
 branch_labels = None
 depends_on = None
 

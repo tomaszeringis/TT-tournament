@@ -77,6 +77,9 @@ if authentication_status:
         st.Page(os.path.join(app_dir, "pages", "tournament_setup.py"), title="Tournament Setup (Legacy)", icon="⚙️"),
         st.Page(os.path.join(app_dir, "pages", "ai_assistant.py"), title="AI Assistant", icon="🤖"),
         st.Page(os.path.join(app_dir, "pages", "voice_scorekeeper.py"), title="Voice Scorekeeper", icon="🔊"),
+        st.Page(os.path.join(app_dir, "pages", "dataset_catalog.py"), title="Dataset Catalog", icon="📊"),
+        st.Page(os.path.join(app_dir, "pages", "coaching_lab.py"), title="Coaching Lab", icon="🏓"),
+        st.Page(os.path.join(app_dir, "pages", "experiment_dashboard.py"), title="Experiment Dashboard", icon="🧪"),
     ]
     
     # Only add Admin page for admin users

@@ -1,6 +1,6 @@
 """Add bracket fields
 
-Revision ID: 002
+Revision ID: 002_add_bracket_fields
 Revises: 001_initial
 Create Date: 2026-06-18 16:50:00.000000
 
@@ -9,7 +9,7 @@ from alembic import op
 import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
-revision = '002'
+revision = '002_add_bracket_fields'
 down_revision = '001_initial'
 branch_labels = None
 depends_on = None

@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Enum
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, ForeignKey, Enum, Text, LargeBinary, Float, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from pathlib import Path
@@ -154,6 +154,209 @@ class AuditLog(Base):
     entity_id = Column(Integer, nullable=True)
     payload_json = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+# ============================================================================
+# Multimodal AI Models
+# ============================================================================
+
+class Dataset(Base):
+    """Registry of available datasets for training/analysis."""
+    __tablename__ = "datasets"
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(String, unique=True, index=True)  # e.g., "mozilla_common_voice"
+    name = Column(String)
+    modality = Column(String)  # audio, video, sensor, text, trajectory
+    task = Column(String)  # asr, intent, ball_detection, etc.
+    license = Column(String)  # cc0, cc_by, mit, apache, bsd, non_commercial, research_only
+    commercial_allowed = Column(Boolean, default=False)
+    source_url = Column(String, nullable=True)
+    local_raw_path = Column(String, nullable=True)
+    local_processed_path = Column(String, nullable=True)
+    required_for_phase = Column(String, nullable=True)  # JSON list of phases
+    notes = Column(String, nullable=True)
+    size_gb = Column(Float, nullable=True)
+    version = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    artifacts = relationship("DatasetArtifact", back_populates="dataset", cascade="all, delete-orphan")
+    samples = relationship("DataSample", back_populates="dataset", cascade="all, delete-orphan")
+
+
+class DatasetArtifact(Base):
+    """Tracks downloaded/processed files for a dataset."""
+    __tablename__ = "dataset_artifacts"
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    artifact_type = Column(String)  # raw, processed, model, index
+    path = Column(String)
+    checksum = Column(String, nullable=True)
+    size_bytes = Column(Integer, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    dataset = relationship("Dataset", back_populates="artifacts")
+
+
+class DataSample(Base):
+    """Individual samples from a dataset."""
+    __tablename__ = "data_samples"
+    id = Column(Integer, primary_key=True, index=True)
+    dataset_id = Column(Integer, ForeignKey("datasets.id"))
+    sample_key = Column(String, index=True)  # Unique identifier within dataset
+    timestamp = Column(DateTime, nullable=True)
+    duration_seconds = Column(Float, nullable=True)
+    metadata_json = Column(Text, nullable=True)  # JSON string for flexible metadata
+
+    # Relationships
+    dataset = relationship("Dataset", back_populates="samples")
+    annotations = relationship("Annotation", back_populates="data_sample", cascade="all, delete-orphan")
+
+
+class Annotation(Base):
+    """Labels/annotations for data samples."""
+    __tablename__ = "annotations"
+    id = Column(Integer, primary_key=True, index=True)
+    data_sample_id = Column(Integer, ForeignKey("data_samples.id"))
+    annotator_id = Column(String, nullable=True)
+    label = Column(String)
+    confidence = Column(Float, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    data_sample = relationship("DataSample", back_populates="annotations")
+
+
+class MultimodalSession(Base):
+    """A recording session combining multiple modalities."""
+    __tablename__ = "multimodal_sessions"
+    id = Column(Integer, primary_key=True, index=True)
+    session_name = Column(String, nullable=True)
+    start_time = Column(DateTime, nullable=True)
+    end_time = Column(DateTime, nullable=True)
+    player1_id = Column(Integer, ForeignKey("players.id"), nullable=True)
+    player2_id = Column(Integer, ForeignKey("players.id"), nullable=True)
+    metadata_json = Column(Text, nullable=True)  # JSON for flexible session metadata
+
+    # Relationships
+    player1 = relationship("Player", foreign_keys=[player1_id])
+    player2 = relationship("Player", foreign_keys=[player2_id])
+    sensor_streams = relationship("SensorStream", back_populates="session", cascade="all, delete-orphan")
+    video_segments = relationship("VideoSegment", back_populates="session", cascade="all, delete-orphan")
+    audio_segments = relationship("AudioSegment", back_populates="session", cascade="all, delete-orphan")
+    ball_trajectories = relationship("BallTrajectory", back_populates="session", cascade="all, delete-orphan")
+    stroke_events = relationship("StrokeEvent", back_populates="session", cascade="all, delete-orphan")
+    coaching_feedback = relationship("CoachingFeedback", back_populates="session", cascade="all, delete-orphan")
+
+
+class SensorStream(Base):
+    """IMU or other sensor data stream from a session."""
+    __tablename__ = "sensor_streams"
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("multimodal_sessions.id"))
+    sensor_type = Column(String)  # imu, audio, etc.
+    start_time = Column(DateTime, nullable=True)
+    end_time = Column(DateTime, nullable=True)
+    sample_rate = Column(Float, nullable=True)
+    data_path = Column(String, nullable=True)  # Path to stored sensor data
+
+    # Relationships
+    session = relationship("MultimodalSession", back_populates="sensor_streams")
+
+
+class VideoSegment(Base):
+    """Video clip from a session."""
+    __tablename__ = "video_segments"
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("multimodal_sessions.id"))
+    start_time = Column(DateTime, nullable=True)
+    end_time = Column(DateTime, nullable=True)
+    video_path = Column(String, nullable=True)
+    frame_count = Column(Integer, nullable=True)
+
+    # Relationships
+    session = relationship("MultimodalSession", back_populates="video_segments")
+
+
+class AudioSegment(Base):
+    """Audio clip from a session."""
+    __tablename__ = "audio_segments"
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("multimodal_sessions.id"))
+    start_time = Column(DateTime, nullable=True)
+    end_time = Column(DateTime, nullable=True)
+    audio_path = Column(String, nullable=True)
+    sample_rate = Column(Integer, nullable=True)
+
+    # Relationships
+    session = relationship("MultimodalSession", back_populates="audio_segments")
+
+
+class BallTrajectory(Base):
+    """2D/3D ball trajectory data."""
+    __tablename__ = "ball_trajectories"
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("multimodal_sessions.id"))
+    frame_data_json = Column(Text, nullable=True)  # JSON array of trajectory points
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    session = relationship("MultimodalSession", back_populates="ball_trajectories")
+
+
+class StrokeEvent(Base):
+    """Detected stroke event in a session."""
+    __tablename__ = "stroke_events"
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("multimodal_sessions.id"))
+    stroke_type = Column(String)  # forehand, backhand, serve, etc.
+    start_time = Column(DateTime, nullable=True)
+    end_time = Column(DateTime, nullable=True)
+    confidence = Column(Float, nullable=True)
+
+    # Relationships
+    session = relationship("MultimodalSession", back_populates="stroke_events")
+
+
+class CoachingFeedback(Base):
+    """AI-generated coaching feedback for a session."""
+    __tablename__ = "coaching_feedback"
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(Integer, ForeignKey("multimodal_sessions.id"))
+    feedback_text = Column(Text, nullable=True)
+    recommendations_json = Column(Text, nullable=True)  # JSON array of recommendations
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    session = relationship("MultimodalSession", back_populates="coaching_feedback")
+
+
+class ModelExperiment(Base):
+    """Tracks ML model training/evaluation experiments."""
+    __tablename__ = "model_experiments"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String)
+    model_config_json = Column(Text, nullable=True)  # JSON config
+    dataset_combination = Column(String, nullable=True)  # e.g., "voice_core"
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+    # Relationships
+    evaluation_runs = relationship("EvaluationRun", back_populates="experiment", cascade="all, delete-orphan")
+
+
+class EvaluationRun(Base):
+    """Results from evaluating a model experiment."""
+    __tablename__ = "evaluation_runs"
+    id = Column(Integer, primary_key=True, index=True)
+    experiment_id = Column(Integer, ForeignKey("model_experiments.id"))
+    metric_name = Column(String)
+    metric_value = Column(Float)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    experiment = relationship("ModelExperiment", back_populates="evaluation_runs")
 
 
 def init_db():

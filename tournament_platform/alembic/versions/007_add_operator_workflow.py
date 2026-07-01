@@ -1,7 +1,7 @@
 """Add operator workflow models: VenueTable, Match operator fields, Announcement, AuditLog
 
-Revision ID: 007
-Revises: 006
+Revision ID: 007_add_operator_workflow
+Revises: 006_add_match_player_fks
 Create Date: 2026-06-27 14:54:00.000000
 
 """
@@ -10,8 +10,8 @@ import sqlalchemy as sa
 
 
 # revision identifiers, used by Alembic.
-revision = '007'
-down_revision = '006'
+revision = '007_add_operator_workflow'
+down_revision = '006_add_match_player_fks'
 branch_labels = None
 depends_on = None
 

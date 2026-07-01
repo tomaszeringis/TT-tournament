@@ -112,11 +112,39 @@ class Settings(BaseSettings):
     SEMANTIC_KERNEL_OLLAMA_HOST: str = "http://localhost:11434"
     SEMANTIC_KERNEL_MODEL_ID: str = "llama3.1:latest"
 
+    # -------------------------------------------------------------------------
+    # Multimodal AI Data Storage
+    # -------------------------------------------------------------------------
+    TT_DATA_ROOT: str = "../tt_ai_data"
+    TT_RAW_DATA_DIR: str = "../tt_ai_data/raw"
+    TT_PROCESSED_DATA_DIR: str = "../tt_ai_data/processed"
+    TT_FEATURES_DIR: str = "../tt_ai_data/features"
+    TT_MODELS_DIR: str = "../tt_ai_data/models"
+    TT_CACHE_DIR: str = "../tt_ai_data/cache"
+    TT_MANIFESTS_DIR: str = "../tt_ai_data/manifests"
+    TT_MULTIMODAL_CHROMA_DIR: str = "../tt_ai_data/indexes/chroma_multimodal"
+
     @model_validator(mode='after')
     def resolve_absolute_paths(self):
         """Resolve relative paths to absolute paths at runtime."""
         if not os.path.isabs(self.CHROMA_DB_PATH):
             self.CHROMA_DB_PATH = os.path.abspath(self.CHROMA_DB_PATH)
+        if not os.path.isabs(self.TT_DATA_ROOT):
+            self.TT_DATA_ROOT = os.path.abspath(self.TT_DATA_ROOT)
+        if not os.path.isabs(self.TT_RAW_DATA_DIR):
+            self.TT_RAW_DATA_DIR = os.path.abspath(self.TT_RAW_DATA_DIR)
+        if not os.path.isabs(self.TT_PROCESSED_DATA_DIR):
+            self.TT_PROCESSED_DATA_DIR = os.path.abspath(self.TT_PROCESSED_DATA_DIR)
+        if not os.path.isabs(self.TT_FEATURES_DIR):
+            self.TT_FEATURES_DIR = os.path.abspath(self.TT_FEATURES_DIR)
+        if not os.path.isabs(self.TT_MODELS_DIR):
+            self.TT_MODELS_DIR = os.path.abspath(self.TT_MODELS_DIR)
+        if not os.path.isabs(self.TT_CACHE_DIR):
+            self.TT_CACHE_DIR = os.path.abspath(self.TT_CACHE_DIR)
+        if not os.path.isabs(self.TT_MANIFESTS_DIR):
+            self.TT_MANIFESTS_DIR = os.path.abspath(self.TT_MANIFESTS_DIR)
+        if not os.path.isabs(self.TT_MULTIMODAL_CHROMA_DIR):
+            self.TT_MULTIMODAL_CHROMA_DIR = os.path.abspath(self.TT_MULTIMODAL_CHROMA_DIR)
         return self
 
 

@@ -1,0 +1,309 @@
+# Dataset Manifest for Multimodal Table Tennis AI System
+# This file defines all supported datasets for the system.
+# Real datasets should be stored outside the repository in TT_DATA_ROOT.
+
+datasets:
+  # Voice Core Datasets
+  common_voice:
+    dataset_id: common_voice
+    name: Mozilla Common Voice
+    domain: voice
+    modality: audio
+    primary_task: asr
+    priority: mvp
+    license: cc0
+    commercial_allowed: true
+    recommended_local_path: ${TT_RAW_DATA_DIR}/voice/common_voice
+    source_url: https://commonvoice.mozilla.org/
+    notes: Multilingual ASR dataset with broad acoustic coverage
+
+  librispeech:
+    dataset_id: librispeech
+    name: LibriSpeech
+    domain: voice
+    modality: audio
+    primary_task: asr
+    priority: mvp
+    license: cc_by
+    commercial_allowed: true
+    recommended_local_path: ${TT_RAW_DATA_DIR}/voice/librispeech
+    source_url: http://www.openslr.org/12/
+    notes: Clean speech corpus for ASR benchmarking
+
+  gigaspeech:
+    dataset_id: gigaspeech
+    name: GigaSpeech
+    domain: voice
+    modality: audio
+    primary_task: asr
+    priority: mvp
+    license: apache
+    commercial_allowed: true
+    recommended_local_path: ${TT_RAW_DATA_DIR}/voice/gigaspeech
+    source_url: https://github.com/alibaba-damo-academy/gigaspeech
+    notes: Large-scale ASR dataset for pretraining
+
+  ami:
+    dataset_id: ami
+    name: AMI Meeting Corpus
+    domain: voice
+    modality: audio
+    primary_task: asr
+    priority: mvp
+    license: cc_by
+    commercial_allowed: true
+    recommended_local_path: ${TT_RAW_DATA_DIR}/voice/ami
+    source_url: https://groups.inf.ed.ac.uk/ami/corpus/
+    notes: Far-field, turn-taking, conversational robustness
+
+  fluent_speech_commands:
+    dataset_id: fluent_speech_commands
+    name: Fluent Speech Commands
+    domain: voice
+    modality: audio
+    primary_task: intent
+    priority: mvp
+    license: mit
+    commercial_allowed: true
+    recommended_local_path: ${TT_RAW_DATA_DIR}/voice/fluent_speech_commands
+    source_url: https://github.com/google-research/google-research/tree/master/fluent_speech_commands
+    notes: Command/intent supervision for voice control
+
+  asvspoof2021:
+    dataset_id: asvspoof2021
+    name: ASVspoof 2021
+    domain: voice
+    modality: audio
+    primary_task: anti_spoof
+    priority: phase_2
+    license: cc_by
+    commercial_allowed: true
+    recommended_local_path: ${TT_RAW_DATA_DIR}/voice/asvspoof2021
+    source_url: https://www.asvspoof.org/
+    notes: Anti-spoofing for voice authentication
+
+  # Table Tennis Core Datasets
+  t3set:
+    dataset_id: t3set
+    name: T3Set
+    domain: table_tennis
+    modality: video
+    primary_task: stroke_classification
+    priority: mvp
+    license: non_commercial
+    commercial_allowed: false
+    recommended_local_path: ${TT_RAW_DATA_DIR}/table_tennis/t3set
+    source_url: https://github.com/
+    notes: Coaching/recommendation supervision, video + sensor + coaching text
+
+  openttgames:
+    dataset_id: openttgames
+    name: OpenTTGames
+    domain: table_tennis
+    modality: video
+    primary_task: ball_detection
+    priority: mvp
+    license: non_commercial
+    commercial_allowed: false
+    recommended_local_path: ${TT_RAW_DATA_DIR}/table_tennis/openttgames
+    source_url: https://github.com/
+    notes: Ball detection, bounce/net events, segmentation
+
+  extended_openttgames:
+    dataset_id: extended_openttgames
+    name: Extended OpenTTGames
+    domain: table_tennis
+    modality: video
+    primary_task: stroke_classification
+    priority: mvp
+    license: non_commercial
+    commercial_allowed: false
+    recommended_local_path: ${TT_RAW_DATA_DIR}/table_tennis/extended_openttgames
+    source_url: https://github.com/
+    notes: Stroke subtype, posture, rally outcome labels
+
+  blurball:
+    dataset_id: blurball
+    name: BlurBall
+    domain: table_tennis
+    modality: video
+    primary_task: ball_detection
+    priority: mvp
+    license: mit
+    commercial_allowed: true
+    recommended_local_path: ${TT_RAW_DATA_DIR}/table_tennis/blurball
+    source_url: https://github.com/
+    notes: Fast blurred ball tracking
+
+  ttswing:
+    dataset_id: ttswing
+    name: TTSwing
+    domain: table_tennis
+    modality: sensor
+    primary_task: stroke_classification
+    priority: mvp
+    license: mit
+    commercial_allowed: true
+    recommended_local_path: ${TT_RAW_DATA_DIR}/table_tennis/ttswing
+    source_url: https://github.com/
+    notes: Racket IMU/kinematics and biomechanics
+
+  tt3d:
+    dataset_id: tt3d
+    name: TT3D
+    domain: table_tennis
+    modality: trajectory
+    primary_task: trajectory_reconstruction
+    priority: mvp
+    license: mit
+    commercial_allowed: true
+    recommended_local_path: ${TT_RAW_DATA_DIR}/table_tennis/tt3d
+    source_url: https://github.com/
+    notes: 3D ball trajectory reconstruction
+
+  # Optional Datasets
+  p2anet:
+    dataset_id: p2anet
+    name: P2ANet
+    domain: table_tennis
+    modality: video
+    primary_task: ball_detection
+    priority: optional
+    license: unknown
+    commercial_allowed: false
+    recommended_local_path: ${TT_RAW_DATA_DIR}/table_tennis/p2anet
+    source_url: https://github.com/
+    notes: Broadcast dense action detection
+
+  racketvision:
+    dataset_id: racketvision
+    name: RacketVision
+    domain: table_tennis
+    modality: video
+    primary_task: ball_detection
+    priority: optional
+    license: unknown
+    commercial_allowed: false
+    recommended_local_path: ${TT_RAW_DATA_DIR}/table_tennis/racketvision
+    source_url: https://github.com/
+    notes: Racket-aware ball/racket modeling
+
+  ttst:
+    dataset_id: ttst
+    name: TTST
+    domain: table_tennis
+    modality: trajectory
+    primary_task: trajectory_reconstruction
+    priority: optional
+    license: unknown
+    commercial_allowed: false
+    recommended_local_path: ${TT_RAW_DATA_DIR}/table_tennis/ttst
+    source_url: https://github.com/
+    notes: Spin/trajectory reasoning (access terms apply)
+
+  voxceleb2:
+    dataset_id: voxceleb2
+    name: VoxCeleb2
+    domain: voice
+    modality: audio
+    primary_task: speaker_id
+    priority: optional
+    license: unknown
+    commercial_allowed: false
+    recommended_local_path: ${TT_RAW_DATA_DIR}/voice/voxceleb2
+    source_url: https://www.robots.ox.ac.uk/~vgg/data/voxceleb/
+    notes: Speaker recognition/personalization
+
+  iemocap:
+    dataset_id: iemocap
+    name: IEMOCAP
+    domain: voice
+    modality: audio
+    primary_task: emotion
+    priority: optional
+    license: unknown
+    commercial_allowed: false
+    recommended_local_path: ${TT_RAW_DATA_DIR}/voice/iemocap
+    source_url: https://sail.usc.edu/iemocap/
+    notes: Emotion/affect for coaching tone analysis
+
+  audioset:
+    dataset_id: audioset
+    name: AudioSet
+    domain: voice
+    modality: audio
+    primary_task: acoustic_event
+    priority: optional
+    license: unknown
+    commercial_allowed: false
+    recommended_local_path: ${TT_RAW_DATA_DIR}/voice/audioset
+    source_url: https://research.google.com/audioset/
+    notes: General audio events
+
+  soccernet_echoes:
+    dataset_id: soccernet_echoes
+    name: SoccerNet-Echoes
+    domain: voice
+    modality: audio
+    primary_task: asr
+    priority: optional
+    license: unknown
+    commercial_allowed: false
+    recommended_local_path: ${TT_RAW_DATA_DIR}/voice/soccernet_echoes
+    source_url: https://github.com/SoccerNet/SoccerNet-Echoes
+    notes: Sports commentary/domain language adaptation
+
+# Dataset Combination Presets
+presets:
+  voice_core:
+    - common_voice
+    - gigaspeech
+    - ami
+    - fluent_speech_commands
+    - asvspoof2021
+
+  voice_clean_benchmark:
+    - librispeech
+    - common_voice
+
+  tt_perception_core:
+    - openttgames
+    - extended_openttgames
+    - blurball
+    - tt3d
+
+  coaching_core:
+    - t3set
+    - ttswing
+    - openttgames
+    - extended_openttgames
+    - tt3d
+
+  commercial_safe_baseline:
+    - ttswing
+    - common_voice
+    - librispeech
+    - gigaspeech
+    - ami
+    # Note: commercial_safe_baseline still requires final human license review
+
+  research_full:
+    - common_voice
+    - librispeech
+    - gigaspeech
+    - ami
+    - fluent_speech_commands
+    - asvspoof2021
+    - t3set
+    - openttgames
+    - extended_openttgames
+    - blurball
+    - ttswing
+    - tt3d
+    - p2anet
+    - racketvision
+    - ttst
+    - voxceleb2
+    - iemocap
+    - audioset
+    - soccernet_echoes

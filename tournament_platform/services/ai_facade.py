@@ -206,3 +206,44 @@ def get_ai_health() -> AIHealth:
             retrieval_available=False,
             error=str(e)
         )
+
+
+# ============================================================================
+# Tool Registry Integration
+# ============================================================================
+
+def get_available_tools() -> List[Dict[str, str]]:
+    """
+    Get all available tools for the AI copilot.
+    
+    Returns:
+        List of tool metadata (name, type, description)
+    """
+    from tournament_platform.services.ai_tool_registry import get_all_tools
+    return get_all_tools()
+
+
+def execute_tool(
+    tool_name: str,
+    db,
+    confirmed: bool = False,
+    **kwargs
+) -> Dict:
+    """
+    Execute a tool by name through the AI facade.
+    
+    This is the Streamlit-facing entry point for all AI tools.
+    Read tools execute immediately.
+    Write preview tools return preview data.
+    
+    Args:
+        tool_name: Name of the tool to execute
+        db: Database session
+        confirmed: Whether to confirm write operations
+        **kwargs: Tool-specific arguments
+        
+    Returns:
+        ToolResult with success status, data, and optional preview/error
+    """
+    from tournament_platform.services.ai_tool_registry import execute_tool as _execute_tool
+    return _execute_tool(tool_name, db, confirmed=confirmed, **kwargs)

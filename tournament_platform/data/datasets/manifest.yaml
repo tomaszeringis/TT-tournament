@@ -1,0 +1,113 @@
+# Multimodal AI Dataset Manifest
+# This file defines all datasets used for table tennis AI coaching
+
+datasets:
+  mozilla_common_voice:
+    name: "Mozilla Common Voice"
+    modality: "audio"
+    task: "asr"
+    license: "cc0"
+    commercial_allowed: true
+    source_url: "https://commonvoice.mozilla.org"
+    notes: "Multilingual ASR dataset, broad acoustic coverage"
+    size_gb: 100.0
+
+  gigaspeech:
+    name: "GigaSpeech"
+    modality: "audio"
+    task: "asr"
+    license: "apache"
+    commercial_allowed: true
+    source_url: "https://github.com/SpeechLLM/gigaspeech"
+    notes: "Large-scale ASR for pretraining/benchmarking"
+    size_gb: 200.0
+
+  ami_meeting:
+    name: "AMI Meeting Corpus"
+    modality: "audio"
+    task: "asr"
+    license: "cc_by"
+    commercial_allowed: true
+    source_url: "https://groups.inf.ed.ac.uk/ami/corpus"
+    notes: "Far-field, turn-taking, conversational robustness"
+    size_gb: 10.0
+
+  fluent_speech_commands:
+    name: "Fluent Speech Commands"
+    modality: "audio"
+    task: "intent"
+    license: "mit"
+    commercial_allowed: true
+    source_url: "https://github.com/microsoft/fluent-speech-commands"
+    notes: "Command/intent supervision for voice control"
+    size_gb: 0.1
+
+  asvspoof2021:
+    name: "ASVspoof 2021"
+    modality: "audio"
+    task: "anti_spoof"
+    license: "research_only"
+    commercial_allowed: false
+    source_url: "https://www.asvspoof.org"
+    notes: "Anti-spoofing for voice authentication"
+    size_gb: 1.0
+
+  t3set:
+    name: "T3Set"
+    modality: "video"
+    task: "coaching"
+    license: "non_commercial"
+    commercial_allowed: false
+    source_url: "https://t3set.github.io"
+    notes: "Video + sensor + coaching text for table tennis"
+    size_gb: 50.0
+
+  openttgames:
+    name: "OpenTTGames"
+    modality: "video"
+    task: "ball_detection"
+    license: "unknown"
+    commercial_allowed: false
+    source_url: "https://github.com/OpenTTGames"
+    notes: "Ball detection, bounce/net events, segmentation"
+    size_gb: 20.0
+
+  extended_openttgames:
+    name: "Extended OpenTTGames"
+    modality: "video"
+    task: "stroke_classification"
+    license: "unknown"
+    commercial_allowed: false
+    source_url: "https://github.com/OpenTTGames"
+    notes: "Stroke subtype, posture, rally outcome labels"
+    size_gb: 30.0
+
+  blurball:
+    name: "BlurBall"
+    modality: "video"
+    task: "ball_detection"
+    license: "unknown"
+    commercial_allowed: false
+    source_url: "https://github.com/BlurBall"
+    notes: "Fast blurred ball tracking"
+    size_gb: 15.0
+
+  ttswing:
+    name: "TTSwing"
+    modality: "sensor"
+    task: "stroke_classification"
+    license: "unknown"
+    commercial_allowed: false
+    source_url: "https://github.com/TTSwing"
+    notes: "Racket IMU/kinematics and biomechanics"
+    size_gb: 5.0
+
+  tt3d:
+    name: "TT3D"
+    modality: "video"
+    task: "trajectory_reconstruction"
+    license: "unknown"
+    commercial_allowed: false
+    source_url: "https://github.com/TT3D"
+    notes: "3D ball trajectory reconstruction"
+    size_gb: 25.0

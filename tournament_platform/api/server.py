@@ -564,6 +564,136 @@ async def api_get_next_available_table(tournament_id: int, db: Session = Depends
 
 
 # ============================================================================
+# Health and Duplicate Player Endpoints
+# ============================================================================
+
+@app.get("/api/operator/tournaments/{tournament_id}/health")
+async def api_get_tournament_health(tournament_id: int, db: Session = Depends(get_db)):
+    """
+    Get tournament health including match counts, table utilization, and issues.
+    
+    Returns:
+    - match_counts: {active, called, delayed, completed, pending, queued, not_called}
+    - table_utilization: {active_tables, total_tables, busy_tables, utilization_percent}
+    - issues: List of detected issues (missing_table, missing_scheduled_time, stale_active, etc.)
+    """
+    try:
+        from tournament_platform.services.health_service import get_tournament_health
+        from tournament_platform.services.schemas import TournamentHealthResponse
+        
+        tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+        if not tournament:
+            raise HTTPException(status_code=404, detail=f"Tournament {tournament_id} not found")
+        
+        data = get_tournament_health(db, tournament_id=tournament_id)
+        return TournamentHealthResponse(**data)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting tournament health for {tournament_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get tournament health")
+
+
+@app.get("/api/operator/players/duplicates")
+async def api_find_duplicate_players(
+    fuzzy_threshold: int = 85,
+    db: Session = Depends(get_db)
+):
+    """
+    Find potential duplicate player candidates.
+    
+    Checks:
+    - Exact email matches
+    - Exact name matches
+    - Fuzzy name similarity (if RapidFuzz available)
+    
+    Query params:
+    - fuzzy_threshold: Minimum similarity score for fuzzy matching (0-100, default 85)
+    """
+    try:
+        from tournament_platform.services.duplicate_players import find_duplicate_candidates
+        from tournament_platform.services.schemas import DuplicateCandidate
+        
+        data = find_duplicate_candidates(db, fuzzy_threshold=fuzzy_threshold)
+        return {"candidates": [DuplicateCandidate(**c) for c in data]}
+    except Exception as e:
+        logger.error(f"Error finding duplicate players: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to find duplicate players")
+
+
+@app.post("/api/operator/players/merge-preview")
+async def api_preview_player_merge(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    Preview what would happen when merging two player records.
+    
+    Request body:
+    - target_player_id: The player to keep (merge into this)
+    - source_player_id: The player to merge from (will be deleted)
+    
+    This is a read-only operation.
+    """
+    try:
+        from tournament_platform.services.duplicate_players import preview_player_merge
+        from tournament_platform.services.schemas import MergePreview
+        
+        data = await request.json()
+        target_id = data.get("target_player_id")
+        source_id = data.get("source_player_id")
+        
+        if not target_id or not source_id:
+            raise HTTPException(status_code=400, detail="Both target_player_id and source_player_id required")
+        
+        result = preview_player_merge(db, target_player_id=target_id, source_player_id=source_id)
+        return MergePreview(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error previewing player merge: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to preview player merge")
+
+
+@app.post("/api/operator/players/merge")
+async def api_merge_players(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    Merge two player records.
+    
+    Request body:
+    - target_player_id: The player to keep
+    - source_player_id: The player to merge from (will be deleted)
+    
+    This is a destructive operation that:
+    1. Updates all matches to reference target instead of source
+    2. Updates all rating history to reference target
+    3. Deletes the source player
+    4. Logs an audit entry
+    """
+    try:
+        from tournament_platform.services.duplicate_players import merge_players
+        from tournament_platform.services.schemas import MergePlayersResponse
+        
+        data = await request.json()
+        target_id = data.get("target_player_id")
+        source_id = data.get("source_player_id")
+        
+        if not target_id or not source_id:
+            raise HTTPException(status_code=400, detail="Both target_player_id and source_player_id required")
+        
+        result = merge_players(db, target_player_id=target_id, source_player_id=source_id, actor="api")
+        return MergePlayersResponse(**result)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error merging players: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to merge players")
+
+
+# ============================================================================
 # Table Availability Endpoints
 # ============================================================================
 
@@ -1045,6 +1175,312 @@ async def api_get_announcements(
     except Exception as e:
         logger.error(f"Error getting announcements: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Internal server error: {e}")
+
+
+# ============================================================================
+# Multimodal AI Endpoints
+# ============================================================================
+
+from tournament_platform.multimodal_ai.dataset_registry import DatasetRegistry
+from tournament_platform.multimodal_ai.intent_classifier import IntentClassifier, IntentType
+from tournament_platform.api.multimodal_schemas import (
+    DatasetInfo,
+    DatasetRegisterRequest,
+    DatasetValidationRequest,
+    DatasetValidationResponse,
+    MultimodalSessionCreate,
+    MultimodalSessionResponse,
+    CoachingAnalyzeRequest,
+    CoachingAnalyzeResponse,
+    CoachingRecommendation,
+    ModelExperimentCreate,
+    ModelExperimentResponse,
+    EvaluationRunCreate,
+    EvaluationRunResponse,
+    IntentClassifyRequest,
+    IntentResult,
+)
+from tournament_platform.models import (
+    Dataset,
+    DatasetArtifact,
+    DataSample,
+    Annotation,
+    MultimodalSession,
+    SensorStream,
+    VideoSegment,
+    AudioSegment,
+    BallTrajectory,
+    StrokeEvent,
+    CoachingFeedback,
+    ModelExperiment,
+    EvaluationRun,
+)
+
+# Initialize multimodal components
+dataset_registry = DatasetRegistry()
+intent_classifier = IntentClassifier()
+
+
+@app.get("/api/datasets", response_model=List[DatasetInfo])
+async def list_datasets(modality: Optional[str] = None, task: Optional[str] = None):
+    """List all registered datasets, optionally filtered by modality or task."""
+    try:
+        datasets = dataset_registry.list_datasets(modality=modality, task=task)
+        return [DatasetInfo(**d) for d in datasets]
+    except Exception as e:
+        logger.error(f"Error listing datasets: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list datasets")
+
+
+@app.get("/api/datasets/{dataset_id}", response_model=DatasetInfo)
+async def get_dataset(dataset_id: str):
+    """Get a specific dataset by ID."""
+    try:
+        dataset = dataset_registry.get_dataset(dataset_id)
+        if not dataset:
+            raise HTTPException(status_code=404, detail=f"Dataset {dataset_id} not found")
+        return DatasetInfo(**dataset)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting dataset {dataset_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get dataset")
+
+
+@app.post("/api/datasets/register", response_model=DatasetInfo)
+async def register_dataset(request: Request, db: Session = Depends(get_db)):
+    """Register a new dataset in the registry and database."""
+    try:
+        data = await request.json()
+        req = DatasetRegisterRequest(**data)
+        
+        # Create dataset in database
+        db_dataset = Dataset(
+            dataset_id=req.dataset_id,
+            name=req.name,
+            modality=req.modality,
+            task=req.task,
+            license=req.license,
+            commercial_allowed=req.commercial_allowed,
+            source_url=req.source_url,
+            local_raw_path=req.local_raw_path,
+            local_processed_path=req.local_processed_path,
+            required_for_phase=json.dumps(req.required_for_phase) if req.required_for_phase else None,
+            notes=req.notes,
+        )
+        db.add(db_dataset)
+        db.commit()
+        db.refresh(db_dataset)
+        
+        return DatasetInfo(
+            dataset_id=db_dataset.dataset_id,
+            name=db_dataset.name,
+            modality=db_dataset.modality,
+            task=db_dataset.task,
+            license=db_dataset.license,
+            commercial_allowed=db_dataset.commercial_allowed,
+            source_url=db_dataset.source_url,
+            local_raw_path=db_dataset.local_raw_path,
+            local_processed_path=db_dataset.local_processed_path,
+            required_for_phase=json.loads(db_dataset.required_for_phase) if db_dataset.required_for_phase else None,
+            notes=db_dataset.notes,
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error registering dataset: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to register dataset")
+
+
+@app.post("/api/datasets/validate", response_model=DatasetValidationResponse)
+async def validate_dataset_combination(request: Request):
+    """Validate a dataset combination for license compliance."""
+    try:
+        data = await request.json()
+        req = DatasetValidationRequest(**data)
+        
+        valid, warnings, errors = dataset_registry.validate_combination(req.combination, req.commercial_use)
+        datasets = dataset_registry.get_combination(req.combination)
+        
+        return DatasetValidationResponse(
+            valid=valid,
+            combination=req.combination,
+            datasets=[DatasetInfo(**d) for d in datasets],
+            warnings=warnings,
+            errors=errors,
+        )
+    except Exception as e:
+        logger.error(f"Error validating dataset combination: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to validate combination")
+
+
+@app.get("/api/multimodal/sessions", response_model=List[MultimodalSessionResponse])
+async def list_multimodal_sessions(db: Session = Depends(get_db)):
+    """List all multimodal sessions."""
+    try:
+        sessions = db.query(MultimodalSession).all()
+        return [
+            MultimodalSessionResponse(
+                id=s.id,
+                session_name=s.session_name,
+                start_time=s.start_time,
+                end_time=s.end_time,
+                player1_id=s.player1_id,
+                player2_id=s.player2_id,
+                metadata=json.loads(s.metadata_json) if s.metadata_json else None,
+            )
+            for s in sessions
+        ]
+    except Exception as e:
+        logger.error(f"Error listing multimodal sessions: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list sessions")
+
+
+@app.post("/api/multimodal/sessions", response_model=MultimodalSessionResponse)
+async def create_multimodal_session(request: Request, db: Session = Depends(get_db)):
+    """Create a new multimodal session."""
+    try:
+        data = await request.json()
+        req = MultimodalSessionCreate(**data)
+        
+        session = MultimodalSession(
+            session_name=req.session_name,
+            player1_id=req.player1_id,
+            player2_id=req.player2_id,
+            metadata_json=json.dumps(req.metadata) if req.metadata else None,
+        )
+        db.add(session)
+        db.commit()
+        db.refresh(session)
+        
+        return MultimodalSessionResponse(
+            id=session.id,
+            session_name=session.session_name,
+            start_time=session.start_time,
+            end_time=session.end_time,
+            player1_id=session.player1_id,
+            player2_id=session.player2_id,
+            metadata=json.loads(session.metadata_json) if session.metadata_json else None,
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error creating multimodal session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create session")
+
+
+@app.post("/api/coaching/analyze", response_model=CoachingAnalyzeResponse)
+async def analyze_session_for_coaching(request: Request, db: Session = Depends(get_db)):
+    """Analyze a multimodal session and generate coaching feedback."""
+    try:
+        data = await request.json()
+        req = CoachingAnalyzeRequest(**data)
+        
+        session = db.query(MultimodalSession).filter(MultimodalSession.id == req.session_id).first()
+        if not session:
+            raise HTTPException(status_code=404, detail=f"Session {req.session_id} not found")
+        
+        # Placeholder: In real implementation, this would call feature extraction and RAG
+        # For now, return a mock response
+        feedback = CoachingFeedback(
+            session_id=session.id,
+            feedback_text="Session analysis placeholder - implement feature extraction and RAG integration",
+            recommendations_json=json.dumps([
+                {"category": "technique", "priority": "medium", "suggestion": "Continue practicing basic strokes"}
+            ]),
+        )
+        db.add(feedback)
+        db.commit()
+        db.refresh(feedback)
+        
+        return CoachingAnalyzeResponse(
+            session_id=req.session_id,
+            status="success",
+            feedback_text=feedback.feedback_text,
+            recommendations=[
+                CoachingRecommendation(**r) 
+                for r in json.loads(feedback.recommendations_json)
+            ] if feedback.recommendations_json else [],
+        )
+    except HTTPException:
+        raise
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error analyzing session: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to analyze session")
+
+
+@app.get("/api/experiments", response_model=List[ModelExperimentResponse])
+async def list_experiments(db: Session = Depends(get_db)):
+    """List all model experiments."""
+    try:
+        experiments = db.query(ModelExperiment).all()
+        return [
+            ModelExperimentResponse(
+                id=exp.id,
+                name=exp.name,
+                config=json.loads(exp.model_config_json) if exp.model_config_json else None,
+                dataset_combination=exp.dataset_combination,
+                created_at=exp.created_at,
+                completed_at=exp.completed_at,
+            )
+            for exp in experiments
+        ]
+    except Exception as e:
+        logger.error(f"Error listing experiments: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to list experiments")
+
+
+@app.post("/api/experiments", response_model=ModelExperimentResponse)
+async def create_experiment(request: Request, db: Session = Depends(get_db)):
+    """Create a new model experiment."""
+    try:
+        data = await request.json()
+        req = ModelExperimentCreate(**data)
+        
+        experiment = ModelExperiment(
+            name=req.name,
+            model_config_json=json.dumps(req.config) if req.config else None,
+            dataset_combination=req.dataset_combination,
+        )
+        db.add(experiment)
+        db.commit()
+        db.refresh(experiment)
+        
+        return ModelExperimentResponse(
+            id=experiment.id,
+            name=experiment.name,
+            config=json.loads(experiment.model_config_json) if experiment.model_config_json else None,
+            dataset_combination=experiment.dataset_combination,
+            created_at=experiment.created_at,
+            completed_at=experiment.completed_at,
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error creating experiment: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to create experiment")
+
+
+@app.post("/api/intent/classify", response_model=IntentResult)
+async def classify_intent(request: Request):
+    """Classify intent from transcribed text."""
+    try:
+        data = await request.json()
+        req = IntentClassifyRequest(**data)
+        
+        result = intent_classifier.classify(req.text, req.threshold)
+        return IntentResult(
+            intent=result.intent,
+            confidence=result.confidence,
+            entities=result.entities,
+        )
+    except ValidationError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error classifying intent: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to classify intent")
 
 
 if __name__ == "__main__":

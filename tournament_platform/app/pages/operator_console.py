@@ -582,6 +582,168 @@ def render_operator_console() -> None:
     st.divider()
 
     # -------------------------------------------------------------------------
+    # Health Dashboard Section
+    # -------------------------------------------------------------------------
+    st.subheader("🏥 Tournament Health")
+
+    # Load health data
+    @st.cache_data(ttl=10, show_spinner="Loading health data...")
+    def load_tournament_health(tournament_id: int) -> Dict[str, Any]:
+        """Load tournament health data."""
+        db = SessionLocal()
+        try:
+            from tournament_platform.services.health_service import get_tournament_health
+            return get_tournament_health(db, tournament_id=tournament_id)
+        finally:
+            db.close()
+
+    try:
+        health = load_tournament_health(selected_id)
+    except Exception as e:
+        st.error(f"Failed to load health data: {e}")
+        health = {"match_counts": {}, "table_utilization": {}, "issues": []}
+
+    # KPI Cards
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("Active Matches", health.get("match_counts", {}).get("active", 0))
+    with col2:
+        st.metric("Called Matches", health.get("match_counts", {}).get("called", 0))
+    with col3:
+        st.metric("Delayed Matches", health.get("match_counts", {}).get("delayed", 0))
+    with col4:
+        st.metric("Table Utilization", f"{health.get('table_utilization', {}).get('utilization_percent', 0)}%")
+
+    # Issues table
+    issues = health.get("issues", [])
+    if issues:
+        st.markdown("**Detected Issues**")
+        
+        # Sortable issues table
+        issue_data = []
+        for issue in issues:
+            issue_data.append({
+                "Type": issue.get("issue_type", "unknown"),
+                "Match ID": issue.get("match_id", "N/A"),
+                "Severity": issue.get("severity", "warning"),
+                "Message": issue.get("message", ""),
+            })
+        
+        issue_df = pd.DataFrame(issue_data)
+        st.dataframe(
+            issue_df,
+            use_container_width=True,
+            hide_index=True,
+        )
+        
+        # Alert inbox - show error issues prominently
+        error_issues = [i for i in issues if i.get("severity") == "error"]
+        if error_issues:
+            st.error(f"⚠️ {len(error_issues)} error(s) require attention")
+    else:
+        st.success("✅ No issues detected")
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
+    # Duplicate Players Section
+    # -------------------------------------------------------------------------
+    st.subheader("👥 Duplicate Player Detection")
+
+    # Load duplicate candidates
+    @st.cache_data(ttl=30, show_spinner="Scanning for duplicates...")
+    def load_duplicate_candidates() -> List[Dict[str, Any]]:
+        """Load duplicate player candidates."""
+        db = SessionLocal()
+        try:
+            from tournament_platform.services.duplicate_players import find_duplicate_candidates
+            return find_duplicate_candidates(db)
+        finally:
+            db.close()
+
+    if st.button("🔍 Scan for Duplicates", key="scan_duplicates_btn"):
+        st.cache_data.clear()
+        st.rerun()
+
+    try:
+        candidates = load_duplicate_candidates()
+    except Exception as e:
+        st.error(f"Failed to scan for duplicates: {e}")
+        candidates = []
+
+    if candidates:
+        st.markdown(f"**Found {len(candidates)} potential duplicate(s)**")
+        
+        for i, candidate in enumerate(candidates[:10]):  # Show top 10
+            with st.container(border=True):
+                col1, col2, col3 = st.columns([2, 2, 1])
+                
+                with col1:
+                    st.markdown(f"**{candidate['player1_name']}**")
+                    if candidate.get('player1_email'):
+                        st.caption(f"Email: {candidate['player1_email']}")
+                
+                with col2:
+                    st.markdown(f"**{candidate['player2_name']}**")
+                    if candidate.get('player2_email'):
+                        st.caption(f"Email: {candidate['player2_email']}")
+                
+                with col3:
+                    st.metric("Similarity", f"{candidate['similarity_score']}%")
+                    st.caption(candidate.get('reason', ''))
+                
+                # Merge preview button
+                if st.button("Preview Merge", key=f"preview_merge_{i}"):
+                    db = SessionLocal()
+                    try:
+                        from tournament_platform.services.duplicate_players import preview_player_merge
+                        preview = preview_player_merge(
+                            db,
+                            target_player_id=candidate['player1_id'],
+                            source_player_id=candidate['player2_id'],
+                        )
+                        st.session_state[f"merge_preview_{i}"] = preview
+                    except Exception as e:
+                        st.error(f"Failed to preview merge: {e}")
+                    finally:
+                        db.close()
+                
+                # Show merge preview if available
+                if f"merge_preview_{i}" in st.session_state:
+                    preview = st.session_state[f"merge_preview_{i}"]
+                    if preview.get("success"):
+                        st.info(f"Would transfer {preview['matches_to_transfer']} matches, {preview['rating_history_to_transfer']} rating history entries")
+                        for warning in preview.get("warnings", []):
+                            st.warning(warning)
+                        
+                        # Confirm merge button
+                        if st.button("✅ Confirm Merge", key=f"confirm_merge_{i}"):
+                            db = SessionLocal()
+                            try:
+                                from tournament_platform.services.duplicate_players import merge_players
+                                result = merge_players(
+                                    db,
+                                    target_player_id=candidate['player1_id'],
+                                    source_player_id=candidate['player2_id'],
+                                    actor="operator",
+                                )
+                                if result.get("success"):
+                                    st.success(f"Merged! Transferred {result['matches_transferred']} matches")
+                                    del st.session_state[f"merge_preview_{i}"]
+                                    st.cache_data.clear()
+                                    st.rerun()
+                                else:
+                                    st.error(result.get("error", "Merge failed"))
+                            except Exception as e:
+                                st.error(f"Merge error: {e}")
+                            finally:
+                                db.close()
+    else:
+        st.info("No duplicate candidates found. Click 'Scan for Duplicates' to check.")
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
     # Player Path Section
     # -------------------------------------------------------------------------
     st.subheader("🎯 Player Path")
