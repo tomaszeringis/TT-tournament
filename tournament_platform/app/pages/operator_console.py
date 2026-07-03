@@ -157,48 +157,11 @@ def reset_call_match(match_id: int) -> Dict[str, Any]:
 
 
 # ============================================================================
-# UI Rendering
+# UI Rendering - Tab-based Organization
 # ============================================================================
 
-def render_operator_console() -> None:
-    """Render the operator console page."""
-    st.set_page_config(
-        page_title="Match Center",
-        page_icon="🎛️",
-        layout="wide",
-    )
-
-    st.title("🎛️ Match Center")
-    st.caption("Manage match flow and table assignments")
-
-    # Load tournaments
-    try:
-        tournaments = load_tournaments()
-    except Exception as e:
-        st.error(f"Failed to load tournaments: {e}")
-        st.stop()
-
-    if not tournaments:
-        st.info("No tournaments found. Create a tournament first.")
-        st.stop()
-
-    # Tournament selector
-    tournament_options = {t["name"]: t["id"] for t in tournaments}
-    selected_name = st.selectbox(
-        "Select Tournament",
-        options=list(tournament_options.keys()),
-        index=0,
-        key="operator_tournament_select",
-    )
-    selected_id = tournament_options[selected_name]
-
-    # Manual refresh
-    if st.button("🔄 Refresh", key="operator_refresh"):
-        st.cache_data.clear()
-        st.rerun()
-
-    st.divider()
-
+def render_match_queue_tab(selected_id: int) -> None:
+    """Render the Match Queue tab content."""
     # -------------------------------------------------------------------------
     # Quick Actions Section
     # -------------------------------------------------------------------------
@@ -375,60 +338,7 @@ def render_operator_console() -> None:
     st.divider()
 
     # -------------------------------------------------------------------------
-    # Table Status Section
-    # -------------------------------------------------------------------------
-    try:
-        table_availability = load_table_availability(selected_id)
-    except Exception as e:
-        st.error(f"Failed to load table availability: {e}")
-        table_availability = {"total_tables": 0, "active_tables": 0, "tables": []}
-
-    def on_set_max_tables(max_available: int, total_tables: int, keep_busy_active: bool):
-        db = SessionLocal()
-        try:
-            result = set_max_available_tables(
-                db,
-                max_tables=max_available,
-                tournament_id=selected_id,
-                actor="operator",
-                prefer_keep_busy_tables_active=keep_busy_active,
-            )
-            if result.get("warnings"):
-                for warning in result["warnings"]:
-                    st.warning(warning)
-            st.success(f"Set {result['resulting_active_tables']} tables as active")
-            st.cache_data.clear()
-            st.rerun()
-        except Exception as e:
-            st.error(f"Error setting max available tables: {e}")
-        finally:
-            db.close()
-
-    def on_create_tables(max_available: int):
-        db = SessionLocal()
-        try:
-            create_result = ensure_minimum_venue_tables(
-                db,
-                count=max_available,
-                actor="operator"
-            )
-            if create_result.get("created_tables", 0) > 0:
-                st.success(f"Created {create_result['created_tables']} tables")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.info("No tables needed to be created")
-        except Exception as e:
-            st.error(f"Error creating tables: {e}")
-        finally:
-            db.close()
-
-    render_table_status_section(table_availability, on_set_max_tables, on_create_tables)
-
-    st.divider()
-
-    # -------------------------------------------------------------------------
-    # Match Queue Section
+    # Match Queue List Section
     # -------------------------------------------------------------------------
     st.subheader("📋 Match Queue")
 
@@ -535,6 +445,106 @@ def render_operator_console() -> None:
                                     st.rerun()
     else:
         st.info("No matches in queue.")
+
+
+def render_table_status_tab(selected_id: int) -> None:
+    """Render the Table Status tab content."""
+    try:
+        table_availability = load_table_availability(selected_id)
+    except Exception as e:
+        st.error(f"Failed to load table availability: {e}")
+        table_availability = {"total_tables": 0, "active_tables": 0, "tables": []}
+
+    def on_set_max_tables(max_available: int, total_tables: int, keep_busy_active: bool):
+        db = SessionLocal()
+        try:
+            result = set_max_available_tables(
+                db,
+                max_tables=max_available,
+                tournament_id=selected_id,
+                actor="operator",
+                prefer_keep_busy_tables_active=keep_busy_active,
+            )
+            if result.get("warnings"):
+                for warning in result["warnings"]:
+                    st.warning(warning)
+            st.success(f"Set {result['resulting_active_tables']} tables as active")
+            st.cache_data.clear()
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error setting max available tables: {e}")
+        finally:
+            db.close()
+
+    def on_create_tables(max_available: int):
+        db = SessionLocal()
+        try:
+            create_result = ensure_minimum_venue_tables(
+                db,
+                count=max_available,
+                actor="operator"
+            )
+            if create_result.get("created_tables", 0) > 0:
+                st.success(f"Created {create_result['created_tables']} tables")
+                st.cache_data.clear()
+                st.rerun()
+            else:
+                st.info("No tables needed to be created")
+        except Exception as e:
+            st.error(f"Error creating tables: {e}")
+        finally:
+            db.close()
+
+    render_table_status_section(table_availability, on_set_max_tables, on_create_tables)
+
+
+def render_operator_console() -> None:
+    """Render the operator console page with tabs."""
+    st.set_page_config(
+        page_title="Match Center",
+        page_icon="🎛️",
+        layout="wide",
+    )
+
+    st.title("Match Center")
+    st.caption("Manage match flow and table assignments")
+
+    # Load tournaments
+    try:
+        tournaments = load_tournaments()
+    except Exception as e:
+        st.error(f"Failed to load tournaments: {e}")
+        st.stop()
+
+    if not tournaments:
+        st.info("No tournaments found. Create a tournament first.")
+        st.stop()
+
+    # Tournament selector
+    tournament_options = {t["name"]: t["id"] for t in tournaments}
+    selected_name = st.selectbox(
+        "Select Tournament",
+        options=list(tournament_options.keys()),
+        index=0,
+        key="operator_tournament_select",
+    )
+    selected_id = tournament_options[selected_name]
+
+    # Manual refresh
+    if st.button("🔄 Refresh", key="operator_refresh"):
+        st.cache_data.clear()
+        st.rerun()
+
+    st.divider()
+
+    # Tabs for Match Center
+    tabs = st.tabs(["Match Queue", "Table Status"])
+
+    with tabs[0]:
+        render_match_queue_tab(selected_id)
+
+    with tabs[1]:
+        render_table_status_tab(selected_id)
 
     st.divider()
 

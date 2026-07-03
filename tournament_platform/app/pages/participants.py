@@ -9,7 +9,7 @@ This file is kept as a redirect for backward compatibility.
 
 import streamlit as st
 
-st.title("👥 Participants (Moved)")
+st.title("Participants (Moved)")
 st.caption("Participant management has been moved to the Events & Draws page.")
 
 st.info("👥 **Participants** functionality is now available in the **Events & Draws** page under the **Participants** tab.")

@@ -54,7 +54,7 @@ if authentication_status:
     except Exception:
         pass
     
-    st.title("🏓")
+    st.title("TT Platform")
     st.space("medium")
     
     # Multi-page navigation using st.navigation (Streamlit 1.35+)

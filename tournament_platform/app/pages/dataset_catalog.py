@@ -19,7 +19,7 @@ def get_registry() -> DatasetRegistry:
 
 def show():
     """Display the dataset catalog page."""
-    st.title("📊 Dataset Catalog")
+    st.title("Dataset Catalog")
     st.markdown("Browse and manage datasets for the Multimodal AI system.")
     
     registry = get_registry()

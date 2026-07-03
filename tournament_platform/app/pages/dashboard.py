@@ -393,7 +393,7 @@ def render_upcoming_matches_tab(data):
 
 def render_dashboard():
     """Render the optimized dashboard page with tabs."""
-    st.title("📊 Tournament Dashboard")
+    st.title("Tournament Dashboard")
 
     try:
         data = load_dashboard_data()

@@ -22,11 +22,8 @@ def render_page_header(
         icon: Optional emoji or icon to display before title
         actions: Optional list of (label, key) tuples for action buttons
     """
-    # Title with optional icon
-    if icon:
-        st.title(f"{icon} {title}")
-    else:
-        st.title(title)
+    # Title (icons intentionally omitted)
+    st.title(title)
 
     # Description
     if description:

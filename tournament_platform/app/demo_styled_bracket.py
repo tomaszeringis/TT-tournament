@@ -4,7 +4,7 @@ import json
 
 st.set_page_config(page_title="Professional Bracket Demo", layout="wide")
 
-st.title("🏆 Professional Tournament Bracket")
+st.title("Professional Tournament Bracket")
 st.markdown("""
 This demo showcases the **enhanced styling**, **theme detection**, and **responsive layout** of the bracket component.
 It automatically adapts to Streamlit's Light and Dark modes.

@@ -14,7 +14,7 @@ import asyncio
 
 from tournament_platform.config import settings
 from tournament_platform.services.settings import ENABLE_RULES_ASSISTANT
-from tournament_platform.app.utils import api_request
+from tournament_platform.app.utils import api_request, get_current_match_context
 from tournament_platform.services.ai_facade import answer_rules_question, AIAnswer
 from tournament_platform.app.components.ai_status import render_ai_status_badge, render_ai_status_expander
 from tournament_platform.app.components.ai_chat import (
@@ -63,38 +63,9 @@ EXAMPLE_QUESTIONS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Helper: get current match context
-# ---------------------------------------------------------------------------
-def get_current_match_context() -> Optional[dict]:
-    """Get the current match context from the database."""
-    try:
-        db = SessionLocal()
-        active_match = db.query(Match).filter(
-            Match.status == MatchStatus.active
-        ).order_by(Match.scheduled_time.desc()).first()
-
-        if active_match:
-            p1 = db.query(Player).filter(Player.id == active_match.player1_id).first() if active_match.player1_id else None
-            p2 = db.query(Player).filter(Player.id == active_match.player2_id).first() if active_match.player2_id else None
-            context = {
-                "player1": p1.name if p1 else "Unknown",
-                "player2": p2.name if p2 else "Unknown",
-                "tournament": active_match.tournament.name if active_match.tournament else None,
-                "score": active_match.score,
-                "match_id": active_match.id
-            }
-            db.close()
-            return context
-        db.close()
-    except Exception:
-        pass
-    return None
-
-
-# ---------------------------------------------------------------------------
 # Page UI
 # ---------------------------------------------------------------------------
-st.title("🤖 AI Assistant")
+st.title("AI Assistant")
 st.caption("Ask tournament, rules, ranking, schedule, and operations questions.")
 
 # Show AI status

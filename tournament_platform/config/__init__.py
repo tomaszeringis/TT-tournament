@@ -127,6 +127,7 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     # Video Scorekeeper
     # -------------------------------------------------------------------------
+    ENABLE_SWISS: bool = False
     ENABLE_VIDEO_SCOREKEEPER: bool = True
     VIDEO_CONFIDENCE_THRESHOLD: float = 0.7
     VIDEO_MAX_CLIP_DURATION: int = 30

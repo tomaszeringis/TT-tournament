@@ -7,7 +7,7 @@ import pandas as pd
 import streamlit_shadcn_ui as ui
 
 from tournament_platform.config import settings
-from tournament_platform.models import MatchStatus, DATABASE_URL, DATABASE_PATH
+from tournament_platform.models import SessionLocal, Match, Player, Tournament, MatchStatus, DATABASE_URL, DATABASE_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -127,6 +127,37 @@ def format_match_score(score: Optional[str]) -> str:
         Formatted score string
     """
     return score or "-"
+
+
+def format_match_option(match: dict) -> str:
+    """Format a match dict into a human-readable label for selectors.
+
+    Consolidates logic used across voice/video scorekeeper pages.
+    Expected keys: round_number, location, player1_name/player2_name or player1/player2, status, scheduled_time
+    """
+    parts = []
+    if match.get("round_number") is not None:
+        parts.append(f"Round {match['round_number']}")
+    if match.get("location"):
+        parts.append(f"Table {match['location']}")
+
+    # Normalize player name keys
+    p1 = match.get("player1_name") or match.get("player1") or "TBD"
+    p2 = match.get("player2_name") or match.get("player2") or "TBD"
+    parts.append(f"{p1} vs {p2}")
+
+    status = match.get("status") or match.get("state") or "unknown"
+    parts.append(status)
+
+    if match.get("scheduled_time"):
+        try:
+            from datetime import datetime
+            dt = datetime.fromisoformat(str(match["scheduled_time"]).replace("Z", "+00:00"))
+            parts.append(dt.strftime("%H:%M"))
+        except Exception:
+            pass
+
+    return " | ".join(parts)
 
 
 # ============================================================================
@@ -300,4 +331,40 @@ def api_request(
         logger.error("Unexpected error during %s: %s | %s", error_context, url, e, exc_info=True)
         st.error("❌ An unexpected error occurred. Please try again.")
 
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+from typing import Optional as _Optional
+
+def get_current_match_context() -> _Optional[dict]:
+    """Get the current active match context from the database.
+
+    Returns a dict with keys: player1, player2, tournament, score, match_id
+    or None if no active match found.
+    """
+    try:
+        db = SessionLocal()
+        active_match = db.query(Match).filter(
+            Match.status == MatchStatus.active
+        ).order_by(Match.scheduled_time.desc()).first()
+
+        if active_match:
+            p1 = db.query(Player).filter(Player.id == active_match.player1_id).first() if active_match.player1_id else None
+            p2 = db.query(Player).filter(Player.id == active_match.player2_id).first() if active_match.player2_id else None
+            context = {
+                "player1": p1.name if p1 else "Unknown",
+                "player2": p2.name if p2 else "Unknown",
+                "tournament": active_match.tournament.name if getattr(active_match, 'tournament', None) else None,
+                "score": getattr(active_match, 'score', None),
+                "match_id": active_match.id,
+            }
+            db.close()
+            return context
+        db.close()
+    except Exception:
+        # Swallow exceptions here to avoid breaking UI; callers can handle None
+        pass
     return None

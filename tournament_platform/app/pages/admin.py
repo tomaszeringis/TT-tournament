@@ -62,7 +62,7 @@ def get_cached_tournaments():
         db.close()
 
 
-st.title("👨\u200d💼 Admin / Operator Console")
+st.title("Admin / Operator Console")
 st.space("medium")
 
 try:
@@ -235,6 +235,53 @@ with admin_tabs[2]:
     
     info_df = pd.DataFrame(list(system_info.items()), columns=["Parameter", "Value"])
     st.table(info_df)
+
+    # -----------------------------------------------------------------------
+    # Feature flags (Admin)
+    # -----------------------------------------------------------------------
+    # Show current Swiss tournaments feature flag and allow runtime toggle or persist to .env
+    try:
+        current_swiss = bool(settings.ENABLE_SWISS)
+    except Exception:
+        current_swiss = False
+
+    with st.expander("⚙️ Feature Flags", expanded=False):
+        st.write("Toggle experimental features. Persisting will update the project's `.env` file for future restarts.")
+        col_a, col_b = st.columns([2, 1])
+        with col_a:
+            swiss_toggle = st.checkbox("Enable Swiss tournaments (runtime)", value=current_swiss, key="admin_enable_swiss")
+        with col_b:
+            if st.button("Apply", key="admin_apply_swiss"):
+                # Apply runtime toggle
+                try:
+                    settings.ENABLE_SWISS = bool(swiss_toggle)
+                    st.success(f"Swiss tournaments enabled at runtime: {settings.ENABLE_SWISS}")
+                except Exception as e:
+                    st.error(f"Failed to set flag at runtime: {e}")
+
+        st.markdown("**Persist change to `.env` (optional)**")
+        persist = st.checkbox("Write setting to .env (requires restart)", value=False, key="admin_persist_swiss")
+        if persist and st.button("Persist to .env", key="admin_persist_btn"):
+            # Write or update .env in the project root
+            try:
+                import os
+                env_path = os.path.join(os.getcwd(), ".env")
+                # Read existing env if present
+                existing = {}
+                if os.path.exists(env_path):
+                    with open(env_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if "=" in line and not line.strip().startswith("#"):
+                                k, v = line.strip().split("=", 1)
+                                existing[k] = v
+                existing["ENABLE_SWISS"] = "true" if swiss_toggle else "false"
+                # Write back
+                with open(env_path, "w", encoding="utf-8") as f:
+                    for k, v in existing.items():
+                        f.write(f"{k}={v}\n")
+                st.success(f".env updated at {env_path}. Restart the app to apply persisted settings.")
+            except Exception as e:
+                st.error(f"Failed to persist .env: {e}")
     
     st.space("medium")
     st.write("**Optional Integrations**")

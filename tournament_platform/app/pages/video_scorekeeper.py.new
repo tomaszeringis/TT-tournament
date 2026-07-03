@@ -474,7 +474,7 @@ def render_current_score() -> None:
 # Page UI
 # ============================================================================
 
-st.title("🎥 Video Scorekeeper")
+st.title("Video Scorekeeper")
 st.caption("AI-assisted point suggestions with human confirmation. Upload a video to get started.")
 
 # Active Tournament Match Selector

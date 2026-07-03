@@ -137,7 +137,8 @@ def render_page_header(
     """Render a consistent page header."""
     import streamlit as st
     
-    st.title(f"{icon + ' ' if icon else ''}{title}")
+    # Intentionally do not render emoji icons in the global page header to keep a clean top bar
+    st.title(title)
     if description:
         st.caption(description)
 

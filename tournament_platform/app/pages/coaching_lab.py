@@ -28,7 +28,7 @@ def get_intent_classifier() -> IntentClassifier:
 
 def show():
     """Display the coaching lab page."""
-    st.title("🏓 Coaching Lab")
+    st.title("Coaching Lab")
     st.markdown("Analyze table tennis sessions and get AI-powered coaching feedback.")
     
     # Tabs for different views

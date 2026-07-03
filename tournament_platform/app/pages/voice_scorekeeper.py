@@ -588,7 +588,7 @@ def render_selected_match_summary() -> None:
 # Page UI
 # ============================================================================
 
-st.title("🎤 Voice Scorekeeper")
+st.title("Voice Scorekeeper")
 st.caption("Speak to update scores. The system uses local transcription - no data leaves your machine.")
 
 # Commentary Settings

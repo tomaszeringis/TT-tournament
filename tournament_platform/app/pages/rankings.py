@@ -9,7 +9,7 @@ This file is kept as a redirect for backward compatibility.
 
 import streamlit as st
 
-st.title("🏆 Rankings (Moved)")
+st.title("Rankings (Moved)")
 st.caption("Rankings have been moved to the Dashboard page.")
 
 st.info("🏆 **Rankings** functionality is now available in the **Dashboard** page under the **Rankings** tab.")

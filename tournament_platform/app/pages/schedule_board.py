@@ -45,7 +45,7 @@ def render_schedule_board() -> None:
         layout="wide",
     )
 
-    st.title("📅 Schedule Board")
+    st.title("Schedule Board")
     st.caption("View and plan tournament matches by date/time")
 
     # Load tournaments

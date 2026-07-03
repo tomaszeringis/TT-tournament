@@ -511,10 +511,16 @@ class TournamentFactory:
             "single-elimination": KnockoutStrategy(),
             "round-robin": RoundRobinStrategy(),
             "groups-knockout": GroupsKnockoutStrategy(),
-            "swiss": SwissStrategy()
         }
         
         normalized_format = format_type.lower()
+        # Swiss strategy is behind a feature flag to preserve backwards compatibility with tests.
+        if normalized_format == "swiss":
+            if settings.ENABLE_SWISS:
+                strategies["swiss"] = SwissStrategy()
+            else:
+                raise ValueError(f"Unsupported tournament format: {format_type}")
+
         if normalized_format not in strategies:
             raise ValueError(f"Unsupported tournament format: {format_type}")
             

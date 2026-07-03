@@ -20,7 +20,7 @@ def get_registry() -> DatasetRegistry:
 
 def show():
     """Display the experiment dashboard page."""
-    st.title("🧪 Experiment Dashboard")
+    st.title("Experiment Dashboard")
     st.markdown("Track and manage ML model training/evaluation experiments.")
     
     # Tabs for different views
