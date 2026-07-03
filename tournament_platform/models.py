@@ -104,6 +104,9 @@ class Match(Base):
     round_number = Column(Integer, nullable=True)
     bracket_index = Column(Integer, nullable=True)
     next_match_id = Column(Integer, ForeignKey("matches.id"), nullable=True)
+    
+    # Stage reference (for multi-phase events)
+    stage_id = Column(Integer, ForeignKey("stages.id"), nullable=True)
 
     # Foreign keys to Player (nullable for incremental migration)
     player1_id = Column(Integer, ForeignKey("players.id"), nullable=True)
@@ -121,6 +124,7 @@ class Match(Base):
 
     # Relationships
     tournament = relationship("Tournament", back_populates="matches")
+    stage = relationship("Stage", back_populates="matches")
     next_match = relationship("Match", remote_side=[id], backref="previous_matches")
     player1_rel = relationship("Player", foreign_keys=[player1_id])
     player2_rel = relationship("Player", foreign_keys=[player2_id])
@@ -154,6 +158,103 @@ class AuditLog(Base):
     entity_id = Column(Integer, nullable=True)
     payload_json = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+
+# ============================================================================
+# Event and Stage Models (Phase 2)
+# ============================================================================
+
+class EventType(str, enum.Enum):
+    """Type of tournament event format."""
+    knockout = "knockout"
+    round_robin = "round-robin"
+    groups_knockout = "groups_knockout"
+    swiss = "swiss"  # Phase 4
+
+
+class Event(Base):
+    """Top-level tournament event that can contain multiple stages."""
+    __tablename__ = "events"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, index=True)
+    description = Column(String, nullable=True)
+    event_type = Column(String, default=EventType.knockout.value)  # groups_knockout, swiss, etc.
+    
+    # Groups → knockout configuration
+    num_groups = Column(Integer, nullable=True)
+    qualifiers_per_group = Column(Integer, nullable=True)
+    
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    
+    # Relationships
+    stages = relationship("Stage", back_populates="event", cascade="all, delete-orphan")
+    entries = relationship("Entry", back_populates="event", cascade="all, delete-orphan")
+
+
+class Stage(Base):
+    """A phase within an event (group, knockout, swiss)."""
+    __tablename__ = "stages"
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(Integer, ForeignKey("events.id"))
+    stage_type = Column(String)  # 'group', 'knockout', 'swiss'
+    name = Column(String)
+    order_index = Column(Integer, default=0)
+    
+    # Relationships
+    event = relationship("Event", back_populates="stages")
+    groups = relationship("Group", back_populates="stage", cascade="all, delete-orphan")
+    matches = relationship("Match", back_populates="stage")
+
+
+class Group(Base):
+    """Group within a stage."""
+    __tablename__ = "groups"
+    id = Column(Integer, primary_key=True, index=True)
+    stage_id = Column(Integer, ForeignKey("stages.id"))
+    name = Column(String)
+    order_index = Column(Integer, default=0)
+    
+    # Relationships
+    stage = relationship("Stage", back_populates="groups")
+    entries = relationship("Entry", back_populates="group")
+
+
+class Entry(Base):
+    """Player registration for an event (supports doubles)."""
+    __tablename__ = "entries"
+    id = Column(Integer, primary_key=True, index=True)
+    event_id = Column(Integer, ForeignKey("events.id"))
+    group_id = Column(Integer, ForeignKey("groups.id"), nullable=True)
+    
+    # Player references (singles or doubles)
+    player1_id = Column(Integer, ForeignKey("players.id"))
+    player2_id = Column(Integer, ForeignKey("players.id"), nullable=True)  # NULL for singles
+    
+    seed_position = Column(Integer, nullable=True)
+    club = Column(String, nullable=True)
+    division = Column(String, nullable=True)
+    
+    # Relationships
+    event = relationship("Event", back_populates="entries")
+    group = relationship("Group", back_populates="entries")
+    player1 = relationship("Player", foreign_keys=[player1_id])
+    player2 = relationship("Player", foreign_keys=[player2_id])
+
+
+class ScorerToken(Base):
+    """Token for scorer/referee access to a specific match or table."""
+    __tablename__ = "scorer_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    token = Column(String, unique=True, index=True)
+    match_id = Column(Integer, ForeignKey("matches.id"), nullable=True)
+    table_id = Column(Integer, ForeignKey("venue_tables.id"), nullable=True)
+    expires_at = Column(DateTime, nullable=True)
+    revoked = Column(Integer, default=0)  # SQLite boolean as Integer
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    
+    # Relationships
+    match = relationship("Match", foreign_keys=[match_id])
+    table = relationship("VenueTable", foreign_keys=[table_id])
 
 
 # ============================================================================

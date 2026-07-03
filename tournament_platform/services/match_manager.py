@@ -5,8 +5,15 @@ A simple, privacy-focused scorekeeping system using keyword matching
 for intent parsing instead of complex AI reasoning.
 """
 
+import re
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Tuple, Optional
+
+from tournament_platform.services.voice_event_schema import (
+    VoiceEvent,
+    EventType,
+    EventFactory,
+)
 
 
 @dataclass
@@ -202,3 +209,143 @@ class MatchManager:
         self.state.player_b = player_b
         self.state.player_a_id = player_a_id
         self.state.player_b_id = player_b_id
+
+    # ------------------------------------------------------------------
+    # Event generation methods
+    # ------------------------------------------------------------------
+
+    def generate_point_event(self, player: str, source_transcript: str) -> VoiceEvent:
+        """
+        Generate a VoiceEvent for a point won.
+
+        Args:
+            player: "A" or "B"
+            source_transcript: Original voice transcript
+
+        Returns:
+            VoiceEvent for the point won
+        """
+        score_before = f"{self.state.score_a}-{self.state.score_b}"
+        if player == "A":
+            self.state.score_a += 1
+        else:
+            self.state.score_b += 1
+        score_after = f"{self.state.score_a}-{self.state.score_b}"
+
+        return EventFactory.create_point_event(
+            player=self.state.player_a if player == "A" else self.state.player_b,
+            score_before=score_before,
+            score_after=score_after,
+            source_transcript=source_transcript,
+            match_id=None,
+            tournament_id=None,
+            opponent=self.state.player_b if player == "A" else self.state.player_a,
+            game_number=self.state.current_set,
+        )
+
+    def generate_undo_event(self, source_transcript: str) -> Optional[VoiceEvent]:
+        """
+        Generate a VoiceEvent for undo.
+
+        Args:
+            source_transcript: Original voice transcript
+
+        Returns:
+            VoiceEvent for the undo, or None if no history
+        """
+        if not self.state.match_history:
+            return None
+
+        score_before = f"{self.state.score_a}-{self.state.score_b}"
+        return EventFactory.create_undo_event(
+            score_before=score_before,
+            score_after="0-0",
+            source_transcript=source_transcript,
+        )
+
+    def generate_reset_event(self, source_transcript: str) -> VoiceEvent:
+        """
+        Generate a VoiceEvent for reset.
+
+        Args:
+            source_transcript: Original voice transcript
+
+        Returns:
+            VoiceEvent for the reset
+        """
+        return EventFactory.create_reset_event(
+            source_transcript=source_transcript,
+        )
+
+    def generate_score_query_event(self, source_transcript: str) -> VoiceEvent:
+        """
+        Generate a VoiceEvent for score query.
+
+        Args:
+            source_transcript: Original voice transcript
+
+        Returns:
+            VoiceEvent for the score query
+        """
+        return EventFactory.create_score_query_event(
+            score=f"{self.state.score_a}-{self.state.score_b}",
+            source_transcript=source_transcript,
+        )
+
+    def generate_match_result_event(
+        self,
+        player_a: str,
+        player_b: str,
+        winner: str,
+        score: str,
+        source_transcript: str,
+    ) -> VoiceEvent:
+        """
+        Generate a VoiceEvent for match result.
+
+        Args:
+            player_a: First player name
+            player_b: Second player name
+            winner: Winner player name
+            score: Match score (e.g., "3-1")
+            source_transcript: Original voice transcript
+
+        Returns:
+            VoiceEvent for the match result
+        """
+        return EventFactory.create_match_result_event(
+            player_a=player_a,
+            player_b=player_b,
+            winner=winner,
+            score=score,
+            source_transcript=source_transcript,
+        )
+
+    def parse_match_result(self, transcript: str) -> Optional[Dict[str, Any]]:
+        """
+        Parse a match result from transcript (e.g., "Alice beat Bob 3-1").
+
+        Args:
+            transcript: The voice transcript
+
+        Returns:
+            Dict with player_a, player_b, winner, score or None if not parseable
+        """
+        patterns = [
+            r"(?P<a>\w+)\s+beat\s+(?P<b>\w+)\s+(?P<score>\d+\s*[-–]\s*\d+)",
+            r"(?P<a>\w+)\s+defeated\s+(?P<b>\w+)\s+(?P<score>\d+\s*[-–]\s*\d+)",
+            r"(?P<a>\w+)\s+wins\s+over\s+(?P<b>\w+)\s+(?P<score>\d+\s*[-–]\s*\d+)",
+            r"(?P<b>\w+)\s+lost\s+to\s+(?P<a>\w+)\s+(?P<score>\d+\s*[-–]\s*\d+)",
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, transcript, re.IGNORECASE)
+            if match:
+                return {
+                    "player_a": match.group("a"),
+                    "player_b": match.group("b"),
+                    "winner": match.group("a"),
+                    "score": match.group("score").replace(" ", ""),
+                }
+
+        return None

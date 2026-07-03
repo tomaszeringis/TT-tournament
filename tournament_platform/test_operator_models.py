@@ -206,7 +206,7 @@ class TestAuditService:
         
         match_logs = get_audit_logs(db_session, entity_type="match")
         assert len(match_logs) == 1
-        assert match_logs[0].entity_type == "match"
+        assert match_logs[0]["entity_type"] == "match"
 
 
 if __name__ == "__main__":

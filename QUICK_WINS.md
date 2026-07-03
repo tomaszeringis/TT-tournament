@@ -196,8 +196,8 @@ streamlit run tournament_platform/app/main.py
 ## Running Tests
 
 ```powershell
-# Run all quick-win related tests
-pytest tournament_platform/test_match_parser.py tournament_platform/test_rating_intelligence.py tournament_platform/test_operator_commands.py tournament_platform/test_tournament_read_models.py tournament_platform/test_voice_transcription.py tournament_platform/test_announcement_service.py -v
+# Run all quick-win and phase tests
+pytest tests/test_phase0_quick_wins.py tests/test_swiss_strategy.py tests/test_scheduler.py tests/test_ai_suggestions.py -v
 
 # Run compile check on all Python files
 python -m compileall .
@@ -289,3 +289,79 @@ Feature flags are defined in [`tournament_platform/services/settings.py`](tourna
 | `ENABLE_SPOKEN_CONFIRMATION` | `False` | Enable spoken confirmation prompts |
 | `KEEP_AUDIO_FILES` | `False` | Keep temporary audio files after transcription |
 | `SPEECH_MODEL_SIZE` | `base` | Whisper model size for speech-to-text |
+
+## Phase 0 Quick Wins (UX Hardening)
+
+The following improvements were made to enhance the user experience and transparency:
+
+### 1. Dynamic Bracket Sizing
+- **File**: [`tournament_platform/app/pages/events_draws.py`](tournament_platform/app/pages/events_draws.py)
+- **Change**: Replaced hardcoded bracket size of 8 with dynamic sizing based on participant count
+- **Support**: 4, 8, 16, 32, 64, and 128 participant brackets
+- **Function**: `calculate_bracket_size(participant_count)` returns the appropriate power-of-two size
+
+### 2. Operator Reschedule UX
+- **File**: [`tournament_platform/app/pages/operator_console.py`](tournament_platform/app/pages/operator_console.py)
+- **Change**: Replaced free-text ISO datetime entry with safer Streamlit controls:
+  - `st.date_input()` for date selection
+  - `st.time_input()` for time selection
+  - `st.selectbox()` for table selection (dropdown)
+- **Validation**: Prevents scheduling matches in the past
+
+### 3. Format Limitation Transparency
+- **File**: [`tournament_platform/app/pages/events_draws.py`](tournament_platform/app/pages/events_draws.py)
+- **Change**: Added informational message in tournament creation wizard
+- **Text**: "Currently implemented: **Single Elimination**, **Round Robin**, **Groups → Knockout**, **Swiss**. Planned (not yet available): Double Elimination, Doubles/Mixed Doubles."
+
+### 4. Standings/Tie-Break Explanation
+- **File**: [`tournament_platform/app/pages/events_draws.py`](tournament_platform/app/pages/events_draws.py)
+- **Change**: Added caption explaining standings computation
+- **Text**: "Standings: sorted by Wins (descending), then Points For - Points Against (descending). Note: Round-robin tie-breaks (head-to-head, etc.) are not yet implemented."
+
+### 5. Public Board Kiosk Mode
+- **File**: [`tournament_platform/app/pages/public_board.py`](tournament_platform/app/pages/public_board.py)
+- **Change**: Added kiosk mode support via query parameter `?kiosk=1`
+- **Features**:
+  - Sidebar toggle to enable kiosk mode
+  - "Copy Public Link" button in sidebar
+  - Clean TV/projector display with hidden navigation
+
+### 6. Dashboard Analytics Honesty
+- **File**: [`tournament_platform/app/pages/dashboard.py`](tournament_platform/app/pages/dashboard.py)
+- **Change**: Removed synthetic "Aggression" metric from radar chart
+- **Current metrics**: Win Rate and Consistency only (real data)
+
+### 7. Groups → Knockout Format
+- **File**: [`tournament_platform/app/pages/events_draws.py`](tournament_platform/app/pages/events_draws.py)
+- **Change**: Added Groups → Knockout tournament format
+- **Features**:
+  - Configure number of groups (2-8)
+  - Set qualifiers per group (1-4)
+  - Auto-generates group stage round-robin matches
+  - Creates knockout stage placeholder matches
+  - Group standings with tie-break explanation
+
+### 8. Swiss System Format
+- **File**: [`tournament_platform/app/pages/events_draws.py`](tournament_platform/app/pages/events_draws.py)
+- **Change**: Added Swiss System tournament format
+- **Features**:
+  - Configure number of rounds (3-10)
+  - Players paired based on similar records each round
+  - Avoids repeat pairings
+  - Handles byes for odd player counts
+
+### 9. AI Tournament Suggestions
+- **File**: [`tournament_platform/services/ai_tournament_suggestions.py`](tournament_platform/services/ai_tournament_suggestions.py)
+- **Change**: Added AI-powered suggestions for tournament management
+- **Features**:
+  - `suggest_seeding()`: Recommends seeding order based on player ratings
+  - `suggest_schedule()`: Suggests match schedule with table assignments
+  - `detect_anomalies()`: Detects unusual score patterns and missing data
+
+### 10. Package Boundaries (tournament_core, tournament_ai)
+- **File**: [`tournament_core/__init__.py`](tournament_core/__init__.py), [`tournament_ai/__init__.py`](tournament_ai/__init__.py)
+- **Change**: Created separate packages for core tournament logic and AI features
+- **Features**:
+  - `tournament_core`: Models, strategies, match management
+  - `tournament_ai`: AI assistant, voice, coaching features
+  - Clean import paths for both packages

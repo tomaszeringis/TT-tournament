@@ -183,6 +183,12 @@ class TournamentState:
         """
         Calculates standings from all completed matches.
         Returns a sorted list of participants with their stats.
+        
+        Tie-break order (for round-robin):
+        1. Wins (descending)
+        2. Head-to-head record (if applicable)
+        3. Points difference (PF - PA)
+        4. Points for
         """
         standings = {}
         
@@ -195,7 +201,8 @@ class TournamentState:
                 'losses': 0,
                 'matches_played': 0,
                 'points_for': 0,
-                'points_against': 0
+                'points_against': 0,
+                'head_to_head': {}  # Track head-to-head wins
             }
             
         # Iterate through matches
@@ -225,22 +232,91 @@ class TournamentState:
                 standings[id2]['points_for'] += s2
                 standings[id2]['points_against'] += s1
                 
-                # Update wins/losses
+                # Update wins/losses and head-to-head
                 if s1 > s2:
                     standings[id1]['wins'] += 1
                     standings[id2]['losses'] += 1
+                    # Track head-to-head
+                    if id2 not in standings[id1]['head_to_head']:
+                        standings[id1]['head_to_head'][id2] = 0
+                    standings[id1]['head_to_head'][id2] += 1
                 elif s2 > s1:
                     standings[id2]['wins'] += 1
                     standings[id1]['losses'] += 1
+                    # Track head-to-head
+                    if id1 not in standings[id2]['head_to_head']:
+                        standings[id2]['head_to_head'][id1] = 0
+                    standings[id2]['head_to_head'][id1] += 1
                 else:
-                    # Draw
+                    # Draw - no winner
                     pass
         
-        # Sort standings: wins DESC, points_diff DESC
+        # Sort standings with tie-break logic
         sorted_standings = sorted(
             standings.values(),
-            key=lambda x: (x['wins'], x['points_for'] - x['points_against']),
+            key=lambda x: (
+                x['wins'],
+                self._calculate_head_to_head_score(x, standings),
+                x['points_for'] - x['points_against'],
+                x['points_for']
+            ),
             reverse=True
         )
         
+        # Remove head_to_head from output (internal use only)
+        for s in sorted_standings:
+            del s['head_to_head']
+        
         return sorted_standings
+
+    def _calculate_head_to_head_score(self, player_standings, all_standings):
+        """
+        Calculate head-to-head score for tie-breaking.
+        Returns the sum of wins against players with the same number of wins.
+        """
+        player_wins = player_standings['wins']
+        h2h_score = 0
+        
+        for opponent_id, wins in player_standings.get('head_to_head', {}).items():
+            if opponent_id in all_standings:
+                opponent = all_standings[opponent_id]
+                if opponent['wins'] == player_wins:
+                    h2h_score += wins
+        
+        return h2h_score
+
+    def get_qualifiers(self, group_id: int, count: int) -> list:
+        """
+        Get the top N qualifiers from a group based on standings.
+        
+        Args:
+            group_id: The group ID to get qualifiers from.
+            count: Number of qualifiers to return.
+            
+        Returns:
+            List of participant IDs for qualifiers.
+        """
+        # Get all matches in this group
+        group_matches = [m for m in self.data.get('matches', []) 
+                         if m.get('groupId') == group_id]
+        
+        # Get participants in this group
+        group_participant_ids = set()
+        for m in group_matches:
+            if m.get('opponent1') and m['opponent1'].get('id'):
+                group_participant_ids.add(m['opponent1']['id'])
+            if m.get('opponent2') and m['opponent2'].get('id'):
+                group_participant_ids.add(m['opponent2']['id'])
+        
+        # Create a temporary data structure for just this group
+        group_data = {
+            "participants": [p for p in self.data.get('participants', []) 
+                             if p['id'] in group_participant_ids],
+            "matches": group_matches
+        }
+        
+        # Calculate standings for this group
+        temp_state = TournamentState(data=group_data)
+        standings = temp_state.calculate_standings()
+        
+        return [s['id'] for s in standings[:count]]

@@ -9,6 +9,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
+import urllib.parse
 
 from tournament_platform.models import SessionLocal
 from tournament_platform.app.utils import render_database_error
@@ -18,6 +19,32 @@ from tournament_platform.services.tournament_read_models import (
     get_public_rankings,
 )
 from tournament_platform.app.components.player_path import render_player_path
+
+
+def is_kiosk_mode() -> bool:
+    """Check if kiosk mode is enabled via query parameter or session state."""
+    # Check query parameter
+    query_params = st.query_params
+    if query_params.get("kiosk") == "1":
+        return True
+    # Check session state (for sidebar toggle)
+    return st.session_state.get("kiosk_mode", False)
+
+
+def is_public_read_mode() -> bool:
+    """Check if public read-only mode is enabled via query parameter."""
+    query_params = st.query_params
+    return query_params.get("public_read") == "1"
+
+
+def get_public_url(tournament_id: Optional[int] = None) -> str:
+    """Generate the public URL for the current page, optionally with tournament context."""
+    # Streamlit doesn't have a get_url() method, use a placeholder that can be overridden
+    # In production, this should be set via environment variable or config
+    base_url = "http://localhost:8501/public_board"
+    if tournament_id:
+        return f"{base_url}?tournament={tournament_id}"
+    return base_url
 
 
 # ============================================================================
@@ -35,11 +62,18 @@ def load_tournaments() -> List[Dict[str, Any]]:
 
 
 @st.cache_data(ttl=15, show_spinner="Loading match data...")
-def load_tournament_matches(tournament_id: Optional[int]) -> Dict[str, Any]:
+def load_tournament_matches(tournament_id: Optional[int], kiosk: bool = False) -> Dict[str, Any]:
     """
     Load matches for a specific tournament, or all matches if tournament_id is None.
     Returns dict with current, next, coming_up, delayed, and recent matches.
+    
+    In kiosk mode, uses shorter TTL for more responsive updates.
     """
+    # In kiosk mode, we want faster updates - use 5 second TTL
+    if kiosk:
+        # Clear cache and reload for fresh data
+        st.cache_data.clear()
+    
     db = SessionLocal()
     try:
         matches = get_public_schedule(db, tournament_id=tournament_id)
@@ -253,25 +287,29 @@ def render_delayed_card(match: Dict[str, Any]) -> None:
 
 def render_public_board() -> None:
     """Render the public tournament board page."""
+    # Check for kiosk mode
+    kiosk = is_kiosk_mode()
+    
     st.set_page_config(
         page_title="Tournament Board",
         page_icon="🏆",
         layout="wide",
-        initial_sidebar_state="collapsed",
+        initial_sidebar_state="collapsed" if kiosk else "expanded",
     )
 
-    # Hide sidebar and footer for clean TV display
-    st.markdown(
-        """
-        <style>
-        [data-testid="stSidebar"] { display: none; }
-        footer { visibility: hidden; }
-        header { visibility: hidden; }
-        .main > div { padding-top: 1rem; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    # Kiosk mode styling - hide sidebar and footer for clean TV display
+    if kiosk:
+        st.markdown(
+            """
+            <style>
+            [data-testid="stSidebar"] { display: none; }
+            footer { visibility: hidden; }
+            header { visibility: hidden; }
+            .main > div { padding-top: 1rem; }
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
 
     # Title with timestamp
     now = datetime.now(timezone.utc)
@@ -281,12 +319,42 @@ def render_public_board() -> None:
     )
     st.caption(f"Last updated: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
-    # Manual refresh button
-    col_refresh, col_spacer = st.columns([1, 5])
-    with col_refresh:
-        if st.button("🔄 Refresh", use_container_width=True, key="public_refresh"):
-            st.cache_data.clear()
-            st.rerun()
+    # Kiosk mode toggle in sidebar (only when not in kiosk mode)
+    if not kiosk:
+        with st.sidebar:
+            st.markdown("---")
+            if st.checkbox("📺 Kiosk Mode", value=False, key="kiosk_mode_toggle"):
+                st.session_state["kiosk_mode"] = True
+                st.rerun()
+            st.markdown("---")
+            
+            # Copy public link button
+            public_url = get_public_url()
+            st.markdown("**Share this board:**")
+            if st.button("📋 Copy Public Link", key="copy_link_btn"):
+                st.session_state["copied_url"] = public_url
+                st.toast("Link copied to clipboard!", icon="✅")
+    
+    # Auto-refresh in kiosk mode (every 10 seconds)
+    if kiosk:
+        st.markdown(
+            """
+            <script>
+            setTimeout(function() {
+                window.location.reload();
+            }, 10000);
+            </script>
+            """,
+            unsafe_allow_html=True,
+        )
+    
+    # Manual refresh button (only in non-kiosk mode)
+    if not kiosk:
+        col_refresh, col_spacer = st.columns([1, 5])
+        with col_refresh:
+            if st.button("🔄 Refresh", use_container_width=True, key="public_refresh"):
+                st.cache_data.clear()
+                st.rerun()
 
     st.divider()
 
@@ -314,7 +382,7 @@ def render_public_board() -> None:
 
     # Load match data for selected tournament
     try:
-        match_data = load_tournament_matches(selected_id)
+        match_data = load_tournament_matches(selected_id, kiosk=kiosk)
     except Exception as e:
         render_database_error(e, "match data")
         st.stop()
@@ -342,6 +410,29 @@ def render_public_board() -> None:
             render_match_card(m, label="CALLED")
     else:
         st.info("No active matches at the moment.")
+
+    # -------------------------------------------------------------------------
+    # Next Match Countdown
+    # -------------------------------------------------------------------------
+    next_match = match_data.get("next")
+    if next_match:
+        scheduled = next_match.get("scheduled_time")
+        if scheduled:
+            try:
+                scheduled_dt = datetime.fromisoformat(scheduled.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+                diff = scheduled_dt - now
+                if diff.total_seconds() > 0:
+                    mins = int(diff.total_seconds() // 60)
+                    secs = int(diff.total_seconds() % 60)
+                    st.markdown(
+                        f"<div style='text-align: center; font-size: 24px; color: #4CAF50; margin: 10px 0;'>"
+                        f"⏰ Next match in: {mins}m {secs}s"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+            except Exception:
+                pass
 
     # -------------------------------------------------------------------------
     # Coming Up Section

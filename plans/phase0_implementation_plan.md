@@ -1,0 +1,264 @@
+# Phase 0 Implementation Plan - Tournament Core Hardening
+
+## Overview
+
+This document outlines the Phase 0 quick wins for the TT-tournament repository, focusing on tournament-core hardening without major feature expansion.
+
+## Current State Findings
+
+### Repository Structure
+- **Frontend**: Streamlit app with `st.navigation` for multi-page structure
+- **Backend**: FastAPI server with SQLAlchemy/Alembic persistence
+- **Authentication**: `streamlit-authenticator` with role-based access (admin/user)
+- **Current Pages**: Dashboard, Events & Draws, Public Board, Operator Console, AI Assistant, Voice Scorekeeper, Video Scorekeeper, Admin (admin-only)
+
+### Already Consolidated (from page_consolidation_plan.md)
+- `participants.py` - Already a redirect wrapper to Events & Draws
+- `rankings.py` - Already a redirect wrapper to Dashboard
+- `tournament_setup.py` - Already deprecated (file not found in pages directory)
+
+### Key Issues Identified
+
+| Issue | Location | Current State |
+|-------|----------|---------------|
+| Hardcoded bracket size | `events_draws.py:232,282` | `"settings": {"size": 8}` hardcoded |
+| Reschedule datetime input | `operator_console.py:563-564` | Free-text ISO format input |
+| Synthetic Aggression metric | `dashboard.py:126,147` | Labeled as synthetic but still in radar chart |
+| Empty state guidance | `participants_panel.py:80` | Basic "No players registered yet" message |
+| Format options | `events_draws.py:84-88` | Only 2 formats, no indication of future formats |
+| Public Board kiosk | `public_board.py:256-274` | Sidebar hidden via CSS, no toggle |
+| Participant selector | `events_draws.py:109-114` | Name-only, no rating display |
+| Public link/QR | `public_board.py` | No copy link or QR functionality |
+| Standings explanation | `events_draws.py:243-305` | No tie-break explanation |
+
+---
+
+## Phase 0 Implementation Plan
+
+### 1. Navigation Cleanup
+
+**Goal**: Mark `Tournament Setup (Legacy)` as deprecated without breaking existing functionality.
+
+**Status**: Already completed - `tournament_setup.py` is already removed from navigation.
+
+**Action**: No changes needed.
+
+---
+
+### 2. Bracket Renderer Dynamic Sizing
+
+**Goal**: Replace hardcoded size 8 with dynamic sizing based on participant count.
+
+**Files to Modify**:
+- `tournament_platform/app/pages/events_draws.py` - `render_bracket()` and `render_standings()` functions
+
+**Changes**:
+- Create helper function `calculate_bracket_size(participant_count)` that returns:
+  - 4 for 3-4 participants
+  - 8 for 5-8 participants
+  - 16 for 9-16 participants
+  - 32 for 17-32 participants
+  - For non-power-of-two: use next power of two (e.g., 5 players → 8)
+- Update both `render_bracket()` and `render_standings()` to use dynamic size
+
+**Tests to Add**:
+- `tests/test_bracket_sizing.py` - Test `calculate_bracket_size()` for various participant counts
+
+**Risk**: Low - backward compatible, only affects display
+
+---
+
+### 3. Operator Reschedule UX
+
+**Goal**: Replace free-text ISO datetime with safer Streamlit controls.
+
+**Files to Modify**:
+- `tournament_platform/app/pages/operator_console.py` - Reschedule form (lines 560-577)
+
+**Changes**:
+- Replace `st.text_input("New time (ISO format)")` with:
+  - `st.date_input()` for date selection
+  - `st.time_input()` for time selection
+  - `st.selectbox()` for table selection (populated from available tables)
+- Add validation:
+  - Date must be in future
+  - Time must be valid
+  - Table must exist (if selected)
+- Show clear success/error feedback
+
+**Backend Compatibility**:
+- The API already accepts ISO format; we'll convert date/time to ISO string before calling
+
+**Risk**: Low - UI only, backend contract unchanged
+
+---
+
+### 4. Dashboard Analytics Honesty
+
+**Goal**: Remove or clearly label the synthetic "Aggression" metric.
+
+**Files to Modify**:
+- `tournament_platform/app/pages/dashboard.py` - `compute_player_stats()` and `create_radar_chart()`
+
+**Changes**:
+- Remove "Aggression" from the radar chart entirely (recommended)
+- Add clear labeling that only Win Rate and Consistency are real metrics
+
+**Risk**: Low - cosmetic change
+
+---
+
+### 5. Empty-State Cross-Links
+
+**Goal**: Improve empty states with clear CTAs between Participants and Events & Draws.
+
+**Files to Modify**:
+- `tournament_platform/app/components/participants_panel.py` - `render_player_list()`
+- `tournament_platform/app/pages/events_draws.py` - `render_active_tournaments()`
+
+**Changes**:
+- When no players exist: Add CTA button "Go to Participants" linking to the Participants tab
+- When no tournaments exist: Add CTA button "Create Tournament" linking to Events tab
+- Use `st.switch_page()` or clear navigation guidance
+
+**Risk**: Low - UI only
+
+---
+
+### 6. Format Limitation Transparency
+
+**Goal**: Clearly state implemented vs. planned tournament formats.
+
+**Files to Modify**:
+- `tournament_platform/app/pages/events_draws.py` - `render_tournament_creation_wizard()`
+
+**Changes**:
+- Add help text below format selector:
+  ```
+  Currently implemented: Single Elimination, Round Robin
+  Planned (not yet available): Swiss, Groups → Knockout, Double Elimination, Doubles/Mixed Doubles
+  ```
+- Consider using `st.info()` or `st.caption()` for this
+
+**Risk**: Low - informational only
+
+---
+
+### 7. Public Board Kiosk Mode
+
+**Goal**: Add kiosk/display mode for Public Board.
+
+**Files to Modify**:
+- `tournament_platform/app/pages/public_board.py` - `render_public_board()`
+
+**Changes**:
+- Add query parameter support: `?kiosk=1`
+- Add sidebar toggle for kiosk mode (when not in kiosk)
+- In kiosk mode:
+  - Hide all navigation elements
+  - Auto-refresh every 15 seconds
+  - Emphasize current/called/upcoming/delayed matches
+  - Larger, more visible match cards
+
+**Risk**: Low - read-only mode, no admin actions exposed
+
+---
+
+### 8. Ratings in Participant Selectors
+
+**Goal**: Show rating beside player name in selection controls.
+
+**Files to Modify**:
+- `tournament_platform/app/pages/events_draws.py` - `render_tournament_creation_wizard()` and `render_tournament_generation()`
+- `tournament_platform/app/components/participants_panel.py` - `render_player_registration_form()`
+
+**Changes**:
+- Use `st.multiselect()` with format function showing "Name (Rating: XXXX)"
+- Keep internal value as player ID for stable selection
+- Update both tournament creation wizard and tournament generation
+
+**Risk**: Low - UI enhancement
+
+---
+
+### 9. Public Link / QR Affordance
+
+**Goal**: Add "copy public link" to public/event board views.
+
+**Files to Modify**:
+- `tournament_platform/app/pages/public_board.py` - Add link copy section
+
+**Changes**:
+- Add "Copy Public Link" button using `st.copy_to_clipboard()` (Streamlit 1.36+) or JavaScript fallback
+- For QR: Check if `qrcode` or similar is available; if not, document as future enhancement
+- Display the public URL for the current tournament
+
+**Risk**: Low - optional enhancement
+
+---
+
+### 10. Standings/Tie-Break Explanation
+
+**Goal**: Add helper text explaining standings computation.
+
+**Files to Modify**:
+- `tournament_platform/app/pages/events_draws.py` - `render_standings()`
+
+**Changes**:
+- Add tooltip or helper text below standings table:
+  ```
+  Standings are computed by: Wins (descending), then Points For - Points Against (descending).
+  Note: Round-robin tie-breaks (head-to-head, etc.) are not yet implemented.
+  ```
+
+**Risk**: Low - informational only
+
+---
+
+## Data Migration Plan
+
+**No database schema changes required for Phase 0.**
+
+All changes are UI/UX focused and do not require Alembic migrations.
+
+---
+
+## Test Plan
+
+### New Test Files
+1. `tests/test_bracket_sizing.py` - Dynamic bracket size calculation
+2. `tests/test_reschedule_validation.py` - Date/time validation logic
+3. `tests/test_public_board_kiosk.py` - Kiosk mode behavior
+
+### Test Commands
+```bash
+# Run all tests
+python -m pytest tests/ -v
+
+# Run specific Phase 0 tests
+python -m pytest tests/test_bracket_sizing.py tests/test_reschedule_validation.py tests/test_public_board_kiosk.py -v
+```
+
+---
+
+## Risks and Rollback Notes
+
+| Risk | Mitigation |
+|------|------------|
+| Breaking existing tests | Run full test suite before and after changes |
+| Streamlit version compatibility | Check for `st.copy_to_clipboard()` availability |
+| Bracket rendering issues | Test with 4, 8, 16, and non-power-of-two participant counts |
+| Reschedule validation too strict | Allow manual override or clear error messages |
+
+### Rollback Strategy
+- All changes are additive or UI-only
+- Git revert can restore previous state
+- No database migrations to rollback
+
+---
+
+## Implementation Order
+
+1. **Bracket renderer dynamic sizing** (low risk, high value)
+2. **Dashboard analytics honesty** (low risk, quick fix)
+3. **Operator reschedule UX** (

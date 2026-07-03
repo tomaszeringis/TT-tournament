@@ -4,19 +4,12 @@ import streamlit_authenticator as stauth
 import yaml
 
 from tournament_platform.config import settings
+from tournament_platform.app.design_system import GLOBAL_STYLES
 
 st.set_page_config(page_title="TT Platform", layout="wide")
 
-st.markdown(
-    """
-    <style>
-        .block-container {
-            padding-top: 1rem;
-        }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
+# Apply global design system styles
+st.markdown(GLOBAL_STYLES, unsafe_allow_html=True)
 
 # Auth Load
 config_path = os.path.join(os.path.dirname(__file__), 'config.yaml')
@@ -67,28 +60,62 @@ if authentication_status:
     # Multi-page navigation using st.navigation (Streamlit 1.35+)
     # Use absolute paths based on this file's location so they work from any CWD
     app_dir = os.path.dirname(__file__)
-    pages = [
-        st.Page(os.path.join(app_dir, "pages", "dashboard.py"), title="Dashboard", icon="📊"),
-        st.Page(os.path.join(app_dir, "pages", "participants.py"), title="Participants", icon="👥"),
+
+    # Build navigation with sections
+    # Section 1: Home
+    home_pages = [
+        st.Page(os.path.join(app_dir, "pages", "home.py"), title="Home", icon="🏠"),
+    ]
+
+    # Section 2: Setup
+    setup_pages = [
         st.Page(os.path.join(app_dir, "pages", "events_draws.py"), title="Events & Draws", icon="🏆"),
         st.Page(os.path.join(app_dir, "pages", "rankings.py"), title="Rankings", icon="🏆"),
-        st.Page(os.path.join(app_dir, "pages", "public_board.py"), title="Public Board", icon="📺"),
-        st.Page(os.path.join(app_dir, "pages", "operator_console.py"), title="Operator Console", icon="🎛️"),
-        st.Page(os.path.join(app_dir, "pages", "tournament_setup.py"), title="Tournament Setup (Legacy)", icon="⚙️"),
-        st.Page(os.path.join(app_dir, "pages", "ai_assistant.py"), title="AI Assistant", icon="🤖"),
-        st.Page(os.path.join(app_dir, "pages", "voice_scorekeeper.py"), title="Voice Scorekeeper", icon="🔊"),
-        st.Page(os.path.join(app_dir, "pages", "dataset_catalog.py"), title="Dataset Catalog", icon="📊"),
-        st.Page(os.path.join(app_dir, "pages", "coaching_lab.py"), title="Coaching Lab", icon="🏓"),
-        st.Page(os.path.join(app_dir, "pages", "experiment_dashboard.py"), title="Experiment Dashboard", icon="🧪"),
+        st.Page(os.path.join(app_dir, "pages", "player_profile.py"), title="Player Profile", icon="👤"),
     ]
-    
-    # Only add Admin page for admin users
+
+    # Section 3: Tournament Day
+    tournament_day_pages = [
+        st.Page(os.path.join(app_dir, "pages", "public_board.py"), title="Public Board", icon="📺"),
+        st.Page(os.path.join(app_dir, "pages", "operator_console.py"), title="Match Center", icon="🎛️"),
+        st.Page(os.path.join(app_dir, "pages", "schedule_board.py"), title="Schedule", icon="📅"),
+        st.Page(os.path.join(app_dir, "pages", "voice_scorekeeper.py"), title="Voice Scorekeeper", icon="🔊"),
+    ]
+
+    # Section 4: Insights
+    insights_pages = [
+        st.Page(os.path.join(app_dir, "pages", "dashboard.py"), title="Dashboard", icon="📊"),
+        st.Page(os.path.join(app_dir, "pages", "ai_assistant.py"), title="AI Assistant (Experimental)", icon="🤖"),
+    ]
+
+    # Section 5: Admin (only for admin users)
+    admin_pages = []
     if user_role == "admin":
-        pages.append(
+        admin_pages.append(
             st.Page(os.path.join(app_dir, "pages", "admin.py"), title="Admin", icon="👨‍💼")
         )
-    
-    navigation = st.navigation(pages)
+
+    # Section 6: Experimental (hidden by default)
+    experimental_pages = []
+    if settings.DEBUG_UI_ENABLED or user_role == "admin":
+        experimental_pages.extend([
+            st.Page(os.path.join(app_dir, "pages", "video_scorekeeper.py"), title="Video Scorekeeper", icon="🎥"),
+            st.Page(os.path.join(app_dir, "pages", "dataset_catalog.py"), title="Dataset Catalog", icon="📊"),
+            st.Page(os.path.join(app_dir, "pages", "coaching_lab.py"), title="Coaching Lab", icon="🏓"),
+            st.Page(os.path.join(app_dir, "pages", "experiment_dashboard.py"), title="Experiment Dashboard", icon="🧪"),
+        ])
+
+    # Combine all pages into sections
+    all_pages = [
+        *home_pages,
+        *setup_pages,
+        *tournament_day_pages,
+        *insights_pages,
+        *admin_pages,
+        *experimental_pages,
+    ]
+
+    navigation = st.navigation(all_pages)
     navigation.run()
 
     # Show user info and logout button in sidebar

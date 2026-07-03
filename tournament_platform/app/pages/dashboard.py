@@ -11,6 +11,7 @@ from tournament_platform.app.utils import (
     api_request,
 )
 from tournament_platform.app.components.ai_status import render_ai_status_badge
+from tournament_platform.app.components.rankings_panel import render_rankings_panel
 
 from tournament_platform.models import SessionLocal, Player, Match, Tournament, MatchStatus
 from tournament_platform.config import settings
@@ -121,13 +122,9 @@ def compute_player_stats(player_name, _player_matches):
     completed_matches = [m for m in matches if m.winner is not None]
     consistency = min(100, 80 + (len(completed_matches) / max(1, total_matches)) * 20)
 
-    # Synthetic metric: aggression (placeholder until score parsing is implemented)
-    aggression = 60  # Placeholder value — replace with real calculation when score data is available
-
     return {
         "win_rate": round(win_rate, 1),
         "consistency": round(consistency, 1),
-        "aggression": aggression,  # Labeled as synthetic in the chart
         "total_matches": total_matches,
         "wins": wins,
     }
@@ -142,8 +139,8 @@ def create_radar_chart(player_name, player_matches):
         return
 
     fig = go.Figure(data=go.Scatterpolar(
-        r=[stats['win_rate'], stats['consistency'], stats['aggression']],
-        theta=['Win Rate', 'Consistency', 'Aggression (synthetic)'],
+        r=[stats['win_rate'], stats['consistency']],
+        theta=['Win Rate', 'Consistency'],
         fill='toself',
         name=player_name
     ))
@@ -158,16 +155,8 @@ def create_radar_chart(player_name, player_matches):
     st.plotly_chart(fig, use_container_width=True)
 
 
-def render_dashboard():
-    """Render the optimized dashboard page."""
-    st.title("📊 Tournament Dashboard")
-
-    try:
-        data = load_dashboard_data()
-    except Exception as e:
-        render_database_error(e, "dashboard data")
-        st.stop()
-
+def render_overview_tab(data):
+    """Render the Overview tab content."""
     metrics = data["metrics"]
     player_df = data["player_df"]
     match_df = data["match_df"]
@@ -229,23 +218,23 @@ def render_dashboard():
     st.space("medium")
     st.subheader("🤖 AI Match Insights")
     st.caption("Analyze completed matches with AI-powered insights. Review before using for decisions.")
-    
+
     # Show AI status
     render_ai_status_badge()
-    
+
     # Get completed matches for AI analysis
     if not match_df.empty:
         completed_matches = match_df[match_df['Status'] == 'completed']
     else:
         completed_matches = pd.DataFrame()
-    
+
     if not completed_matches.empty:
         selected_match_id = st.selectbox(
             "Select a completed match for AI analysis:",
             options=[""] + completed_matches['ID'].astype(str).tolist(),
             format_func=lambda x: f"Match #{x}" if x else "Select a match..."
         )
-        
+
         if selected_match_id:
             match_row = completed_matches[completed_matches['ID'] == int(selected_match_id)].iloc[0]
             match_data = {
@@ -254,20 +243,20 @@ def render_dashboard():
                 "winner": match_row['Winner'],
                 "score": match_row['Score']
             }
-            
+
             if st.button("🔍 Analyze Match", key="analyze_match_btn"):
                 with st.status("Generating AI insights...", expanded=False) as status:
                     try:
                         ai_engine = get_ai_engine()
                         report = ai_engine.generate_report(match_data)
                         status.update(label="Analysis complete", state="complete", expanded=False)
-                        
+
                         st.write("**Summary:**")
                         st.write(report.summary)
-                        
+
                         st.write("**Key Play:**")
                         st.write(report.key_play)
-                        
+
                         st.write(f"**Predicted Winner:** {report.predicted_winner}")
                     except Exception as e:
                         status.update(label="Error occurred", state="error", expanded=False)
@@ -279,24 +268,24 @@ def render_dashboard():
     st.space("medium")
     st.subheader("❓ Quick Questions")
     st.caption("Get instant answers to common questions. AI responses are informational only.")
-    
+
     quick_questions = [
         "Who has the most wins?",
         "What are the tournament rules?",
         "How do I register a player?",
         "What's the next match?"
     ]
-    
+
     # Use selectbox for better mobile experience
     selected_question = st.selectbox(
         "Choose a question:",
         options=[""] + quick_questions,
         format_func=lambda x: x if x else "Select a question..."
     )
-    
+
     if selected_question:
         st.session_state['quick_question'] = selected_question
-    
+
     if st.session_state.get('quick_question'):
         question = st.session_state['quick_question']
         with st.status("Getting answer...", expanded=False) as status:
@@ -312,50 +301,125 @@ def render_dashboard():
         if 'quick_question' in st.session_state:
             del st.session_state['quick_question']
 
-    # Ranking Intelligence Section
-    st.space("medium")
-    st.subheader("🧠 Ranking Intelligence")
+
+def render_recent_results_tab(data):
+    """Render the Recent Results tab content."""
+    match_df = data["match_df"]
+
+    st.subheader("📋 Recent Results")
+
+    if not match_df.empty:
+        # Filter to completed matches and sort by scheduled time desc
+        completed = match_df[match_df['Status'] == 'completed'].copy()
+        if not completed.empty:
+            completed = completed.sort_values("Scheduled Time", ascending=False)
+
+            for _, m in completed.iterrows():
+                p1 = m['Player 1']
+                p2 = m['Player 2']
+                score = m['Score'] or "vs"
+                winner = m['Winner'] or "Pending"
+                scheduled = m['Scheduled Time']
+                time_str = scheduled.strftime('%H:%M') if scheduled else "--:--"
+
+                st.markdown(
+                    f"""
+                    <div style="
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        padding: 10px 16px;
+                        border-bottom: 1px solid #333;
+                    ">
+                        <span style="color: #aaa; font-size: 14px;">{time_str}</span>
+                        <span style="flex: 1; text-align: center; font-size: 18px;">
+                            <b>{p1}</b> {score} <b>{p2}</b>
+                        </span>
+                        <span style="color: #4CAF50; font-size: 14px;">🏆 {winner}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("No completed matches yet.")
+    else:
+        st.info("No matches recorded yet.")
+
+
+def render_upcoming_matches_tab(data):
+    """Render the Upcoming Matches tab content."""
+    match_df = data["match_df"]
+
+    st.subheader("⏭️ Upcoming Matches")
+
+    if not match_df.empty:
+        # Filter to pending/active matches and sort by scheduled time asc
+        upcoming = match_df[match_df['Status'].isin(['pending', 'active'])].copy()
+        if not upcoming.empty:
+            upcoming = upcoming.sort_values("Scheduled Time", ascending=True)
+
+            for _, m in upcoming.iterrows():
+                p1 = m['Player 1']
+                p2 = m['Player 2']
+                scheduled = m['Scheduled Time']
+                time_str = scheduled.strftime('%Y-%m-%d %H:%M') if scheduled else "TBD"
+                status = m['Status']
+
+                status_icon = "🔴" if status == "active" else "🔵"
+
+                st.markdown(
+                    f"""
+                    <div style="
+                        display: flex;
+                        justify-content: space-between;
+                        align-items: center;
+                        padding: 10px 16px;
+                        border-bottom: 1px solid #333;
+                    ">
+                        <span style="color: #aaa; font-size: 14px;">{time_str}</span>
+                        <span style="flex: 1; text-align: center; font-size: 18px;">
+                            {status_icon} <b>{p1}</b> vs <b>{p2}</b>
+                        </span>
+                        <span style="color: #aaa; font-size: 14px;">{status.title()}</span>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.info("No upcoming matches scheduled.")
+    else:
+        st.info("No matches recorded yet.")
+
+
+def render_dashboard():
+    """Render the optimized dashboard page with tabs."""
+    st.title("📊 Tournament Dashboard")
 
     try:
-        leaderboard_resp = api_request(
-            "get",
-            "/api/ratings/leaderboard",
-            parse_json=True,
-            error_context="loading leaderboard",
-        )
+        data = load_dashboard_data()
     except Exception as e:
-        leaderboard_resp = None
-        st.warning(f"Could not load leaderboard: {e}")
+        render_database_error(e, "dashboard data")
+        st.stop()
 
-    if leaderboard_resp:
-        lb_df = pd.DataFrame(leaderboard_resp)
-        if not lb_df.empty:
-            # Top 3 player cards
-            st.markdown("**🏆 Top 3 Players**")
-            top3 = lb_df.head(3)
-            card_cols = st.columns(3)
-            for idx, (_, row) in enumerate(top3.iterrows()):
-                with card_cols[idx]:
-                    medal = ["🥇", "🥈", "🥉"][idx]
-                    st.metric(
-                        label=f"{medal} {row['name']}",
-                        value=f"{row['rating']} pts",
-                        delta=f"{row['wins']}W - {row['losses']}L",
-                    )
+    # Dashboard tabs
+    tab_overview, tab_rankings, tab_recent, tab_upcoming = st.tabs([
+        "📋 Overview",
+        "🏆 Rankings",
+        "📋 Recent Results",
+        "⏭️ Upcoming Matches"
+    ])
 
-            st.space("small")
-            st.markdown("**📋 Full Leaderboard**")
-            display_df = lb_df[[
-                "name", "rating", "matches_played", "wins", "losses", "last_rating_change"
-            ]].copy()
-            display_df.columns = ["Player", "Rating", "Matches", "Wins", "Losses", "Last Change"]
-            display_df.index = range(1, len(display_df) + 1)
-            display_df.index.name = "Rank"
-            render_interactive_table(display_df)
-        else:
-            st.info("No ranking data available yet.")
-    else:
-        st.info("Ranking data unavailable.")
+    with tab_overview:
+        render_overview_tab(data)
+
+    with tab_rankings:
+        render_rankings_panel(show_top3=True, show_history=True)
+
+    with tab_recent:
+        render_recent_results_tab(data)
+
+    with tab_upcoming:
+        render_upcoming_matches_tab(data)
 
 
 if __name__ == "__main__":

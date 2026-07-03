@@ -17,6 +17,11 @@ logger = logging.getLogger(__name__)
 class IntentType(str, Enum):
     """Types of intents for voice commands."""
     SCORE_UPDATE = "score_update"
+    SCORE_QUERY = "score_query"
+    UNDO = "undo"
+    RESET = "reset"
+    MATCH_RESULT = "match_result"
+    SERVER_CHANGE = "server_change"
     COACHING_QUERY = "coaching_query"
     SESSION_CONTROL = "session_control"
     PLAYER_INFO = "player_info"
@@ -44,6 +49,52 @@ INTENT_PATTERNS: Dict[IntentType, List[str]] = {
         r"\b(\d+)\s*[-–]\s*(\d+)",
         r"\b(update|set|change)\s+score",
         r"\b(match\s+ball|game\s+point)",
+        r"\bpoint\s+to\s+\w+",
+        r"\bpoint\s+for\s+\w+",
+        r"\bscored?\s+by\s+\w+",
+        r"\b\w+\s+scores?\s+(a\s+)?point\b",
+        r"\b\w+\s+wins\s+(the\s+)?point\b",
+    ],
+    IntentType.SCORE_QUERY: [
+        r"\bwhat's\s+the\s+score\b",
+        r"\bwhats\s+the\s+score\b",
+        r"\bwhat\s+is\s+the\s+score\b",
+        r"\bscore\s+please\b",
+        r"\bcurrent\s+score\b",
+        r"\btell\s+me\s+the\s+score\b",
+        r"\bshow\s+score\b",
+    ],
+    IntentType.UNDO: [
+        r"\bundo\b",
+        r"\btake\s+back\b",
+        r"\bremove\s+point\b",
+        r"\bremove\s+the\s+last\s+point\b",
+        r"\bwrong\b",
+        r"\bincorrect\b",
+        r"\bthat\s+was\s+wrong\b",
+        r"\btake\s+that\s+back\b",
+    ],
+    IntentType.RESET: [
+        r"\breset\b",
+        r"\bstart\s+over\b",
+        r"\bnew\s+match\b",
+        r"\bclear\s+score\b",
+        r"\breset\s+the\s+match\b",
+    ],
+    IntentType.MATCH_RESULT: [
+        r"\b\w+\s+beat\s+\w+\s+\d+\s*[-–]\s*\d+\b",
+        r"\b\w+\s+defeated\s+\w+\s+\d+\s*[-–]\s*\d+\b",
+        r"\b\w+\s+wins\s+over\s+\w+\s+\d+\s*[-–]\s*\d+\b",
+        r"\b\w+\s+lost\s+to\s+\w+\s+\d+\s*[-–]\s*\d+\b",
+        r"\b\w+\s+beat\s+\w+\s+\w+\s*[-–]\s*\w+\b",  # word scores like "three-one"
+    ],
+    IntentType.SERVER_CHANGE: [
+        r"\bserver\s+change\b",
+        r"\bchange\s+server\b",
+        r"\b\w+\s+serves\b",
+        r"\b\w+\s+to\s+serve\b",
+        r"\bserve\s+change\b",
+        r"\bswitch\s+serve\b",
     ],
     IntentType.COACHING_QUERY: [
         r"\b(analyze|analyse)\s+(my\s+)?",
@@ -155,10 +206,51 @@ class IntentClassifier:
             if player_match:
                 entities["player"] = player_match.group(1)
 
+        elif intent_type == IntentType.SCORE_QUERY:
+            # No specific entities needed for score query
+            pass
+
+        elif intent_type == IntentType.UNDO:
+            entities["action"] = "undo"
+
+        elif intent_type == IntentType.RESET:
+            entities["action"] = "reset"
+
+        elif intent_type == IntentType.MATCH_RESULT:
+            # Extract player names and score from "X beat Y 3-1" patterns
+            beat_match = re.search(
+                r"(?P<a>\w+)\s+(?:beat|defeated|wins\s+over)\s+(?P<b>\w+)\s+(?P<score>\d+\s*[-–]\s*\d+)",
+                transcript,
+                re.IGNORECASE
+            )
+            if beat_match:
+                entities["player_a"] = beat_match.group("a")
+                entities["player_b"] = beat_match.group("b")
+                entities["score"] = beat_match.group("score").replace(" ", "")
+                entities["winner"] = beat_match.group("a")
+
+            # Also handle "X lost to Y" pattern
+            lost_match = re.search(
+                r"(?P<b>\w+)\s+lost\s+to\s+(?P<a>\w+)\s+(?P<score>\d+\s*[-–]\s*\d+)",
+                transcript,
+                re.IGNORECASE
+            )
+            if lost_match:
+                entities["player_a"] = lost_match.group("a")
+                entities["player_b"] = lost_match.group("b")
+                entities["score"] = lost_match.group("score").replace(" ", "")
+                entities["winner"] = lost_match.group("a")
+
+        elif intent_type == IntentType.SERVER_CHANGE:
+            # Extract server name
+            server_match = re.search(r"(\w+)\s+(?:serves|to\s+serve)", transcript, re.IGNORECASE)
+            if server_match:
+                entities["server"] = server_match.group(1)
+
         elif intent_type == IntentType.COACHING_QUERY:
             # Extract stroke type
             stroke_match = re.search(
-                r"(backhand|forehand|serve|stroke|swing|loop|smash|block|push|chop)",
+                r"(backhand|forehand|serve|stroke|swing|loop|smash|block|push|chop|footwork)",
                 transcript,
                 re.IGNORECASE
             )

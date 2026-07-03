@@ -124,6 +124,15 @@ class Settings(BaseSettings):
     TT_MANIFESTS_DIR: str = "../tt_ai_data/manifests"
     TT_MULTIMODAL_CHROMA_DIR: str = "../tt_ai_data/indexes/chroma_multimodal"
 
+    # -------------------------------------------------------------------------
+    # Video Scorekeeper
+    # -------------------------------------------------------------------------
+    ENABLE_VIDEO_SCOREKEEPER: bool = True
+    VIDEO_CONFIDENCE_THRESHOLD: float = 0.7
+    VIDEO_MAX_CLIP_DURATION: int = 30
+    VIDEO_FRAME_SKIP: int = 2  # Process every Nth frame for performance
+    VIDEO_AUTO_SUGGEST: bool = False  # Auto-suggest in live mode
+
     @model_validator(mode='after')
     def resolve_absolute_paths(self):
         """Resolve relative paths to absolute paths at runtime."""

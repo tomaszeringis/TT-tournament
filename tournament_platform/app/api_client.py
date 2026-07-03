@@ -338,6 +338,30 @@ class ApiClient:
         """
         return self.post(f"/api/operator/matches/{match_id}/reset-call")
 
+    def report_match(
+        self,
+        match_id: int,
+        score1: int,
+        score2: int,
+        winner: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Report a match result via API.
+        
+        Args:
+            match_id: The match ID to report.
+            score1: Player 1's score.
+            score2: Player 2's score.
+            winner: Optional winner name.
+            
+        Returns:
+            A dict with the result if successful, None otherwise.
+        """
+        return self.post(
+            f"/api/operator/matches/{match_id}/report",
+            json={"score1": score1, "score2": score2, "winner": winner}
+        )
+
 
 # Default singleton instance
 api_client = ApiClient()

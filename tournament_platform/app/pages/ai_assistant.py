@@ -3,20 +3,33 @@ AI Assistant - Unified chat interface for tournament questions.
 
 Combines the Tournament Assistant and Rules Q&A into a single page with tabs.
 - Tournament Assistant: General tournament questions using the AI facade
-- Rules Q&A: Rules questions using the /api/rules/ask endpoint
+- Rules Q&A: Rules questions using the /api/rules/ask endpoint (with voice input option)
 """
 
 import streamlit as st
 import requests
 from typing import Optional
 import uuid
+import asyncio
 
 from tournament_platform.config import settings
 from tournament_platform.services.settings import ENABLE_RULES_ASSISTANT
 from tournament_platform.app.utils import api_request
 from tournament_platform.services.ai_facade import answer_rules_question, AIAnswer
 from tournament_platform.app.components.ai_status import render_ai_status_badge, render_ai_status_expander
+from tournament_platform.app.components.ai_chat import (
+    render_chat_history,
+    render_chat_input,
+    render_ai_status_indicator,
+    render_voice_input,
+    render_answer_actions,
+    render_announcement_text_area,
+)
+from tournament_platform.app.design_system import apply_global_styles
 from tournament_platform.models import SessionLocal, Match, MatchStatus, Player
+
+# Apply design system styles
+apply_global_styles()
 
 # ---------------------------------------------------------------------------
 # Session state initialization
@@ -34,6 +47,10 @@ if "ai_rules_messages" not in st.session_state:
 
 if "ai_rules_last_answer" not in st.session_state:
     st.session_state.ai_rules_last_answer = None
+
+# Voice input state
+if "voice_rules_audio_hash" not in st.session_state:
+    st.session_state.voice_rules_audio_hash = None
 
 # ---------------------------------------------------------------------------
 # Example questions for Rules Q&A
@@ -128,50 +145,15 @@ tabs = st.tabs(["Tournament Assistant", "Rules Q&A"])
 # TAB 1: Tournament Assistant
 # ===========================================================================
 with tabs[0]:
-    # Display chat history using st.chat_message
-    for i, message in enumerate(st.session_state.ai_assistant_messages):
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
+    def on_feedback(msg_id: str, feedback: str):
+        st.session_state.ai_feedback[msg_id] = feedback
+        st.rerun()
 
-            # Show sources for assistant messages
-            if message["role"] == "assistant" and message.get("source_details"):
-                with st.expander("📚 Sources used", expanded=False):
-                    for source in message["source_details"]:
-                        st.markdown(f"**Source:** {source.get('id', 'Unknown')}")
-                        if source.get('metadata'):
-                            meta = source['metadata']
-                            if meta.get('source'):
-                                st.caption(f"Document: {meta.get('source')}")
-                            if meta.get('page'):
-                                st.caption(f"Page: {meta.get('page')}")
-                        st.markdown(f"**Relevance:** {source.get('distance', 'N/A')}")
-                        st.markdown("---")
+    render_chat_history(st.session_state.ai_assistant_messages, on_feedback)
 
-            # Show feedback buttons for assistant messages
-            if message["role"] == "assistant" and message.get("msg_id"):
-                msg_id = message["msg_id"]
-                if msg_id not in st.session_state.ai_feedback:
-                    col1, col2 = st.columns([1, 1])
-                    with col1:
-                        if st.button("👍 Helpful", key=f"helpful_{msg_id}"):
-                            st.session_state.ai_feedback[msg_id] = "helpful"
-                            st.rerun()
-                    with col2:
-                        if st.button("👎 Not helpful", key=f"not_helpful_{msg_id}"):
-                            st.session_state.ai_feedback[msg_id] = "not_helpful"
-                            st.rerun()
-                else:
-                    feedback = st.session_state.ai_feedback[msg_id]
-                    st.caption(f"Feedback: {'👍 Helpful' if feedback == 'helpful' else '👎 Not helpful'}")
-
-    # Chat input using st.chat_input
-    prompt = st.chat_input("Ask a question about tournaments, rules, or standings...")
+    prompt = render_chat_input("Ask a question about tournaments, rules, or standings...")
 
     if prompt:
-        # Display user message
-        with st.chat_message("user"):
-            st.write(prompt)
-
         # Add to chat history
         st.session_state.ai_assistant_messages.append({
             "role": "user",
@@ -182,7 +164,6 @@ with tabs[0]:
         with st.chat_message("assistant"):
             with st.status("Thinking...", expanded=False) as status:
                 try:
-                    # Use the facade for a clean interface
                     ai_answer: AIAnswer = answer_rules_question(prompt)
                     response = ai_answer.answer
                     status.update(label="Answer ready", state="complete", expanded=False)
@@ -193,7 +174,6 @@ with tabs[0]:
 
             st.write(response)
 
-            # Show sources if available
             if ai_answer.source_details:
                 with st.expander("📚 Sources used", expanded=False):
                     for source in ai_answer.source_details:
@@ -207,9 +187,7 @@ with tabs[0]:
                         st.markdown(f"**Relevance:** {source.get('distance', 'N/A')}")
                         st.markdown("---")
 
-            # Show confidence indicator
-            if not ai_answer.grounded:
-                st.warning("⚠️ No relevant rules found in the knowledge base. This answer is not grounded in official rules.")
+            render_ai_status_indicator(ai_answer.grounded, ai_answer.confidence)
 
         # Add to chat history with source details
         msg_id = str(uuid.uuid4())
@@ -231,28 +209,27 @@ with tabs[1]:
         )
         st.stop()
 
-    # Display chat history
     for msg in st.session_state.ai_rules_messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
             if msg["role"] == "assistant" and msg.get("question"):
                 st.caption(f"**Question:** {msg['question']}")
 
-    # Chat input
+    def on_transcript(transcript: str):
+        st.session_state.ai_rules_pending_question = transcript
+        st.rerun()
+
+    render_voice_input(on_transcript, key="rules_voice_input")
+
     pending = st.session_state.pop("ai_rules_pending_question", None)
     prompt = st.chat_input("Ask a question about tournament rules...") or pending
 
     if prompt:
-        # Display user message
-        with st.chat_message("user"):
-            st.write(prompt)
-
         st.session_state.ai_rules_messages.append({
             "role": "user",
             "content": prompt,
         })
 
-        # Get AI response
         with st.chat_message("assistant"):
             with st.status("Thinking...", expanded=False) as status:
                 try:
@@ -285,39 +262,23 @@ with tabs[1]:
             st.write(answer)
             st.caption(f"**Question:** {prompt}")
 
-            # Copy / reuse actions
-            col_copy, col_reuse = st.columns(2)
-            with col_copy:
-                if st.button("📋 Copy answer", key=f"copy_{len(st.session_state.ai_rules_messages)}"):
-                    st.toast("Answer copied to clipboard!", icon="📋")
-                    # Store for potential clipboard interaction
-                    st.session_state.ai_rules_last_answer = answer
-            with col_reuse:
-                if st.button("📢 Use as announcement", key=f"reuse_{len(st.session_state.ai_rules_messages)}"):
-                    st.session_state.ai_rules_last_answer = answer
-                    st.toast("Answer saved for announcement use.", icon="📢")
+            def on_copy():
+                st.session_state.ai_rules_last_answer = answer
 
-        # Save to history
+            def on_reuse():
+                st.session_state.ai_rules_last_answer = answer
+
+            render_answer_actions(answer, on_copy, on_reuse)
+
         st.session_state.ai_rules_messages.append({
             "role": "assistant",
             "content": answer,
             "question": prompt,
         })
 
-    # -----------------------------------------------------------------------
-    # Last answer reuse area
-    # -----------------------------------------------------------------------
     if st.session_state.ai_rules_last_answer:
         st.divider()
-        st.subheader("📢 Announcement Text")
-        st.text_area(
-            "Copy or edit the answer below for use in announcements:",
-            value=st.session_state.ai_rules_last_answer,
-            key="announcement_text",
-            height=120,
-        )
-        if st.button("📋 Copy to clipboard", key="copy_announcement"):
-            st.toast("Announcement text ready!", icon="📋")
+        render_announcement_text_area(st.session_state.ai_rules_last_answer)
 
 # ---------------------------------------------------------------------------
 # Detailed status expander (outside tabs, at page bottom)

@@ -992,6 +992,70 @@ async def api_reset_call(match_id: int, request: Request, db: Session = Depends(
         raise HTTPException(status_code=500, detail="Failed to reset call")
 
 
+@app.post("/api/operator/matches/{match_id}/report")
+async def api_report_match(match_id: int, request: Request, db: Session = Depends(get_db)):
+    """
+    Report a match result via operator endpoint.
+    - Accepts match_id, score1, score2, and optional winner
+    - Updates match status to completed
+    - Updates ratings
+    """
+    try:
+        data = await request.json()
+        score1 = data.get("score1")
+        score2 = data.get("score2")
+        winner = data.get("winner")
+        
+        match = db.query(Match).filter(Match.id == match_id).first()
+        if not match:
+            raise HTTPException(status_code=404, detail=f"Match {match_id} not found")
+        
+        if match.status == MatchStatus.completed:
+            raise HTTPException(status_code=400, detail=f"Match {match_id} has already been completed")
+        
+        # Build score string
+        score_str = f"{score1}-{score2}"
+        
+        # Validate winner if provided
+        if winner:
+            p1 = db.query(Player).filter(Player.id == match.player1_id).first() if match.player1_id else None
+            p2 = db.query(Player).filter(Player.id == match.player2_id).first() if match.player2_id else None
+            p1_name = p1.name if p1 else match.player1
+            p2_name = p2.name if p2 else match.player2
+            
+            if winner not in (p1_name, p2_name):
+                raise HTTPException(status_code=400, detail=f"Winner must be either {p1_name} or {p2_name}")
+            
+            match.winner = winner
+            match.winner_id = match.player1_id if winner == p1_name else match.player2_id
+        
+        match.score = score_str
+        match.status = MatchStatus.completed
+        db.commit()
+        
+        # Update ratings
+        if match.winner_id and match.player1_id and match.player2_id:
+            winner_id = match.winner_id
+            loser_id = match.player2_id if winner_id == match.player1_id else match.player1_id
+            rating_manager.update_ratings(winner_id, loser_id, db_session=db)
+        
+        log_audit(
+            db,
+            action="report_match",
+            entity_type="match",
+            entity_id=match_id,
+            actor="operator",
+            payload={"score": score_str, "winner": winner}
+        )
+        
+        return {"status": "success", "match_id": match_id, "score": score_str, "winner": winner}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error reporting match {match_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to report match")
+
+
 @app.get("/api/operator/audit")
 async def api_get_audit_logs(
     entity_type: Optional[str] = None,
