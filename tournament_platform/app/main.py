@@ -61,55 +61,47 @@ if authentication_status:
     # Use absolute paths based on this file's location so they work from any CWD
     app_dir = os.path.dirname(__file__)
 
-    # Build navigation with sections
-    # Section 1: Home
+    # Build navigation with consolidated sections (reduced top-level pages)
+    app_dir = os.path.dirname(__file__)
+
+    # Home section
     home_pages = [
         st.Page(os.path.join(app_dir, "pages", "home.py"), title="Home", icon="🏠"),
     ]
 
-    # Section 2: Setup
-    setup_pages = [
-        st.Page(os.path.join(app_dir, "pages", "events_draws.py"), title="Events & Draws", icon="🏆"),
-        st.Page(os.path.join(app_dir, "pages", "rankings.py"), title="Rankings", icon="🏆"),
-        st.Page(os.path.join(app_dir, "pages", "player_profile.py"), title="Player Profile", icon="👤"),
+    # Tournament (consolidated setup, participants, bracket, results)
+    tournament_pages = [
+        st.Page(os.path.join(app_dir, "pages", "events_draws.py"), title="Tournament", icon="🏆"),
     ]
 
-    # Section 3: Tournament Day
-    tournament_day_pages = [
-        st.Page(os.path.join(app_dir, "pages", "public_board.py"), title="Public Board", icon="📺"),
-        st.Page(os.path.join(app_dir, "pages", "operator_console.py"), title="Match Center", icon="🎛️"),
-        st.Page(os.path.join(app_dir, "pages", "schedule_board.py"), title="Schedule", icon="📅"),
-        st.Page(os.path.join(app_dir, "pages", "voice_scorekeeper.py"), title="Voice Scorekeeper", icon="🔊"),
-    ]
-
-    # Section 4: Insights
+    # Insights (Dashboard + AI Assistant)
     insights_pages = [
         st.Page(os.path.join(app_dir, "pages", "dashboard.py"), title="Dashboard", icon="📊"),
         st.Page(os.path.join(app_dir, "pages", "ai_assistant.py"), title="AI Assistant (Experimental)", icon="🤖"),
     ]
 
-    # Section 5: Admin (only for admin users)
+    # Admin (only for admin users)
     admin_pages = []
     if user_role == "admin":
         admin_pages.append(
-            st.Page(os.path.join(app_dir, "pages", "admin.py"), title="Admin", icon="👨‍💼")
+            st.Page(os.path.join(app_dir, "pages", "admin.py"), title="Admin", icon="👨\u200d💼")
         )
 
-    # Section 6: Experimental (hidden by default)
+    # Experimental extras (kept behind debug flag)
     experimental_pages = []
     if settings.DEBUG_UI_ENABLED or user_role == "admin":
         experimental_pages.extend([
+            st.Page(os.path.join(app_dir, "pages", "voice_scorekeeper.py"), title="Voice Scorekeeper", icon="🎤"),
             st.Page(os.path.join(app_dir, "pages", "video_scorekeeper.py"), title="Video Scorekeeper", icon="🎥"),
             st.Page(os.path.join(app_dir, "pages", "dataset_catalog.py"), title="Dataset Catalog", icon="📊"),
             st.Page(os.path.join(app_dir, "pages", "coaching_lab.py"), title="Coaching Lab", icon="🏓"),
             st.Page(os.path.join(app_dir, "pages", "experiment_dashboard.py"), title="Experiment Dashboard", icon="🧪"),
         ])
 
-    # Combine all pages into sections
+    # Combine into final navigation
     all_pages = [
         *home_pages,
-        *setup_pages,
-        *tournament_day_pages,
+        *tournament_pages,
         *insights_pages,
         *admin_pages,
         *experimental_pages,
