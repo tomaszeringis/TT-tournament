@@ -15,6 +15,11 @@ from tournament_platform.services.voice_event_schema import (
     EventFactory,
 )
 
+try:
+    from tournament_platform.app.services.voice_parser import VoiceScoreEvent
+except ImportError:
+    VoiceScoreEvent = None  # type: ignore
+
 
 @dataclass
 class MatchState:
@@ -165,6 +170,89 @@ class MatchManager:
                 pass
         
         return True, f"Point for {player_name}. Score is now {self.state.score_a} to {self.state.score_b}"
+    
+    def _set_score(self, score_a: int, score_b: int) -> Tuple[bool, str]:
+        """
+        Set the current game score directly.
+        
+        Args:
+            score_a: New score for player A
+            score_b: New score for player B
+            
+        Returns:
+            Tuple of (success, message)
+        """
+        # Validate scores
+        if score_a < 0 or score_b < 0:
+            return False, "Scores cannot be negative"
+        
+        if score_a > 21 or score_b > 21:
+            return False, "Score exceeds maximum (21)"
+        
+        # Save current state to history before modification
+        self.state.match_history.append({
+            "action": "score_set",
+            "previous_score_a": self.state.score_a,
+            "previous_score_b": self.state.score_b,
+            "previous_set": self.state.current_set,
+            "previous_sets_a": self.state.sets_a,
+            "previous_sets_b": self.state.sets_b,
+        })
+        
+        self.state.score_a = score_a
+        self.state.score_b = score_b
+        
+        # Check for game completion
+        self._check_game_completion()
+        
+        return True, f"Score set to {score_a}-{score_b}"
+    
+    def _check_game_completion(self) -> None:
+        """
+        Check if the current game is complete and update set scores if so.
+        
+        A game is won when a player reaches 11+ points with a 2-point lead.
+        """
+        score_a = self.state.score_a
+        score_b = self.state.score_b
+        
+        if (score_a >= 11 or score_b >= 11) and abs(score_a - score_b) >= 2:
+            # Game won
+            if score_a > score_b:
+                self.state.sets_a += 1
+            else:
+                self.state.sets_b += 1
+            
+            # Reset game score for next game
+            self.state.score_a = 0
+            self.state.score_b = 0
+            self.state.current_set += 1
+    
+    def apply_voice_event(self, event: VoiceScoreEvent) -> Tuple[bool, str]:
+        """
+        Apply a parsed voice event to match state.
+        
+        Args:
+            event: Structured voice score event from VoiceParser
+            
+        Returns:
+            Tuple of (success, message)
+        """
+        if event.type == "set_score":
+            if event.score_a is None or event.score_b is None:
+                return False, "Invalid score event: missing scores"
+            return self._set_score(event.score_a, event.score_b)
+        
+        elif event.type == "increment":
+            if event.player is None:
+                return False, "Invalid increment event: missing player"
+            return self._add_point(event.player)
+        
+        elif event.type == "undo":
+            return self.undo_last_point()
+        
+        else:
+            return False, f"Unknown voice event type: {event.type}"
     
     def undo_last_point(self) -> Tuple[bool, str]:
         """

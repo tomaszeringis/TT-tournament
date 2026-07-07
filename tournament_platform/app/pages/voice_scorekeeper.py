@@ -10,6 +10,8 @@ A simple, privacy-focused scorekeeping system using:
 """
 
 import streamlit as st
+
+st.set_page_config(page_title="Voice Scorekeeper - TT Platform", layout="wide")
 import asyncio
 import tempfile
 import hashlib
@@ -17,7 +19,13 @@ import os
 import requests
 import copy
 import uuid
+import threading
+import queue
+import logging
+import time
 from typing import Any, Optional, Tuple, Dict, List
+
+logger = logging.getLogger(__name__)
 
 # Import the MatchManager and UmpireEngine
 from tournament_platform.services.match_manager import MatchManager, MatchState
@@ -36,6 +44,10 @@ from tournament_platform.app.services.match_score import (
     validate_game_score,
     summarize_match,
 )
+# Import voice scoring modules
+from tournament_platform.app.services.voice_parser import VoiceParser, VoiceScoreEvent
+from tournament_platform.app.services.voice_audio import VoiceAudioBuffer, AudioChunk
+from tournament_platform.app.services.voice_asr import LocalASR, LocalASRError
 from tournament_platform.app.api_client import api_client
 from tournament_platform.services.commentary_service import (
     CommentaryService,
@@ -132,6 +144,24 @@ if 'listening' not in st.session_state:
 if 'audio_level' not in st.session_state:
     st.session_state.audio_level = 0.0
 
+# Voice scoring (WebRTC) state
+if 'voice_scoring_enabled' not in st.session_state:
+    st.session_state.voice_scoring_enabled = False
+if 'voice_listening' not in st.session_state:
+    st.session_state.voice_listening = False
+if 'last_voice_transcript' not in st.session_state:
+    st.session_state.last_voice_transcript = ""
+if 'last_voice_event' not in st.session_state:
+    st.session_state.last_voice_event = None
+if 'last_voice_feedback' not in st.session_state:
+    st.session_state.last_voice_feedback = ""
+if 'voice_event_log' not in st.session_state:
+    st.session_state.voice_event_log = []
+if 'voice_asr_status' not in st.session_state:
+    st.session_state.voice_asr_status = None
+if 'voice_webrtc_ctx' not in st.session_state:
+    st.session_state.voice_webrtc_ctx = None
+
 # Voice scorekeeper match selector state
 if 'voice_selected_tournament_id' not in st.session_state:
     st.session_state.voice_selected_tournament_id = None
@@ -173,6 +203,141 @@ if 'pending_commentary' not in st.session_state:
     st.session_state.pending_commentary = None
 if 'last_commentary_text' not in st.session_state:
     st.session_state.last_commentary_text = None
+
+
+# ============================================================================
+# Voice Scoring (WebRTC) Audio Processor
+# ============================================================================
+
+class VoiceAudioProcessor:
+    """
+    Audio processor for streamlit-webrtc voice scoring.
+    
+    Receives audio frames, buffers them into chunks, transcribes with local ASR,
+    and parses into score events. Runs transcription in a background thread.
+    """
+    
+    def __init__(self):
+        self.audio_buffer = VoiceAudioBuffer()
+        self.asr = LocalASR()
+        self.parser = VoiceParser()
+        self.event_queue: queue.Queue = queue.Queue()
+        self._processing = False
+        self._lock = threading.Lock()
+    
+    def recv_audio(self, frames):
+        """
+        Receive audio frames from WebRTC.
+        
+        This is called from the WebRTC callback thread.
+        We buffer frames and spawn background transcription threads.
+        """
+        for frame in frames:
+            frame_bytes = frame.to_ndarray().tobytes()
+            chunk = self.audio_buffer.push_frame(frame_bytes)
+            
+            if chunk is not None:
+                # Spawn background thread for transcription
+                threading.Thread(
+                    target=self._transcribe_chunk,
+                    args=(chunk,),
+                    daemon=True,
+                ).start()
+        
+        return frames
+    
+    def _transcribe_chunk(self, chunk: AudioChunk) -> None:
+        """Transcribe an audio chunk in a background thread."""
+        try:
+            pcm_bytes = chunk.to_pcm_bytes()
+            if not pcm_bytes:
+                return
+            
+            text = self.asr.transcribe_chunk(pcm_bytes)
+            if not text:
+                return
+            
+            # Get current scores for deuce validation
+            score_a = st.session_state.match_manager.state.score_a
+            score_b = st.session_state.match_manager.state.score_b
+            
+            # Parse the transcript
+            event = self.parser.parse(text, current_score_a=score_a, current_score_b=score_b)
+            
+            # Put event in queue for the main Streamlit loop to consume
+            self.event_queue.put((text, event))
+            
+        except Exception as e:
+            logger.error("Error in voice transcription thread: %s", e)
+    
+    def get_events(self) -> List[Tuple[str, VoiceScoreEvent]]:
+        """Drain all pending events from the queue."""
+        events = []
+        while not self.event_queue.empty():
+            try:
+                events.append(self.event_queue.get_nowait())
+            except queue.Empty:
+                break
+        return events
+    
+    def stop(self) -> None:
+        """Stop processing and flush remaining audio."""
+        self.audio_buffer.reset()
+
+
+def _process_voice_events() -> None:
+    """Process pending voice events from the WebRTC audio processor."""
+    if not st.session_state.voice_listening:
+        return
+    
+    ctx = st.session_state.get("voice_webrtc_ctx")
+    if ctx is None:
+        return
+    
+    processor = ctx.get("processor")
+    if processor is None:
+        return
+    
+    events = processor.get_events()
+    if not events:
+        return
+    
+    for text, event in events:
+        # Store in session state for UI display
+        st.session_state.last_voice_transcript = text
+        st.session_state.last_voice_event = event
+        
+        # Log the event
+        log_entry = {
+            "timestamp": time.time(),
+            "transcript": text,
+            "event_type": event.type,
+            "score_a": event.score_a,
+            "score_b": event.score_b,
+            "player": event.player,
+            "confidence": event.confidence,
+        }
+        st.session_state.voice_event_log.append(log_entry)
+        
+        # Keep only last 50 events
+        if len(st.session_state.voice_event_log) > 50:
+            st.session_state.voice_event_log = st.session_state.voice_event_log[-50:]
+        
+        # Apply the event to the match manager
+        if event.type != "unknown":
+            success, msg = st.session_state.match_manager.apply_voice_event(event)
+            st.session_state.last_voice_feedback = msg
+            
+            if success:
+                st.toast(f"🎤 {msg}", icon="✅")
+            else:
+                st.warning(f"🎤 Voice: {msg}")
+        else:
+            st.session_state.last_voice_feedback = "Unknown command"
+    
+    # Rerun to update UI
+    if events:
+        st.rerun()
 
 
 # ============================================================================
@@ -888,6 +1053,153 @@ if st.session_state.voice_selected_match_id:
                     else:
                         status.update(label="Submission failed", state="error", expanded=False)
                         st.error("❌ Failed to submit match result. Check API connection.")
+
+# ============================================================================
+# Voice Scoring Section (WebRTC + Local ASR)
+# ============================================================================
+
+st.divider()
+st.subheader("🎤 Voice Scoring (Continuous Listening)")
+
+# Process any pending voice events from the audio processor
+_process_voice_events()
+
+# Voice scoring toggle
+col_enable, col_status = st.columns([2, 1])
+with col_enable:
+    st.session_state.voice_scoring_enabled = st.toggle(
+        "Enable Voice Scoring",
+        value=st.session_state.voice_scoring_enabled,
+        help="Turn on continuous voice listening for score commands. Uses local faster-whisper ASR.",
+    )
+with col_status:
+    if st.session_state.voice_scoring_enabled:
+        if st.session_state.voice_listening:
+            st.markdown("🟢 **Listening**")
+        else:
+            st.markdown("🟡 **Ready**")
+    else:
+        st.markdown("⚪ **Disabled**")
+
+if st.session_state.voice_scoring_enabled:
+    # Check if streamlit-webrtc is available
+    try:
+        from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase  # noqa: F401
+        webrtc_available = True
+    except ImportError:
+        webrtc_available = False
+    
+    if not webrtc_available:
+        st.warning(
+            "⚠️ streamlit-webrtc is not installed. "
+            "Install it with: `pip install streamlit-webrtc` "
+            "or enable the `[live]` extras in pyproject.toml."
+        )
+        st.caption("You can still use the push-to-talk voice input below.")
+    else:
+        # Start/Stop listening controls
+        col_start, col_stop = st.columns(2)
+        with col_start:
+            if st.button("🎙️ Start Listening", type="primary", use_container_width=True):
+                if not st.session_state.voice_listening:
+                    st.session_state.voice_listening = True
+                    st.session_state.voice_event_log = []
+                    st.session_state.last_voice_transcript = ""
+                    st.session_state.last_voice_event = None
+                    st.session_state.last_voice_feedback = ""
+                    st.rerun()
+        with col_stop:
+            if st.button("⏹️ Stop Listening", use_container_width=True):
+                if st.session_state.voice_listening:
+                    st.session_state.voice_listening = False
+                    ctx = st.session_state.get("voice_webrtc_ctx")
+                    if ctx and ctx.get("processor"):
+                        ctx["processor"].stop()
+                    st.rerun()
+        
+        if st.session_state.voice_listening:
+            st.caption("Listening for score commands... Speak clearly into your microphone.")
+            
+            # Initialize ASR status on first listen
+            if st.session_state.voice_asr_status is None:
+                try:
+                    asr = LocalASR()
+                    st.session_state.voice_asr_status = asr.get_status()
+                except Exception as e:
+                    st.session_state.voice_asr_status = {"available": False, "load_error": str(e)}
+            
+            # Show ASR status
+            asr_status = st.session_state.voice_asr_status
+            if asr_status and not asr_status.get("available", False):
+                error_msg = asr_status.get("load_error", "Unknown error")
+                st.error(f"⚠️ Local ASR not available: {error_msg}")
+                st.caption("Voice scoring requires faster-whisper. Install with: `pip install faster-whisper`")
+                st.session_state.voice_listening = False
+                st.rerun()
+            
+            # WebRTC streamer
+            from streamlit_webrtc import webrtc_streamer, WebRtcMode
+            
+            def create_processor():
+                return VoiceAudioProcessor()
+            
+            ctx = webrtc_streamer(
+                key="voice_score_webrtc",
+                mode=WebRtcMode.SENDONLY,
+                audio_processor_factory=create_processor,
+                rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+                media_stream_constraints={"audio": True, "video": False},
+            )
+            
+            # Store processor reference in session state
+            if ctx and ctx.audio_processor:
+                if st.session_state.voice_webrtc_ctx is None:
+                    st.session_state.voice_webrtc_ctx = {}
+                st.session_state.voice_webrtc_ctx["processor"] = ctx.audio_processor
+            
+            # Show last heard phrase
+            if st.session_state.last_voice_transcript:
+                st.info(f"Last heard: **{st.session_state.last_voice_transcript}**")
+            
+            # Show parsed interpretation
+            if st.session_state.last_voice_event:
+                event = st.session_state.last_voice_event
+                if event.type == "set_score":
+                    st.success(f"Parsed: Set score to {event.score_a}-{event.score_b}")
+                elif event.type == "increment":
+                    st.success(f"Parsed: Point to Player {event.player}")
+                elif event.type == "undo":
+                    st.success("Parsed: Undo last point")
+                else:
+                    st.warning(f"Parsed: Unknown command (confidence: {event.confidence:.0%})")
+            
+            # Show last accepted update
+            if st.session_state.last_voice_feedback:
+                st.caption(f"Last update: {st.session_state.last_voice_feedback}")
+            
+            # Debug expander
+            with st.expander("🔍 Voice Debug", expanded=False):
+                st.markdown("**Recent Voice Events**")
+                if st.session_state.voice_event_log:
+                    for entry in st.session_state.voice_event_log[-10:]:
+                        st.json(entry)
+                else:
+                    st.caption("No events yet.")
+                
+                st.markdown("**ASR Status**")
+                if st.session_state.voice_asr_status:
+                    st.json(st.session_state.voice_asr_status)
+                else:
+                    st.caption("ASR not initialized.")
+                
+                if st.button("Clear Event Log", key="clear_voice_log"):
+                    st.session_state.voice_event_log = []
+                    st.rerun()
+        else:
+            # Not listening - show stopped state
+            if st.session_state.voice_webrtc_ctx and st.session_state.voice_webrtc_ctx.get("processor"):
+                st.session_state.voice_webrtc_ctx["processor"].stop()
+            st.caption("Click 'Start Listening' to begin voice scoring.")
 
 # ============================================================================
 # Voice Input Section
