@@ -86,12 +86,13 @@ class TestIsDeuceAllowed:
         assert _is_deuce_allowed(9, 9) is False
 
 
+@pytest.fixture
+def parser():
+    return VoiceParser()
+
+
 class TestVoiceParser:
     """Tests for VoiceParser."""
-
-    @pytest.fixture
-    def parser(self):
-        return VoiceParser()
 
     def test_parse_five_four(self, parser):
         event = parser.parse("five four")
@@ -299,3 +300,52 @@ class TestVoiceParser:
     def test_parse_repeat_returns_unknown(self, parser):
         event = parser.parse("repeat")
         assert event.type == "unknown"
+
+
+class TestColorAliases:
+    """PingScore-style color alias tests (Phase 4)."""
+
+    def test_parse_blue_scores_a(self, parser):
+        event = parser.parse("blue")
+        assert event.type == "increment"
+        assert event.player == "A"
+
+    def test_parse_teal_scores_a(self, parser):
+        event = parser.parse("teal")
+        assert event.type == "increment"
+        assert event.player == "A"
+
+    def test_parse_green_scores_a(self, parser):
+        event = parser.parse("green")
+        assert event.type == "increment"
+        assert event.player == "A"
+
+    def test_parse_red_scores_b(self, parser):
+        event = parser.parse("red")
+        assert event.type == "increment"
+        assert event.player == "B"
+
+    def test_parse_orange_scores_b(self, parser):
+        event = parser.parse("orange")
+        assert event.type == "increment"
+        assert event.player == "B"
+
+    def test_parse_read_asr_error_scores_b(self, parser):
+        event = parser.parse("read")
+        assert event.type == "increment"
+        assert event.player == "B"
+
+    def test_parse_blue_in_sentence(self, parser):
+        event = parser.parse("that was blue")
+        assert event.type == "increment"
+        assert event.player == "A"
+
+    def test_parse_red_in_sentence(self, parser):
+        event = parser.parse("point to red")
+        assert event.type == "increment"
+        assert event.player == "B"
+
+    def test_color_alias_confidence(self, parser):
+        event = parser.parse("blue")
+        assert event.confidence == 0.85
+        assert event.type == "increment"

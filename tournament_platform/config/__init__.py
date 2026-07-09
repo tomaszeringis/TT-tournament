@@ -61,6 +61,19 @@ class Settings(BaseSettings):
     WHISPER_COMPUTE_TYPE: str = "int8"
 
     # -------------------------------------------------------------------------
+    # Voice Scorekeeper — feature flags (all default OFF; local-first baseline)
+    # -------------------------------------------------------------------------
+    VOICE_ENABLE_SPEAKER_ID: bool = False
+    VOICE_ENABLE_MULTILINGUAL: bool = False  # excluded from implementation per directive
+    VOICE_ENABLE_TTS_CONFIRMATION: bool = False
+    VOICE_ENABLE_NOISE_FILTERING: bool = False
+    VOICE_NOISE_THRESHOLD: float = 0.0
+    VOICE_STRICT_MODE: bool = False
+    VOICE_ENABLE_LLM_INTERPRETER: bool = False
+    VOICE_ENABLE_MOBILE_AGENT: bool = False
+    VOICE_DEBUG_EVENTS: bool = False
+
+    # -------------------------------------------------------------------------
     # TTS (Text-to-Speech)
     # -------------------------------------------------------------------------
     TTS_SAMPLE_RATE: int = 24000

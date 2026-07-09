@@ -9,6 +9,8 @@ This file is kept as a redirect for backward compatibility.
 
 import streamlit as st
 
+st.set_page_config(page_title="Rankings - TT Platform", layout="wide")
+
 st.title("Rankings (Moved)")
 st.caption("Rankings have been moved to the Dashboard page.")
 

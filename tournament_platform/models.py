@@ -460,5 +460,57 @@ class EvaluationRun(Base):
     experiment = relationship("ModelExperiment", back_populates="evaluation_runs")
 
 
+class VoiceEvent(Base):
+    """Persisted voice scoring event."""
+    __tablename__ = "voice_events"
+    id = Column(Integer, primary_key=True, index=True)
+    match_id = Column(Integer, ForeignKey("matches.id"), index=True, nullable=True)
+    intent = Column(String, index=True)
+    raw_transcript = Column(Text)
+    normalized_text = Column(Text)
+    parsed_slots = Column(Text)
+    confidence = Column(Float, default=0.0)
+    asr_latency_ms = Column(Float, nullable=True)
+    noise_rms = Column(Float, nullable=True)
+    score_before = Column(String)
+    score_after = Column(String)
+    status = Column(String, index=True)
+    disposition = Column(String, nullable=True)
+    source = Column(String, default="asr")
+    speaker_label = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    undone_by = Column(Integer, ForeignKey("voice_events.id"), nullable=True)
+
+    # Relationships
+    match = relationship("Match", back_populates="voice_events")
+    undo_target = relationship("VoiceEvent", remote_side=[id], back_populates="undo_source")
+    undo_source = relationship("VoiceEvent", remote_side=[undone_by], back_populates="undo_target")
+
+
+class VoiceCommand(Base):
+    """Opt-in dataset recorder sample."""
+    __tablename__ = "voice_commands"
+    id = Column(Integer, primary_key=True, index=True)
+    match_id = Column(Integer, ForeignKey("matches.id"), index=True, nullable=True)
+    transcript = Column(Text)
+    parsed_intent = Column(String, nullable=True)
+    expected_intent = Column(String, nullable=True)
+    matched = Column(Boolean, nullable=True)
+    correction = Column(String, nullable=True)
+    match_context = Column(Text, nullable=True)
+    mic_type = Column(String, nullable=True)
+    noise_condition = Column(String, nullable=True)
+    audio_stored = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    # Relationships
+    match = relationship("Match", back_populates="voice_commands")
+
+
+# Update Match relationships for voice events/commands
+Match.voice_events = relationship("VoiceEvent", back_populates="match", cascade="all, delete-orphan")
+Match.voice_commands = relationship("VoiceCommand", back_populates="match", cascade="all, delete-orphan")
+
+
 def init_db():
     Base.metadata.create_all(bind=engine)

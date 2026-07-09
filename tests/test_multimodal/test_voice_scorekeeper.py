@@ -15,18 +15,6 @@ from tournament_platform.multimodal_ai.intent_classifier import (
 
 
 # Test fixtures
-@dataclass
-class MockAudioData:
-    """Mock audio data for testing."""
-    content: bytes
-    
-    def read(self):
-        return self.content
-    
-    def seek(self, pos):
-        pass
-
-
 @pytest.fixture
 def intent_classifier():
     """Create an IntentClassifier instance for testing."""
@@ -92,8 +80,6 @@ class TestIntentClassifier:
     
     def test_classify_player_info(self, intent_classifier, sample_transcripts):
         """Test classification of player info queries."""
-        # Note: "What's the current score?" is correctly classified as SCORE_QUERY
-        # because it matches the score query patterns more specifically
         player_info_transcripts = [
             "Who is player A?",
             "Show player stats",
@@ -120,67 +106,10 @@ class TestIntentClassifier:
     
     def test_confidence_threshold(self, intent_classifier):
         """Test that low confidence results in UNKNOWN intent."""
-        # Create classifier with high threshold
         high_threshold_classifier = IntentClassifier(threshold=0.9)
         
-        # This should return UNKNOWN due to high threshold
         result = high_threshold_classifier.classify("Some random text")
         assert result.intent_type == IntentType.UNKNOWN
-
-
-class TestVoiceScorekeeperIntegration:
-    """Tests for voice scorekeeper integration."""
-    
-    @patch('tournament_platform.app.pages.voice_scorekeeper.UmpireEngine')
-    @patch('tournament_platform.app.pages.voice_scorekeeper.IntentClassifier')
-    def test_process_voice_command_returns_tuple(
-        self, mock_classifier_class, mock_umpire_class
-    ):
-        """Test that process_voice_command returns a 3-tuple."""
-        # This test verifies the signature change
-        from tournament_platform.app.pages.voice_scorekeeper import process_voice_command
-        
-        # Create mock instances
-        mock_umpire = Mock()
-        mock_umpire.transcribe_audio_file.return_value = "Player A scores"
-        mock_umpire_class.return_value = mock_umpire
-        
-        mock_classifier = Mock()
-        mock_classifier.classify.return_value = IntentResult(
-            intent_type=IntentType.SCORE_UPDATE,
-            confidence=0.9,
-            raw_text="Player A scores"
-        )
-        mock_classifier_class.return_value = mock_classifier
-        
-        # Create mock audio bytes
-        audio_bytes = b"fake_audio_data"
-        
-        # Process the command
-        result = process_voice_command(audio_bytes)
-        
-        # Verify it returns a 3-tuple
-        assert isinstance(result, tuple), "Should return a tuple"
-        assert len(result) == 3, "Should return 3 elements"
-        transcript, response, intent_result = result
-        
-        assert isinstance(transcript, str), "First element should be transcript string"
-        assert isinstance(response, str), "Second element should be response string"
-        assert isinstance(intent_result, IntentResult), "Third element should be IntentResult"
-    
-    def test_intent_result_dataclass(self):
-        """Test IntentResult dataclass structure."""
-        result = IntentResult(
-            intent_type=IntentType.SCORE_UPDATE,
-            confidence=0.85,
-            raw_text="Player A scores",
-            entities={"player": "A"}
-        )
-        
-        assert result.intent_type == IntentType.SCORE_UPDATE
-        assert result.confidence == 0.85
-        assert result.raw_text == "Player A scores"
-        assert result.entities == {"player": "A"}
 
 
 class TestCoachingServiceIntegration:
@@ -195,7 +124,6 @@ class TestCoachingServiceIntegration:
             CoachingRecommendation
         )
         
-        # Create mock AI engine
         mock_ai_engine = Mock()
         mock_ai_engine.rules_retriever.search_rules.return_value = "Sample coaching context"
         mock_ai_engine._chat_with_fallback.return_value = {
@@ -210,7 +138,6 @@ class TestCoachingServiceIntegration:
         }
         mock_ai_engine_class.return_value = mock_ai_engine
         
-        # Create service and generate feedback
         service = CoachingService(ai_engine=mock_ai_engine)
         feedback = service.generate_feedback(
             session_id=1,

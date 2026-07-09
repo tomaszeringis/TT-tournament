@@ -4,6 +4,8 @@ Allows browsing and managing registered datasets.
 """
 
 import streamlit as st
+
+st.set_page_config(page_title="Dataset Catalog - TT Platform", layout="wide")
 import pandas as pd
 from typing import List, Optional
 

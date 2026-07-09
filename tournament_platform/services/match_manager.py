@@ -20,6 +20,15 @@ try:
 except ImportError:
     VoiceScoreEvent = None  # type: ignore
 
+from tournament_platform.app.services.score_engine import (
+    create_match,
+    add_point as engine_add_point,
+    set_score as engine_set_score,
+    undo_last_action as engine_undo_last_action,
+    reset_match as engine_reset_match,
+    rematch as engine_rematch,
+)
+
 
 @dataclass
 class MatchState:
@@ -95,7 +104,30 @@ class MatchManager:
     
     def __init__(self, player_a: str = "Player A", player_b: str = "Player B", player_a_id: Optional[int] = None, player_b_id: Optional[int] = None):
         self.state = MatchState(player_a=player_a, player_b=player_b, player_a_id=player_a_id, player_b_id=player_b_id)
-    
+        # Authoritative scoring engine (PingScore-derived rules). The legacy
+        # ``self.state`` is kept as a UI-compatible mirror, synced after each action.
+        self.engine = create_match(
+            player_a_name=player_a,
+            player_b_name=player_b,
+            player_a_id=player_a_id,
+            player_b_id=player_b_id,
+        )
+        self._sync_state()
+
+    def _sync_state(self) -> None:
+        """Mirror the authoritative engine state onto the legacy UI state."""
+        e = self.engine
+        s = self.state
+        s.score_a = e.score_a
+        s.score_b = e.score_b
+        s.player_a = e.player_a_name
+        s.player_b = e.player_b_name
+        s.player_a_id = e.player_a_id
+        s.player_b_id = e.player_b_id
+        s.current_set = len(e.round_scores) + 1
+        s.sets_a = e.games_won_a
+        s.sets_b = e.games_won_b
+
     def update_score(self, transcription: str) -> Tuple[bool, str]:
         """
         Parse transcription and update match state accordingly.
@@ -108,26 +140,40 @@ class MatchManager:
         """
         text = transcription.lower().strip()
         
-        # Check for undo command
+        # Structured parse first: supports bare score pairs (e.g. "five four"),
+        # undo, and point commands.
+        try:
+            from tournament_platform.app.services.voice_parser import VoiceParser
+            event = VoiceParser().parse(
+                text,
+                current_score_a=self.state.score_a,
+                current_score_b=self.state.score_b,
+            )
+            if event.type == "set_score" and event.score_a is not None and event.score_b is not None:
+                return self._set_score(event.score_a, event.score_b)
+            if event.type == "increment" and event.player:
+                return self._add_point(event.player)
+            if event.type == "undo":
+                return self.undo_last_point()
+        except Exception:
+            pass
+        
+        # Legacy keyword fallback
         if any(kw in text for kw in self.UNDO_KEYWORDS):
             return self.undo_last_point()
         
-        # Check for score query
         if any(kw in text for kw in self.SCORE_KEYWORDS):
             return True, f"Score is {self.state.score_a} to {self.state.score_b}"
         
-        # Check for point commands
         player_a_name = self.state.player_a.lower()
         player_b_name = self.state.player_b.lower()
         
-        # Check if point is for Player A
         if any(kw in text for kw in self.POINT_KEYWORDS):
             if player_a_name in text or "player a" in text:
                 return self._add_point("A")
             elif player_b_name in text or "player b" in text:
                 return self._add_point("B")
         
-        # Check for just "player a" or "player b" with point context
         if "player a" in text:
             return self._add_point("A")
         if "player b" in text:
@@ -138,14 +184,18 @@ class MatchManager:
     def _add_point(self, player: str) -> Tuple[bool, str]:
         """
         Add a point to the specified player.
-        
+
+        Delegates scoring rules to the ``score_engine`` (win-by-2, serve
+        switching, deuce, and best-of game/match completion) and keeps the
+        legacy ``self.state`` mirror in sync for the UI.
+
         Args:
             player: "A" or "B"
-            
+
         Returns:
             Tuple of (success, message)
         """
-        # Save current state to history before modification
+        # Preserve legacy history format expected by the UI's per-player undo.
         self.state.match_history.append({
             "action": "point_added",
             "player": player,
@@ -155,41 +205,32 @@ class MatchManager:
             "previous_sets_a": self.state.sets_a,
             "previous_sets_b": self.state.sets_b,
         })
-        
-        if player == "A":
-            self.state.score_a += 1
-            player_name = self.state.player_a
-        else:
-            self.state.score_b += 1
-            player_name = self.state.player_b
-        
-        # Check for game point (first to 11, win by 2)
-        if self.state.score_a >= 11 or self.state.score_b >= 11:
-            if abs(self.state.score_a - self.state.score_b) >= 2:
-                # Game won - could extend for set handling
-                pass
-        
+
+        result = engine_add_point(self.engine, player)
+        if not result.ok:
+            # Roll back the history entry we just appended.
+            self.state.match_history.pop()
+            return False, result.rejected_reason or "Could not add point"
+
+        self._sync_state()
+        player_name = self.state.player_a if player == "A" else self.state.player_b
         return True, f"Point for {player_name}. Score is now {self.state.score_a} to {self.state.score_b}"
     
     def _set_score(self, score_a: int, score_b: int) -> Tuple[bool, str]:
         """
         Set the current game score directly.
-        
+
+        Delegates to the ``score_engine`` (validation, deuce, and game/match
+        completion) and keeps the legacy ``self.state`` mirror in sync.
+
         Args:
             score_a: New score for player A
             score_b: New score for player B
-            
+
         Returns:
             Tuple of (success, message)
         """
-        # Validate scores
-        if score_a < 0 or score_b < 0:
-            return False, "Scores cannot be negative"
-        
-        if score_a > 21 or score_b > 21:
-            return False, "Score exceeds maximum (21)"
-        
-        # Save current state to history before modification
+        # Preserve legacy history format expected by the UI's undo.
         self.state.match_history.append({
             "action": "score_set",
             "previous_score_a": self.state.score_a,
@@ -198,35 +239,15 @@ class MatchManager:
             "previous_sets_a": self.state.sets_a,
             "previous_sets_b": self.state.sets_b,
         })
-        
-        self.state.score_a = score_a
-        self.state.score_b = score_b
-        
-        # Check for game completion
-        self._check_game_completion()
-        
-        return True, f"Score set to {score_a}-{score_b}"
-    
-    def _check_game_completion(self) -> None:
-        """
-        Check if the current game is complete and update set scores if so.
-        
-        A game is won when a player reaches 11+ points with a 2-point lead.
-        """
-        score_a = self.state.score_a
-        score_b = self.state.score_b
-        
-        if (score_a >= 11 or score_b >= 11) and abs(score_a - score_b) >= 2:
-            # Game won
-            if score_a > score_b:
-                self.state.sets_a += 1
-            else:
-                self.state.sets_b += 1
-            
-            # Reset game score for next game
-            self.state.score_a = 0
-            self.state.score_b = 0
-            self.state.current_set += 1
+
+        result = engine_set_score(self.engine, score_a, score_b)
+        if not result.ok:
+            # Roll back the history entry we just appended.
+            self.state.match_history.pop()
+            return False, result.rejected_reason or "Could not set score"
+
+        self._sync_state()
+        return True, f"Score set to {self.state.score_a}-{self.state.score_b}"
     
     def apply_voice_event(self, event: VoiceScoreEvent) -> Tuple[bool, str]:
         """
@@ -256,47 +277,80 @@ class MatchManager:
     
     def undo_last_point(self) -> Tuple[bool, str]:
         """
-        Revert the last point change using match history.
-        
+        Revert the last action using the engine's full-state history.
+
         Returns:
             Tuple of (success, message)
         """
         if not self.state.match_history:
             return False, "No points to undo."
-        
-        last_action = self.state.match_history.pop()
-        
-        if last_action["action"] == "point_added":
-            self.state.score_a = last_action["previous_score_a"]
-            self.state.score_b = last_action["previous_score_b"]
-            self.state.current_set = last_action["previous_set"]
-            self.state.sets_a = last_action["previous_sets_a"]
-            self.state.sets_b = last_action["previous_sets_b"]
-            return True, f"Point undone. Score is now {self.state.score_a} to {self.state.score_b}"
-        
-        return False, "Cannot undo that action."
-    
+
+        # Attempt engine undo first; only pop legacy history on success so the
+        # two histories stay in lock-step even if the engine rejects the undo.
+        result = engine_undo_last_action(self.engine)
+        if not result.ok:
+            return False, result.rejected_reason or "Cannot undo that action."
+
+        self.state.match_history.pop()
+        self._sync_state()
+        return True, f"Point undone. Score is now {self.state.score_a} to {self.state.score_b}"
+
     def reset_match(self) -> Tuple[bool, str]:
         """
-        Reset the match to initial state.
-        
+        Reset the match to initial state (keeps player names/ids).
+
         Returns:
             Tuple of (success, message)
         """
-        self.state = MatchState(
-            player_a=self.state.player_a,
-            player_b=self.state.player_b,
-            player_a_id=self.state.player_a_id,
-            player_b_id=self.state.player_b_id
-        )
+        engine_reset_match(self.engine)
+        self.state.match_history = []
+        self._sync_state()
         return True, "Match reset. Score is 0 to 0"
-    
+
+    def rematch(self) -> Tuple[bool, str]:
+        """
+        Reset for a rematch, swapping the first server.
+
+        Returns:
+            Tuple of (success, message)
+        """
+        result = engine_rematch(self.engine)
+        if not result.ok:
+            return False, result.rejected_reason or "Cannot rematch"
+        self.state.match_history = []
+        self._sync_state()
+        return True, "Rematch! First server swapped."
+
     def set_player_names(self, player_a: str, player_b: str, player_a_id: Optional[int] = None, player_b_id: Optional[int] = None) -> None:
         """Set custom player names and optionally their database IDs."""
         self.state.player_a = player_a
         self.state.player_b = player_b
         self.state.player_a_id = player_a_id
         self.state.player_b_id = player_b_id
+        self.engine.player_a_name = player_a
+        self.engine.player_b_name = player_b
+        self.engine.player_a_id = player_a_id
+        self.engine.player_b_id = player_b_id
+
+    def apply_format(self, points_to_win: int, best_of: int, first_server: str) -> None:
+        """
+        Reconfigure the match format (points-to-win, best-of, first server).
+
+        Recreates the authoritative engine with the new format, preserving the
+        current player names/ids, and resets the match. Raises ValueError if the
+        values are not supported (delegated to ``create_match``).
+        """
+        self.engine = create_match(
+            player_a_name=self.engine.player_a_name,
+            player_b_name=self.engine.player_b_name,
+            player_a_id=self.engine.player_a_id,
+            player_b_id=self.engine.player_b_id,
+            points_to_win=points_to_win,
+            best_of=best_of,
+            first_server=first_server,
+        )
+        self.state.match_history = []
+        self._sync_state()
 
     # ------------------------------------------------------------------
     # Event generation methods

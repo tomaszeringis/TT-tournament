@@ -2,36 +2,52 @@
 
 ## ⚡ 5-Minute Setup
 
-### 1. Install Dependencies
-```bash
-python -m pip install -r tournament_platform/requirements.txt
+Run all commands from the **repository root** (`C:\Users\TomasZeringis\PycharmProjects\tournament_platform`).
+
+### 1. Create and activate a virtual environment
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 ```
 
-### 2. Initialize Database
+### 2. Install Dependencies
 ```bash
+python -m pip install --upgrade pip
+pip install -e .
+```
+
+### 3. Configure environment
+```powershell
 cd tournament_platform
-python -m alembic upgrade head
+copy .env.example .env
 ```
+Edit `.env` and set at least `OLLAMA_HOST` and `OLLAMA_MODEL` if you plan to use AI features.
 
-### 3. Initialize RAG (Optional)
+### 4. Initialize Database
 ```bash
 cd ..
-python initialize_rag.py
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
-### 4. Start the API Server
+### 5. Start the API Server (Terminal 1)
 ```bash
-cd tournament_platform
-python api/server.py
+python -m tournament_platform.api.server
 ```
 ✅ API running at `http://localhost:8000`
 
-### 5. Start the Streamlit App (in a new terminal)
-```bash
-cd tournament_platform/app
-python -m streamlit run main.py
+### 6. Start the Streamlit App (Terminal 2)
+```powershell
+$env:PYTHONPATH = "C:\Users\TomasZeringis\PycharmProjects\tournament_platform"
+streamlit run tournament_platform/app/main.py
 ```
 ✅ Streamlit running at `http://localhost:8501`
+
+**Notes:**
+- `PYTHONPATH` must include the repository root so absolute imports like `tournament_platform.config` resolve correctly.
+- If you get `ImportError: Failed to load GTTSEngine`, install the missing TTS dependency:
+  ```bash
+  .\.venv\Scripts\pip install gtts
+  ```
 
 ---
 
@@ -91,18 +107,55 @@ This script tests:
 ## 📁 Project Structure
 
 ```
-tournament_platform/
-├── main.py                    # Entry point
-├── models.py                  # SQLAlchemy models
-├── alembic/                   # Database migrations
-├── api/server.py              # FastAPI async server
-├── app/main.py                # Streamlit entry
-├── app/pages/                 # Multi-page structure
-│   ├── dashboard.py
-│   ├── tournament_setup.py
-│   └── admin.py
-├── services/ai_engine.py      # AI + RAG
-└── data/                      # Database & RAG storage
+tournament_platform/                    # Repository root
+├── pyproject.toml                      # Package config & dependencies
+├── README.md                           # This file
+├── QUICKSTART.md                       # This quick start guide
+├── tournament_platform/                # Main Python package
+│   ├── __init__.py
+│   ├── models.py                       # SQLAlchemy database models
+│   ├── config/__init__.py              # Settings (pydantic-settings)
+│   ├── .env.example                    # Environment variable template
+│   ├── requirements.txt                # Python dependencies
+│   ├── alembic.ini                     # Alembic migration config
+│   ├── alembic/                        # Database migrations
+│   │   ├── env.py
+│   │   ├── script.py.mako
+│   │   └── versions/
+│   ├── api/server.py                   # FastAPI backend
+│   ├── app/
+│   │   ├── main.py                     # Streamlit entry point
+│   │   ├── config.yaml                 # Streamlit auth config
+│   │   ├── utils.py                    # Shared UI utilities
+│   │   ├── components/                 # Reusable UI components
+│   │   │   ├── bracket_renderer.py
+│   │   │   └── interactive_bracket/
+│   │   └── pages/                      # Streamlit pages
+│   │       ├── dashboard.py
+│   │       ├── rankings.py
+│   │       ├── tournament_setup.py
+│   │       ├── admin.py
+│   │       ├── voice_rules_chat.py
+│   │       └── voice_scorekeeper.py
+│   ├── services/                       # Business logic
+│   │   ├── ai_engine.py
+│   │   ├── ai_assistant.py
+│   │   ├── bracket_manager.py
+│   │   ├── calendar_service.py
+│   │   ├── match_manager.py
+│   │   ├── match_reporting.py
+│   │   ├── ranking_service.py
+│   │   ├── rules_ingestion.py
+│   │   ├── rules_retrieval.py
+│   │   ├── speech_service.py
+│   │   ├── tournament_engine.py
+│   │   └── umpire_engine.py
+│   ├── data/                           # Runtime data (auto-created)
+│   │   ├── tournament.db               # SQLite database
+│   │   ├── bracket.json
+│   │   └── docs/                       # Reference PDFs
+│   └── test_*.py                       # Test suite
+└── teams/manifest.json                 # Team data
 ```
 
 ---
@@ -110,28 +163,40 @@ tournament_platform/
 ## 🔗 Useful Commands
 
 ```bash
-# Database migrations
-python -m alembic current              # Check current migration
-python -m alembic upgrade head         # Apply all migrations
-python -m alembic downgrade -1         # Undo last migration
+# Database migrations (run from repo root)
+python -m alembic -c tournament_platform/alembic.ini current
+python -m alembic -c tournament_platform/alembic.ini upgrade head
+python -m alembic -c tournament_platform/alembic.ini downgrade -1
 
 # Testing
-python test_api.py          # Test API endpoints
-python initialize_rag.py    # Initialize RAG system
+pytest tournament_platform/ -q
 
 # Running
-python api/server.py        # Start API
-python -m streamlit run app/main.py   # Start frontend
+python -m tournament_platform.api.server          # API server
+streamlit run tournament_platform/app/main.py     # Frontend
+python initialize_rag.py                          # One-time RAG init
 ```
 
 ---
 
 ## 🆘 Common Issues
 
-### "Module not found" error
-```bash
-# Make sure you're in the right directory
-cd tournament_platform
+### "ModuleNotFoundError: No module named 'tournament_platform'"
+Run from the **repository root** and ensure the root is on `PYTHONPATH`:
+```powershell
+$env:PYTHONPATH = "C:\Users\TomasZeringis\PycharmProjects\tournament_platform"
+streamlit run tournament_platform/app/main.py
+```
+
+### "No 'script_location' key found in configuration" (Alembic)
+Use the root `alembic.ini` explicitly:
+```powershell
+python -m alembic -c tournament_platform/alembic.ini upgrade head
+```
+
+### Missing `gtts` / RealtimeTTS backend
+```powershell
+.\.venv\Scripts\pip install gtts
 ```
 
 ### Ollama connection error
@@ -176,5 +241,5 @@ ollama pull llama3:latest
 
 **Questions?** Check the [full documentation](SETUP_GUIDE.md)
 
-**Last Updated:** June 17, 2026
+**Last Updated:** July 8, 2026
 

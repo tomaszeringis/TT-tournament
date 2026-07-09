@@ -1,5 +1,5 @@
 from typing import List, Optional
-from fastapi import FastAPI, Request, Depends, HTTPException
+from fastapi import FastAPI, Request, Depends, HTTPException, WebSocket, WebSocketDisconnect
 from sqlalchemy.orm import Session
 from pydantic import ValidationError
 import uvicorn
@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from contextlib import asynccontextmanager
 
 # Import models and database
-from tournament_platform.models import SessionLocal, Match, MatchStatus, Player, Tournament, VenueTable, Announcement, AuditLog
+from tournament_platform.models import SessionLocal, Match, MatchStatus, Player, Tournament, VenueTable, Announcement, AuditLog, VoiceEvent, VoiceCommand
 from tournament_platform.services.ai_engine import AIEngine
 from tournament_platform.services.ranking_service import RatingManager
 from tournament_platform.services.match_reporting import (
@@ -1545,6 +1545,482 @@ async def classify_intent(request: Request):
     except Exception as e:
         logger.error(f"Error classifying intent: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to classify intent")
+
+
+# ============================================================================
+# Voice Service WebSocket Endpoints (Phase 8)
+# ============================================================================
+
+from tournament_platform.app.services.voice_service import VoiceService, VoiceServiceError
+from tournament_platform.services.match_manager import MatchManager
+
+
+class VoiceConnectionManager:
+    """Manage active WebSocket connections for voice scoring."""
+
+    def __init__(self):
+        self.active_connections: Dict[str, WebSocket] = {}
+
+    async def connect(self, match_id: str, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections[match_id] = websocket
+        logger.info("Voice WebSocket connected for match %s", match_id)
+
+    def disconnect(self, match_id: str):
+        if match_id in self.active_connections:
+            del self.active_connections[match_id]
+            logger.info("Voice WebSocket disconnected for match %s", match_id)
+
+    async def send_json(self, match_id: str, data: dict):
+        if match_id in self.active_connections:
+            try:
+                await self.active_connections[match_id].send_json(data)
+            except Exception as e:
+                logger.warning("Failed to send to match %s: %s", match_id, e)
+
+
+voice_manager = VoiceConnectionManager()
+
+
+@app.websocket("/ws/voice/{match_id}")
+async def websocket_voice_endpoint(websocket: WebSocket, match_id: str):
+    """
+    WebSocket endpoint for real-time voice scoring.
+
+    Protocol:
+    - Client sends: {"type": "transcript", "text": "point to player one"}
+    - Client sends: {"type": "audio", "data": "<base64 audio bytes>"}
+    - Server sends: {"type": "result", "data": {...}}
+    - Server sends: {"type": "error", "message": "..."}
+    - Server sends: {"type": "state", "data": {...}}
+
+    Feature-flagged by VOICE_ENABLE_MOBILE_AGENT.
+    """
+    from tournament_platform.services.settings import VOICE_ENABLE_MOBILE_AGENT
+
+    if not VOICE_ENABLE_MOBILE_AGENT:
+        await websocket.close(code=1008, reason="Voice agent disabled")
+        return
+
+    await voice_manager.connect(match_id, websocket)
+
+    # Create a match manager for this WebSocket session
+    # In production, this would load an existing match from the database
+    match_manager = MatchManager(player_a_name="Player A", player_b_name="Player B", format="best_of_3")
+    voice_service = VoiceService(match_manager=match_manager)
+
+    try:
+        while True:
+            raw_message = await websocket.receive_text()
+            try:
+                message = json.loads(raw_message)
+            except json.JSONDecodeError:
+                await voice_manager.send_json(match_id, {
+                    "type": "error",
+                    "message": "Invalid JSON",
+                })
+                continue
+
+            msg_type = message.get("type")
+
+            if msg_type == "transcript":
+                text = message.get("text", "")
+                try:
+                    processed, event = voice_service.process_transcript(text)
+                    result = voice_service.apply_voice_event(event)
+                    await voice_manager.send_json(match_id, {
+                        "type": "result",
+                        "data": {
+                            "raw_transcript": text,
+                            "processed_transcript": processed,
+                            "event": event.to_dict() if hasattr(event, "to_dict") else {
+                                "type": event.type,
+                                "score_a": event.score_a,
+                                "score_b": event.score_b,
+                                "player": event.player,
+                                "confidence": event.confidence,
+                            },
+                            "apply_result": result,
+                        },
+                    })
+                except VoiceServiceError as e:
+                    await voice_manager.send_json(match_id, {
+                        "type": "error",
+                        "message": str(e),
+                    })
+
+            elif msg_type == "state":
+                try:
+                    state = voice_service.get_match_state()
+                    await voice_manager.send_json(match_id, {
+                        "type": "state",
+                        "data": state,
+                    })
+                except VoiceServiceError as e:
+                    await voice_manager.send_json(match_id, {
+                        "type": "error",
+                        "message": str(e),
+                    })
+
+            elif msg_type == "audio":
+                # Base64-encoded audio data
+                import base64
+                audio_b64 = message.get("data", "")
+                try:
+                    audio_bytes = base64.b64decode(audio_b64)
+                    text = voice_service.transcribe_audio(audio_bytes)
+                    if text:
+                        processed, event = voice_service.process_transcript(text)
+                        result = voice_service.apply_voice_event(event)
+                        await voice_manager.send_json(match_id, {
+                            "type": "result",
+                            "data": {
+                                "raw_transcript": text,
+                                "processed_transcript": processed,
+                                "event": event.to_dict() if hasattr(event, "to_dict") else {
+                                    "type": event.type,
+                                    "score_a": event.score_a,
+                                    "score_b": event.score_b,
+                                    "player": event.player,
+                                    "confidence": event.confidence,
+                                },
+                                "apply_result": result,
+                            },
+                        })
+                    else:
+                        await voice_manager.send_json(match_id, {
+                            "type": "error",
+                            "message": "Transcription failed or empty",
+                        })
+                except Exception as e:
+                    await voice_manager.send_json(match_id, {
+                        "type": "error",
+                        "message": f"Audio processing error: {e}",
+                    })
+
+            else:
+                await voice_manager.send_json(match_id, {
+                    "type": "error",
+                    "message": f"Unknown message type: {msg_type}",
+                })
+
+    except WebSocketDisconnect:
+        voice_manager.disconnect(match_id)
+    except Exception as e:
+        logger.error("WebSocket error for match %s: %s", match_id, e)
+        voice_manager.disconnect(match_id)
+
+
+# ============================================================================
+# Voice REST Endpoints (Phase 5)
+# ============================================================================
+
+from tournament_platform.app.services.voice_service import VoiceService, VoiceServiceError
+from tournament_platform.app.services.voice.event_log import VoiceEventRepository, VoiceCommandRepository
+from tournament_platform.app.services.voice.dataset_recorder import VoiceDatasetRecorder
+
+
+@app.post("/api/voice/transcribe")
+async def api_voice_transcribe(request: Request):
+    """
+    Transcribe audio bytes to text.
+
+    Request body:
+    - audio: base64-encoded audio bytes (PCM 16kHz mono preferred)
+    - match_id: optional match context
+
+    Returns:
+    - transcript: transcribed text
+    - confidence: ASR confidence if available
+    """
+    from tournament_platform.services.settings import VOICE_ENABLE_VOICE_ENTRY
+
+    if not VOICE_ENABLE_VOICE_ENTRY:
+        raise HTTPException(status_code=503, detail="Voice entry is disabled")
+
+    try:
+        data = await request.json()
+        audio_b64 = data.get("audio", "")
+        match_id = data.get("match_id")
+
+        import base64
+        audio_bytes = base64.b64decode(audio_b64) if audio_b64 else b""
+
+        service = VoiceService()
+        transcript = service.transcribe_audio(audio_bytes)
+
+        return {
+            "status": "success",
+            "transcript": transcript,
+            "match_id": match_id,
+        }
+    except VoiceServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error transcribing audio: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Transcription failed")
+
+
+@app.post("/api/voice/parse")
+async def api_voice_parse(request: Request):
+    """
+    Parse a transcript into a structured voice event.
+
+    Request body:
+    - transcript: text to parse
+    - match_id: optional match context for grounding
+
+    Returns:
+    - parsed event with intent, slots, confidence, and grounding metadata.
+    """
+    from tournament_platform.services.settings import VOICE_ENABLE_VOICE_ENTRY
+
+    if not VOICE_ENABLE_VOICE_ENTRY:
+        raise HTTPException(status_code=503, detail="Voice entry is disabled")
+
+    try:
+        data = await request.json()
+        transcript = data.get("transcript", "").strip()
+        if not transcript:
+            raise HTTPException(status_code=400, detail="'transcript' must not be empty")
+
+        service = VoiceService()
+        processed, event = service.process_transcript(transcript)
+
+        result = {
+            "status": "success",
+            "processed_transcript": processed,
+            "event": {
+                "type": event.type,
+                "score_a": event.score_a,
+                "score_b": event.score_b,
+                "player": event.player,
+                "confidence": event.confidence,
+                "source": getattr(event, "source", "asr"),
+                "requires_confirmation": getattr(event, "requires_confirmation", False),
+            },
+        }
+        return result
+    except VoiceServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error parsing voice transcript: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Parse failed")
+
+
+@app.post("/api/matches/{match_id}/voice-events")
+async def api_apply_voice_event(match_id: int, request: Request, db: Session = Depends(get_db)):
+    """
+    Apply a voice event to a match.
+
+    Request body:
+    - event: VoiceScoreEvent dict with type, score_a, score_b, player, confidence, etc.
+
+    Returns:
+    - apply result with previous_score, new_score, and status.
+    """
+    from tournament_platform.services.settings import VOICE_ENABLE_VOICE_ENTRY
+
+    if not VOICE_ENABLE_VOICE_ENTRY:
+        raise HTTPException(status_code=503, detail="Voice entry is disabled")
+
+    try:
+        match = db.query(Match).filter(Match.id == match_id).first()
+        if not match:
+            raise HTTPException(status_code=404, detail=f"Match {match_id} not found")
+
+        data = await request.json()
+        event_data = data.get("event", {})
+
+        # Build a VoiceScoreEvent from the request
+        score_event = VoiceScoreEvent(
+            type=event_data.get("type", "unknown"),
+            score_a=event_data.get("score_a"),
+            score_b=event_data.get("score_b"),
+            player=event_data.get("player"),
+            raw_text=event_data.get("raw_text", ""),
+            confidence=float(event_data.get("confidence", 0.0)),
+            event_id=event_data.get("event_id", str(__import__("uuid").uuid4())),
+            source=event_data.get("source", "asr"),
+            requires_confirmation=event_data.get("requires_confirmation", False),
+        )
+
+        # Use a fresh MatchManager for this match (in production, load from DB state)
+        match_manager = MatchManager(
+            player_a=match.player1 or "Player A",
+            player_b=match.player2 or "Player B",
+        )
+        service = VoiceService(match_manager=match_manager)
+        result = service.apply_voice_event(score_event)
+
+        # Persist to DB
+        prev_score = result.get("previous_score", "")
+        new_score = result.get("new_score", "")
+        voice_event = VoiceEventRepository.record({
+            "match_id": match_id,
+            "intent": score_event.type,
+            "raw_transcript": score_event.raw_text,
+            "status": "accepted" if result.get("status") == "accepted" else "rejected",
+            "score_before": prev_score,
+            "score_after": new_score,
+            "confidence": score_event.confidence,
+            "source": score_event.source,
+        })
+
+        return {
+            "status": "success",
+            "apply_result": result,
+            "voice_event_id": voice_event.id if voice_event else None,
+        }
+    except VoiceServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error applying voice event for match {match_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to apply voice event")
+
+
+@app.get("/api/matches/{match_id}/voice-events")
+async def api_get_voice_events(match_id: int, limit: int = 100, db: Session = Depends(get_db)):
+    """
+    List voice events for a match.
+
+    Query params:
+    - limit: maximum number of events to return (default 100)
+    """
+    from tournament_platform.services.settings import VOICE_ENABLE_VOICE_ENTRY
+
+    if not VOICE_ENABLE_VOICE_ENTRY:
+        raise HTTPException(status_code=503, detail="Voice entry is disabled")
+
+    try:
+        match = db.query(Match).filter(Match.id == match_id).first()
+        if not match:
+            raise HTTPException(status_code=404, detail=f"Match {match_id} not found")
+
+        events = VoiceEventRepository.get_by_match(match_id, limit=limit)
+        return {
+            "status": "success",
+            "match_id": match_id,
+            "events": [
+                {
+                    "id": e.id,
+                    "intent": e.intent,
+                    "raw_transcript": e.raw_transcript,
+                    "confidence": e.confidence,
+                    "score_before": e.score_before,
+                    "score_after": e.score_after,
+                    "status": e.status,
+                    "source": e.source,
+                    "created_at": e.created_at.isoformat() if e.created_at else None,
+                }
+                for e in events
+            ],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching voice events for match {match_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to fetch voice events")
+
+
+@app.post("/api/voice/confirm")
+async def api_voice_confirm(request: Request, db: Session = Depends(get_db)):
+    """
+    Confirm a pending voice event.
+
+    Request body:
+    - event_id: ID of the pending event to confirm
+
+    Returns:
+    - confirmation result.
+    """
+    from tournament_platform.services.settings import VOICE_ENABLE_VOICE_ENTRY
+
+    if not VOICE_ENABLE_VOICE_ENTRY:
+        raise HTTPException(status_code=503, detail="Voice entry is disabled")
+
+    try:
+        data = await request.json()
+        event_id = data.get("event_id")
+        if not event_id:
+            raise HTTPException(status_code=400, detail="'event_id' is required")
+
+        event = db.query(VoiceEvent).filter(VoiceEvent.id == event_id).first()
+        if not event:
+            raise HTTPException(status_code=404, detail=f"Voice event {event_id} not found")
+
+        # Use a fresh MatchManager (in production, load from DB state)
+        match_manager = MatchManager(player_a_name="Player A", player_b_name="Player B", format="best_of_3")
+        service = VoiceService(match_manager=match_manager)
+        result = service.confirm_event(event_id, db=db)
+
+        return {
+            "status": "success",
+            "confirm_result": result,
+        }
+    except VoiceServiceError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error confirming voice event: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to confirm voice event")
+
+
+@app.post("/api/voice/dataset-samples")
+async def api_voice_dataset_samples(request: Request, db: Session = Depends(get_db)):
+    """
+    Record an opt-in dataset sample for grammar evaluation.
+
+    Request body:
+    - transcript: raw ASR transcript
+    - parsed_intent: intent parsed by grammar
+    - expected_intent: operator-corrected intent (optional)
+    - match_id: optional match context
+    - match_context: optional match state snapshot
+    - mic_type: optional microphone type label
+    - noise_condition: optional noise condition label
+    - record_audio: whether audio was stored (default false)
+
+    Returns:
+    - recorded sample id and status.
+    """
+    from tournament_platform.services.settings import VOICE_DATASET_OPT_IN
+
+    if not VOICE_DATASET_OPT_IN:
+        raise HTTPException(status_code=503, detail="Dataset recorder is disabled")
+
+    try:
+        data = await request.json()
+        recorder = VoiceDatasetRecorder(enabled=True)
+        sample = recorder.record(
+            transcript=data.get("transcript", ""),
+            parsed_intent=data.get("parsed_intent"),
+            expected_intent=data.get("expected_intent"),
+            match_id=data.get("match_id"),
+            match_context=data.get("match_context"),
+            mic_type=data.get("mic_type"),
+            noise_condition=data.get("noise_condition"),
+            record_audio=data.get("record_audio", False),
+            db=db,
+        )
+
+        if sample is None:
+            raise HTTPException(status_code=500, detail="Failed to record dataset sample")
+
+        return {
+            "status": "success",
+            "sample_id": sample.id,
+            "transcript": sample.transcript,
+            "matched": sample.matched,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error recording dataset sample: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to record dataset sample")
 
 
 if __name__ == "__main__":

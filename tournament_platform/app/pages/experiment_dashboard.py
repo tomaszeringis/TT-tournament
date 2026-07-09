@@ -4,6 +4,8 @@ Tracks model training and evaluation experiments.
 """
 
 import streamlit as st
+
+st.set_page_config(page_title="Experiment Dashboard - TT Platform", layout="wide")
 import pandas as pd
 from typing import List, Optional
 import json

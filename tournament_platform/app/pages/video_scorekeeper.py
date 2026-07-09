@@ -8,6 +8,8 @@ A human-in-the-loop score assistant that:
 """
 
 import streamlit as st
+
+st.set_page_config(page_title="Video Scorekeeper - TT Platform", layout="wide")
 import tempfile
 import os
 from typing import Optional, List, Dict

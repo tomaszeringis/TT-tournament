@@ -6,19 +6,37 @@ Handles ASR mistakes, number word normalization, and command recognition.
 """
 
 import re
-from dataclasses import dataclass
+import time
+import uuid
+from dataclasses import dataclass, field
 from typing import Optional
 
 
 @dataclass
 class VoiceScoreEvent:
-    """Structured event parsed from a voice transcript."""
-    type: str  # "set_score", "increment", "undo", "unknown"
+    """Structured event parsed from a voice transcript.
+
+    Core fields (type/score/player/raw_text/confidence) are unchanged for
+    backward compatibility. Extended metadata fields support observability,
+    speaker identification, and future LLM/multilingual routing without
+    altering scoring behavior.
+    """
+    type: str  # "set_score", "increment", "undo", "unknown", "repeat", "stop_listening"
     score_a: Optional[int] = None
     score_b: Optional[int] = None
     player: Optional[str] = None  # "A" or "B"
     raw_text: str = ""
     confidence: float = 0.0
+    # --- Extended metadata (Phase 1 hardening; all optional, non-breaking) ---
+    event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    timestamp: float = field(default_factory=time.time)
+    source: str = "asr"  # "asr" | "llm" | "manual"
+    uncertainty: float = 0.0  # higher = less certain; convenience for observability
+    speaker_label: Optional[str] = None  # Phase 2 (speaker identification)
+    language: str = "en"  # reserved; multilingual not implemented per directive
+    requires_confirmation: bool = False  # Phase 4/7 (TTS/LLM confirmation)
+    asr_latency_ms: Optional[float] = None  # Phase 5/9 observability
+    noise_rms: Optional[float] = None  # Phase 5 observability
 
 
 # Number word to digit mapping
@@ -155,6 +173,14 @@ class VoiceParser:
         (r"\bplayer\s+(one|1|a)\b", "A"),
         (r"\bplayer\s+(two|2|b)\b", "B"),
     ]
+
+    # Color aliases (PingScore-style command design):
+    # blue/teal/green -> Player A point; red/orange/read -> Player B point.
+    # "read" covers ASR mis-transcription of "red".
+    _COLOR_ALIAS_PATTERNS = [
+        (r"\b(blue|teal|green)\b", "A"),
+        (r"\b(red|orange|read)\b", "B"),
+    ]
     
     _SET_SCORE_PATTERNS = [
         r"\bset\s+score\s+(.+)",
@@ -169,133 +195,16 @@ class VoiceParser:
     ) -> VoiceScoreEvent:
         """
         Parse a voice transcript into a structured score event.
-        
+
         Args:
             transcript: Raw text from ASR
             current_score_a: Current score for player A (for deuce validation)
             current_score_b: Current score for player B (for deuce validation)
-            
+
         Returns:
             VoiceScoreEvent with parsed intent and values
         """
-        if not transcript or not transcript.strip():
-            return VoiceScoreEvent(type="unknown", raw_text=transcript or "", confidence=0.0)
-        
-        raw = transcript.strip()
-        text = raw.lower()
-        
-        # Normalize number words for score extraction
-        normalized = _normalize_number_words(text)
-        
-        # Check for undo commands (on original text to avoid false positives)
-        for pattern in self._UNDO_PATTERNS:
-            if re.search(pattern, text):
-                return VoiceScoreEvent(
-                    type="undo",
-                    raw_text=raw,
-                    confidence=0.9,
-                )
-        
-        # Check for point/increment commands (on original text)
-        for pattern, player in self._POINT_PATTERNS:
-            if re.search(pattern, text):
-                return VoiceScoreEvent(
-                    type="increment",
-                    player=player,
-                    raw_text=raw,
-                    confidence=0.85,
-                )
-        
-        # Check for "set score X Y" explicit pattern (on normalized text)
-        for pattern in self._SET_SCORE_PATTERNS:
-            match = re.search(pattern, normalized)
-            if match:
-                score_text = match.group(1)
-                pair = _extract_score_pair(score_text)
-                if pair:
-                    return VoiceScoreEvent(
-                        type="set_score",
-                        score_a=pair[0],
-                        score_b=pair[1],
-                        raw_text=raw,
-                        confidence=0.9,
-                    )
-        
-        # Check for "deuce"
-        if re.search(r"\bdeuce\b", text):
-            if _is_deuce_allowed(current_score_a, current_score_b):
-                return VoiceScoreEvent(
-                    type="set_score",
-                    score_a=current_score_a,
-                    score_b=current_score_b,
-                    raw_text=raw,
-                    confidence=0.8,
-                )
-            else:
-                # Deuce not valid at current score
-                return VoiceScoreEvent(
-                    type="unknown",
-                    raw_text=raw,
-                    confidence=0.3,
-                )
-        
-        # Check for "all" (e.g., "six all" → 6-6)
-        if "all" in text.split():
-            # Try to extract a number before "all"
-            tokens = text.split()
-            for i, token in enumerate(tokens):
-                if token == "all" and i > 0:
-                    prev = tokens[i - 1]
-                    if prev in _NUMBER_WORDS:
-                        score = _NUMBER_WORDS[prev]
-                        return VoiceScoreEvent(
-                            type="set_score",
-                            score_a=score,
-                            score_b=score,
-                            raw_text=raw,
-                            confidence=0.85,
-                        )
-                    elif prev.isdigit():
-                        score = int(prev)
-                        return VoiceScoreEvent(
-                            type="set_score",
-                            score_a=score,
-                            score_b=score,
-                            raw_text=raw,
-                            confidence=0.85,
-                        )
-        
-        # Check for direct score pair (e.g., "five four", "10 8", "11-9")
-        # Use normalized text for number word matching
-        pair = _extract_score_pair(normalized)
-        if pair:
-            return VoiceScoreEvent(
-                type="set_score",
-                score_a=pair[0],
-                score_b=pair[1],
-                raw_text=raw,
-                confidence=0.8,
-            )
-        
-        # Check for single number (could be "point to player one" without "point")
-        # This is handled by the point patterns above, but as a fallback:
-        if "player one" in text or "player 1" in text or "player a" in text:
-            return VoiceScoreEvent(
-                type="increment",
-                player="A",
-                raw_text=raw,
-                confidence=0.5,
-            )
-        if "player two" in text or "player 2" in text or "player b" in text:
-            return VoiceScoreEvent(
-                type="increment",
-                player="B",
-                raw_text=raw,
-                confidence=0.5,
-            )
-        
-        return VoiceScoreEvent(
-            type="unknown",
-            raw_text=raw,
-            confidence=0.0,
-        )
+        from tournament_platform.app.services.voice.commands import parse as _grammar_parse
+
+        result = _grammar_parse(transcript, current_score_a, current_score_b)
+        return result.to_score_event()

@@ -4,6 +4,8 @@ Provides interface for session analysis and coaching feedback.
 """
 
 import streamlit as st
+
+st.set_page_config(page_title="Coaching Lab - TT Platform", layout="wide")
 import pandas as pd
 from typing import List, Optional
 import json

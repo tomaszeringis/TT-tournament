@@ -1,5 +1,7 @@
 import streamlit as st
 import streamlit_shadcn_ui as ui
+
+st.set_page_config(page_title="Admin Console - TT Platform", layout="wide")
 import pandas as pd
 from datetime import datetime, timezone
 

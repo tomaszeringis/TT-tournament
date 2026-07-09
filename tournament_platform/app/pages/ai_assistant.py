@@ -7,6 +7,8 @@ Combines the Tournament Assistant and Rules Q&A into a single page with tabs.
 """
 
 import streamlit as st
+
+st.set_page_config(page_title="AI Assistant - TT Platform", layout="wide")
 import requests
 from typing import Optional
 import uuid

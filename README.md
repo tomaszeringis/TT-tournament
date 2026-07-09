@@ -6,6 +6,8 @@ A modern tournament management platform with AI-powered match analysis, real-tim
 
 ### 1. Install dependencies
 ```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -e .
 ```
 
@@ -16,19 +18,56 @@ copy .env.example .env
 ```
 Edit `.env` and set at least `OLLAMA_HOST` and `OLLAMA_MODEL` if you plan to use AI features.
 
-### 3. Start the API server (Terminal 1)
+### 3. Initialize the database (from repo root)
 ```powershell
-python tournament_platform/api/server.py
+cd ..
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
-### 4. Start the frontend (Terminal 2)
+### 4. Start the API server (Terminal 1)
 ```powershell
+python -m tournament_platform.api.server
+```
+
+### 5. Start the frontend (Terminal 2)
+```powershell
+$env:PYTHONPATH = "C:\Users\TomasZeringis\PycharmProjects\tournament_platform"
 streamlit run tournament_platform/app/main.py
 ```
 
 Open `http://localhost:8501` in your browser.
 
 For a guided walkthrough of the AI quick-win features, see [QUICK_WINS.md](QUICK_WINS.md).
+
+---
+
+## 🆘 Common Issues
+
+**"ModuleNotFoundError: No module named 'tournament_platform'"**
+Run from the **repository root** and set `PYTHONPATH` to the project root:
+```powershell
+$env:PYTHONPATH = "C:\Users\TomasZeringis\PycharmProjects\tournament_platform"
+streamlit run tournament_platform/app/main.py
+```
+
+**"No 'script_location' key found in configuration" (Alembic)**
+Use the root `alembic.ini` explicitly:
+```powershell
+python -m alembic -c tournament_platform/alembic.ini upgrade head
+```
+
+**Missing `gtts` / RealtimeTTS backend**
+```powershell
+.\.venv\Scripts\pip install gtts
+```
+
+**Ollama not responding?**
+```powershell
+ollama serve
+ollama pull llama3:latest
+```
+
+**Database locked?** Stop all running Python processes and delete `tournament_platform/data/tournament.db` to start fresh.
 
 ---
 
@@ -174,10 +213,22 @@ python tournament_platform/check_schema.py
 **Port already in use?**
 ```powershell
 # Change API port
-python tournament_platform/api/server.py  # edit API_PORT in .env
+python -m tournament_platform.api.server  # edit API_PORT in .env
 
 # Change Streamlit port
 streamlit run tournament_platform/app/main.py --server.port 8502
+```
+
+**"ModuleNotFoundError: No module named 'tournament_platform'"**
+Run from the **repository root** and set `PYTHONPATH` to the project root:
+```powershell
+$env:PYTHONPATH = "C:\Users\TomasZeringis\PycharmProjects\tournament_platform"
+streamlit run tournament_platform/app/main.py
+```
+
+**Missing `gtts` / RealtimeTTS backend**
+```powershell
+.\.venv\Scripts\pip install gtts
 ```
 
 **Ollama not responding?**

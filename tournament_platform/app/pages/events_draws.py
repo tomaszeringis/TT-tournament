@@ -109,7 +109,7 @@ def render_tournament_creation_wizard():
         
         col1, col2 = st.columns([1, 1])
         with col2:
-            if st.button("Next →", use_container_width=True):
+            if st.button("Next →", use_container_width=True, key="wizard_step1_next"):
                 if st.session_state['tournament_name']:
                     st.session_state['wizard_step'] = 2
                     st.rerun()
@@ -200,11 +200,11 @@ def render_tournament_creation_wizard():
         
         col1, col2 = st.columns([1, 1])
         with col1:
-            if st.button("← Back", use_container_width=True):
+            if st.button("← Back", use_container_width=True, key="wizard_step2_back"):
                 st.session_state['wizard_step'] = 1
                 st.rerun()
         with col2:
-            if st.button("Next →", use_container_width=True):
+            if st.button("Next →", use_container_width=True, key="wizard_step2_next"):
                 st.session_state['wizard_step'] = 3
                 st.rerun()
     
@@ -225,11 +225,11 @@ def render_tournament_creation_wizard():
 
         col1, col2 = st.columns([1, 1])
         with col1:
-            if st.button("← Back", use_container_width=True):
+            if st.button("← Back", use_container_width=True, key="wizard_step3_back"):
                 st.session_state['wizard_step'] = 2
                 st.rerun()
         with col2:
-            if st.button("Next →", use_container_width=True):
+            if st.button("Next →", use_container_width=True, key="wizard_step3_next"):
                 if len(st.session_state['tournament_participants']) >= 2:
                     st.session_state['wizard_step'] = 4
                     st.rerun()
@@ -270,11 +270,11 @@ def render_tournament_creation_wizard():
         
         col1, col2 = st.columns([1, 1])
         with col1:
-            if st.button("← Back", use_container_width=True):
+            if st.button("← Back", use_container_width=True, key="wizard_step4_back"):
                 st.session_state['wizard_step'] = 3
                 st.rerun()
         with col2:
-            if st.button("🏆 Create Tournament", use_container_width=True, type="primary"):
+            if st.button("🏆 Create Tournament", use_container_width=True, type="primary", key="wizard_step4_create"):
                 try:
                     db = SessionLocal()
                     

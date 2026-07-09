@@ -236,4 +236,7 @@ class TestVideoScorekeeperIntegration:
         for _ in range(11):
             match_manager._add_point("A")
         
-        assert match_manager.state.score_a == 11
+        # After 11 points, game is won and scores reset to 0-0
+        assert match_manager.state.sets_a == 1
+        assert match_manager.state.score_a == 0
+        assert match_manager.state.score_b == 0

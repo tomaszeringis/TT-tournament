@@ -9,6 +9,8 @@ This file is kept as a redirect for backward compatibility.
 
 import streamlit as st
 
+st.set_page_config(page_title="Participants - TT Platform", layout="wide")
+
 st.title("Participants (Moved)")
 st.caption("Participant management has been moved to the Events & Draws page.")
 

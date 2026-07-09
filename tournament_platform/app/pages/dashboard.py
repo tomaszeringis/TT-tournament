@@ -1,5 +1,6 @@
 import streamlit as st
-import streamlit_shadcn_ui as ui
+
+st.set_page_config(page_title="Tournament Dashboard - TT Platform", layout="wide")
 import pandas as pd
 import plotly.graph_objects as go
 import requests

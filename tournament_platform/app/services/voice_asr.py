@@ -12,7 +12,24 @@ import wave
 import logging
 from typing import Optional
 
+from tournament_platform.app.services.voice_vocab import VoiceVocabulary
+from tournament_platform.services.settings import (
+    VOICE_ASR_MODEL_SIZE,
+    VOICE_ASR_DEVICE,
+    VOICE_ASR_COMPUTE_TYPE,
+)
+
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Module-level model cache
+# ---------------------------------------------------------------------------
+# Key: (model_size, device, compute_type) -> WhisperModel instance
+# This ensures the model is loaded only once per unique configuration,
+# even if multiple LocalASR instances are created (e.g., per WebRTC
+# processor rerun).
+_ASR_MODEL_CACHE: dict = {}
+_ASR_CACHE_LOCK = threading.Lock()
 
 
 class LocalASRError(Exception):
@@ -29,6 +46,7 @@ class LocalASR:
     - Configurable model size, device, and compute type
     - Environment variable overrides
     - Graceful error handling with clear messages
+    - Shared model cache across instances
     """
     
     def __init__(
@@ -36,6 +54,7 @@ class LocalASR:
         model_size: Optional[str] = None,
         device: Optional[str] = None,
         compute_type: Optional[str] = None,
+        vocabulary: Optional[VoiceVocabulary] = None,
     ):
         """
         Initialize the LocalASR wrapper.
@@ -44,13 +63,15 @@ class LocalASR:
             model_size: Whisper model size (e.g., "base.en", "small.en")
             device: Device to run on ("cpu", "cuda", "auto")
             compute_type: Compute type ("int8", "float16", "float32")
+            vocabulary: Optional VoiceVocabulary for biasing/post-processing.
         """
-        # Read from environment variables with defaults
-        self.model_size = model_size or os.environ.get("VOICE_ASR_MODEL_SIZE", "base.en")
-        self.device = device or os.environ.get("VOICE_ASR_DEVICE", "cpu")
-        self.compute_type = compute_type or os.environ.get("VOICE_ASR_COMPUTE_TYPE", "int8")
+        # Read from centralized settings with optional constructor overrides
+        self.model_size = model_size or VOICE_ASR_MODEL_SIZE
+        self.device = device or VOICE_ASR_DEVICE
+        self.compute_type = compute_type or VOICE_ASR_COMPUTE_TYPE
+        self.vocabulary = vocabulary or VoiceVocabulary.load()
         
-        # Lazy-loaded model
+        # Lazy-loaded model (shared via module-level cache)
         self._model = None
         self._load_lock = threading.Lock()
         self._load_attempted = False
@@ -62,6 +83,8 @@ class LocalASR:
         Lazily load the WhisperModel.
         
         Thread-safe: only one thread will actually load the model.
+        Uses a module-level cache so the model is shared across all
+        LocalASR instances with the same configuration.
         """
         if self._model is not None:
             return
@@ -73,9 +96,31 @@ class LocalASR:
                 )
             return
         
+        cache_key = (self.model_size, self.device, self.compute_type)
+        
+        # Check module-level cache first
+        with _ASR_CACHE_LOCK:
+            cached = _ASR_MODEL_CACHE.get(cache_key)
+            if cached is not None:
+                self._model = cached
+                self._load_attempted = True
+                logger.debug(
+                    "Reusing cached faster-whisper model: %s (%s, %s)",
+                    self.model_size, self.device, self.compute_type,
+                )
+                return
+        
         with self._load_lock:
             if self._model is not None:
                 return
+            
+            # Double-check cache after acquiring lock
+            with _ASR_CACHE_LOCK:
+                cached = _ASR_MODEL_CACHE.get(cache_key)
+                if cached is not None:
+                    self._model = cached
+                    self._load_attempted = True
+                    return
             
             self._load_attempted = True
             
@@ -89,11 +134,17 @@ class LocalASR:
                     self.compute_type,
                 )
                 
-                self._model = WhisperModel(
+                model = WhisperModel(
                     self.model_size,
                     device=self.device,
                     compute_type=self.compute_type,
                 )
+                
+                # Store in module-level cache
+                with _ASR_CACHE_LOCK:
+                    _ASR_MODEL_CACHE[cache_key] = model
+                
+                self._model = model
                 
                 logger.info("faster-whisper model loaded successfully")
                 
@@ -144,13 +195,20 @@ class LocalASR:
                 temp_path = f.name
             
             try:
+                # Build transcription kwargs
+                transcribe_kwargs: dict[str, Any] = {
+                    "beam_size": 5,
+                    "language": "en",
+                    "condition_on_previous_text": False,
+                }
+                
+                # Apply vocabulary biasing via initial_prompt if available
+                initial_prompt = self.vocabulary.get_initial_prompt()
+                if initial_prompt:
+                    transcribe_kwargs["initial_prompt"] = initial_prompt
+                
                 # Transcribe with faster-whisper
-                segments, info = self._model.transcribe(
-                    temp_path,
-                    beam_size=5,
-                    language="en",
-                    condition_on_previous_text=False,
-                )
+                segments, info = self._model.transcribe(temp_path, **transcribe_kwargs)
                 
                 # Combine all segments
                 text = " ".join(seg.text for seg in segments).strip()
