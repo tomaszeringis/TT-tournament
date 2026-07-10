@@ -32,6 +32,10 @@ class ScoreMoment(str, Enum):
     INVALID = "invalid"
     RESET = "reset"
     MATCH_SUBMITTED = "match_submitted"
+    STREAK_A = "streak_a"
+    STREAK_B = "streak_b"
+    COMEBACK_A = "comeback_a"
+    COMEBACK_B = "comeback_b"
 
 
 class CommentaryStyle(str, Enum):
@@ -39,12 +43,15 @@ class CommentaryStyle(str, Enum):
     COACH = "coach"
     ANNOUNCER = "announcer"
     MINIMAL = "minimal"
+    KIDS = "kids"
+    SILENT = "silent"
 
 
 class CommentaryVerbosity(str, Enum):
     MINIMAL = "minimal"
     STANDARD = "standard"
     EXPRESSIVE = "expressive"
+    SILENT = "silent"
 
 
 # ============================================================================
@@ -219,6 +226,20 @@ class CommentaryService:
         (ScoreMoment.MATCH_SUBMITTED, CommentaryStyle.NEUTRAL, CommentaryVerbosity.STANDARD): [
             "Match result submitted.",
         ],
+        # --- Streak ---
+        (ScoreMoment.STREAK_A, CommentaryStyle.NEUTRAL, CommentaryVerbosity.STANDARD): [
+            "{player_a} on a hot streak. {score}.",
+        ],
+        (ScoreMoment.STREAK_B, CommentaryStyle.NEUTRAL, CommentaryVerbosity.STANDARD): [
+            "{player_b} on a hot streak. {score}.",
+        ],
+        # --- Comeback ---
+        (ScoreMoment.COMEBACK_A, CommentaryStyle.NEUTRAL, CommentaryVerbosity.STANDARD): [
+            "What a comeback by {player_a}! {score}.",
+        ],
+        (ScoreMoment.COMEBACK_B, CommentaryStyle.NEUTRAL, CommentaryVerbosity.STANDARD): [
+            "What a comeback by {player_b}! {score}.",
+        ],
     }
 
     # Coach-style overrides
@@ -305,6 +326,30 @@ class CommentaryService:
         ],
     }
 
+    # Kids style — friendlier language
+    KIDS_TEMPLATES: Dict[tuple, List[str]] = {
+        (ScoreMoment.POINT_A, CommentaryVerbosity.STANDARD): [
+            "Yay, {player_a} scores! {score}.",
+            "Awesome point, {player_a}! {score}.",
+        ],
+        (ScoreMoment.POINT_B, CommentaryVerbosity.STANDARD): [
+            "Yay, {player_b} scores! {score}.",
+            "Awesome point, {player_b}! {score}.",
+        ],
+        (ScoreMoment.GAME_WON_A, CommentaryVerbosity.STANDARD): [
+            "Game to {player_a}, {score}! Great job!",
+        ],
+        (ScoreMoment.GAME_WON_B, CommentaryVerbosity.STANDARD): [
+            "Game to {player_b}, {score}! Great job!",
+        ],
+        (ScoreMoment.MATCH_WON_A, CommentaryVerbosity.STANDARD): [
+            "Match to {player_a}, {sets_a} to {sets_b}! You did it!",
+        ],
+        (ScoreMoment.MATCH_WON_B, CommentaryVerbosity.STANDARD): [
+            "Match to {player_b}, {sets_b} to {sets_a}! You did it!",
+        ],
+    }
+
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
@@ -366,11 +411,27 @@ class CommentaryService:
 
         # Normal point
         if scorer == "A":
-            return ScoreMoment.POINT_A
-        if scorer == "B":
-            return ScoreMoment.POINT_B
+            moment = ScoreMoment.POINT_A
+        elif scorer == "B":
+            moment = ScoreMoment.POINT_B
+        else:
+            moment = ScoreMoment.INVALID
 
-        return ScoreMoment.INVALID
+        # Streak detection (3+ consecutive points by same player)
+        if self._is_streak(state, min_streak=3):
+            if scorer == "A":
+                moment = ScoreMoment.STREAK_A
+            elif scorer == "B":
+                moment = ScoreMoment.STREAK_B
+
+        # Comeback detection (trailed by >= 5 and now tied or ahead)
+        if self._is_comeback(state, previous_state, threshold=5):
+            if scorer == "A":
+                moment = ScoreMoment.COMEBACK_A
+            elif scorer == "B":
+                moment = ScoreMoment.COMEBACK_B
+
+        return moment
 
     def format_score_spoken(self, state: SpokenScoreState) -> str:
         """Format score as spoken string, e.g. '5 to 3' or '11 to 8'."""
@@ -383,6 +444,9 @@ class CommentaryService:
         verbosity: CommentaryVerbosity,
     ) -> List[str]:
         """Return list of template strings for the given style/moment/verbosity."""
+        if verbosity == CommentaryVerbosity.SILENT or style == CommentaryStyle.SILENT:
+            return []
+
         # Minimal style has its own restricted set
         if style == CommentaryStyle.MINIMAL:
             key = (moment, verbosity)
@@ -391,6 +455,16 @@ class CommentaryService:
                 return templates
             # Minimal falls back to empty for non-high-priority events
             return []
+
+        # Kids style overrides
+        if style == CommentaryStyle.KIDS:
+            key = (moment, verbosity)
+            templates = self.KIDS_TEMPLATES.get(key)
+            if templates:
+                return templates
+            # Fallback to neutral for kids style
+            fallback_key = (moment, CommentaryStyle.NEUTRAL, verbosity)
+            return self.TEMPLATES.get(fallback_key, [])
 
         # Coach style overrides
         if style == CommentaryStyle.COACH:
@@ -560,3 +634,28 @@ class CommentaryService:
                 return last.get("player")
 
         return None
+
+    def _is_streak(self, state: SpokenScoreState, min_streak: int = 3) -> bool:
+        if len(state.match_history) < min_streak:
+            return False
+        recent = state.match_history[-min_streak:]
+        players = [e.get("player") for e in recent if e.get("action") == "point_added"]
+        if len(players) < min_streak:
+            return False
+        return len(set(players)) == 1
+
+    def _is_comeback(
+        self,
+        state: SpokenScoreState,
+        previous_state: Optional[SpokenScoreState],
+        threshold: int = 5,
+    ) -> bool:
+        if previous_state is None:
+            return False
+        prev_diff = previous_state.score_a - previous_state.score_b
+        curr_diff = state.score_a - state.score_b
+        if prev_diff <= -threshold and curr_diff >= 0:
+            return True
+        if prev_diff >= threshold and curr_diff <= 0:
+            return True
+        return False

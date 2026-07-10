@@ -38,6 +38,33 @@ class VoiceIntent(str, Enum):
     CONFIRM = "confirm"
     CANCEL = "cancel"
     UNKNOWN = "unknown"
+    NAVIGATE_DASHBOARD = "navigate_dashboard"
+    NAVIGATE_BRACKET = "navigate_bracket"
+    NAVIGATE_RANKINGS = "navigate_rankings"
+    NAVIGATE_PUBLIC_BOARD = "navigate_public_board"
+    NAVIGATE_CURRENT_MATCH = "navigate_current_match"
+    NAVIGATE_SCORING = "navigate_scoring"
+    NAVIGATE_HELP = "navigate_help"
+    ADMIN_CALL_NEXT = "admin_call_next"
+    ADMIN_TABLE_READY = "admin_table_ready"
+    ADMIN_ASSIGN_TABLE = "admin_assign_table"
+    ADMIN_MARK_UNAVAILABLE = "admin_mark_unavailable"
+    ADMIN_PUBLISH_RESULT = "admin_publish_result"
+    ADMIN_MARK_NO_SHOW = "admin_mark_no_show"
+    ADMIN_DROP_PLAYER = "admin_drop_player"
+    ADMIN_START_NEXT_ROUND = "admin_start_next_round"
+    RULES_QUERY = "rules_query"
+    ACCESS_REPEAT = "access_repeat"
+    ACCESS_ANNOUNCE_SCORE = "access_announce_score"
+    ACCESS_LOUDER = "access_louder"
+    ACCESS_QUIETER = "access_quieter"
+    ACCESS_MUTE = "access_mute"
+    ACCESS_UNMUTE = "access_unmute"
+    ACCESS_SLOWER = "access_slower"
+    ACCESS_FASTER = "access_faster"
+    ACCESS_LARGE_TEXT = "access_large_text"
+    ACCESS_HIGH_CONTRAST = "access_high_contrast"
+    ACCESS_HELP = "access_help"
 
 
 # Safety levels used by ConfirmationPolicy
@@ -58,11 +85,77 @@ _SAFETY_MAP = {
     VoiceIntent.CONFIRM: "control",
     VoiceIntent.CANCEL: "control",
     VoiceIntent.UNKNOWN: "unknown",
+    VoiceIntent.NAVIGATE_DASHBOARD: "safe",
+    VoiceIntent.NAVIGATE_BRACKET: "safe",
+    VoiceIntent.NAVIGATE_RANKINGS: "safe",
+    VoiceIntent.NAVIGATE_PUBLIC_BOARD: "safe",
+    VoiceIntent.NAVIGATE_CURRENT_MATCH: "safe",
+    VoiceIntent.NAVIGATE_SCORING: "safe",
+    VoiceIntent.NAVIGATE_HELP: "safe",
+    VoiceIntent.ADMIN_CALL_NEXT: "medium",
+    VoiceIntent.ADMIN_TABLE_READY: "medium",
+    VoiceIntent.ADMIN_ASSIGN_TABLE: "medium",
+    VoiceIntent.ADMIN_MARK_UNAVAILABLE: "high",
+    VoiceIntent.ADMIN_PUBLISH_RESULT: "high",
+    VoiceIntent.ADMIN_MARK_NO_SHOW: "high",
+    VoiceIntent.ADMIN_DROP_PLAYER: "high",
+    VoiceIntent.ADMIN_START_NEXT_ROUND: "medium",
+    VoiceIntent.RULES_QUERY: "read_only",
+    VoiceIntent.ACCESS_REPEAT: "safe",
+    VoiceIntent.ACCESS_ANNOUNCE_SCORE: "safe",
+    VoiceIntent.ACCESS_LOUDER: "safe",
+    VoiceIntent.ACCESS_QUIETER: "safe",
+    VoiceIntent.ACCESS_MUTE: "safe",
+    VoiceIntent.ACCESS_UNMUTE: "safe",
+    VoiceIntent.ACCESS_SLOWER: "safe",
+    VoiceIntent.ACCESS_FASTER: "safe",
+    VoiceIntent.ACCESS_LARGE_TEXT: "safe",
+    VoiceIntent.ACCESS_HIGH_CONTRAST: "safe",
+    VoiceIntent.ACCESS_HELP: "safe",
 }
 
 
 # Command patterns: (intent, regex_pattern, confidence, slot_extractors)
 # Slot extractors map slot name -> callable(match) -> value
+_NAVIGATION_PATTERNS = [
+    (VoiceIntent.NAVIGATE_DASHBOARD, r"\b(open\s+)?dashboard\b", 0.9),
+    (VoiceIntent.NAVIGATE_BRACKET, r"\b(show\s+)?bracket\b", 0.9),
+    (VoiceIntent.NAVIGATE_RANKINGS, r"\b(show\s+)?rankings?\b", 0.9),
+    (VoiceIntent.NAVIGATE_PUBLIC_BOARD, r"\b(show\s+)?public\s+board\b", 0.9),
+    (VoiceIntent.NAVIGATE_CURRENT_MATCH, r"\b(show\s+)?current\s+match\b", 0.9),
+    (VoiceIntent.NAVIGATE_SCORING, r"\b(back\s+to\s+)?scoring\b", 0.9),
+    (VoiceIntent.NAVIGATE_HELP, r"\b(show\s+)?(voice\s+)?help\b", 0.9),
+]
+
+_ADMIN_PATTERNS = [
+    (VoiceIntent.ADMIN_CALL_NEXT, r"\bcall\s+next\s+match\b", 0.9),
+    (VoiceIntent.ADMIN_TABLE_READY, r"\btable\s+ready\b", 0.9),
+    (VoiceIntent.ADMIN_ASSIGN_TABLE, r"\bassign\s+table\b", 0.85),
+    (VoiceIntent.ADMIN_MARK_UNAVAILABLE, r"\bmark\s+unavailable\b", 0.85),
+    (VoiceIntent.ADMIN_PUBLISH_RESULT, r"\bpublish\s+result\b", 0.9),
+    (VoiceIntent.ADMIN_MARK_NO_SHOW, r"\bmark\s+no\s+show\b", 0.85),
+    (VoiceIntent.ADMIN_DROP_PLAYER, r"\bdrop\s+player\b", 0.85),
+    (VoiceIntent.ADMIN_START_NEXT_ROUND, r"\bstart\s+next\s+round\b", 0.9),
+]
+
+_RULES_PATTERNS = [
+    (VoiceIntent.RULES_QUERY, r"\b(ask\s+)?(rules|rule|umpire|question)\b", 0.7),
+]
+
+_ACCESSIBILITY_PATTERNS = [
+    (VoiceIntent.ACCESS_REPEAT, r"\brepeat\b", 0.9),
+    (VoiceIntent.ACCESS_ANNOUNCE_SCORE, r"\bannounce\s+score\b", 0.9),
+    (VoiceIntent.ACCESS_LOUDER, r"\blouder\b", 0.9),
+    (VoiceIntent.ACCESS_QUIETER, r"\bquieter\b", 0.9),
+    (VoiceIntent.ACCESS_MUTE, r"\bmute\b", 0.9),
+    (VoiceIntent.ACCESS_UNMUTE, r"\bunmute\b", 0.9),
+    (VoiceIntent.ACCESS_SLOWER, r"\bslower\b", 0.9),
+    (VoiceIntent.ACCESS_FASTER, r"\bfaster\b", 0.9),
+    (VoiceIntent.ACCESS_LARGE_TEXT, r"\blarge\s+text\b", 0.9),
+    (VoiceIntent.ACCESS_HIGH_CONTRAST, r"\bhigh\s+contrast\b", 0.9),
+    (VoiceIntent.ACCESS_HELP, r"\b(voice\s+)?accessibility\s+help\b", 0.9),
+]
+
 _COMMAND_PATTERNS: List[tuple] = [
     (VoiceIntent.UNDO, r"\bundo\b", 0.9, {}),
     (VoiceIntent.UNDO, r"\btake\s+back\b", 0.85, {}),
@@ -80,11 +173,11 @@ _COMMAND_PATTERNS: List[tuple] = [
     (VoiceIntent.START_NEXT_GAME, r"\bnew\s+game\b", 0.8, {}),
     (VoiceIntent.END_GAME, r"\bend\s+game\b", 0.85, {}),
     (VoiceIntent.END_GAME, r"\bgame\s+over\b", 0.85, {}),
-    (VoiceIntent.TIMEOUT_START, r"\btimeout\b", 0.85, {}),
-    (VoiceIntent.TIMEOUT_START, r"\btime\s+out\b", 0.85, {}),
     (VoiceIntent.TIMEOUT_END, r"\bend\s+timeout\b", 0.85, {}),
     (VoiceIntent.TIMEOUT_END, r"\bresume\s+play\b", 0.8, {}),
-    (VoiceIntent.SERVER_CHECK, r"\bwho\s+serves\?\b", 0.9, {}),
+    (VoiceIntent.TIMEOUT_START, r"\btimeout\b", 0.85, {}),
+    (VoiceIntent.TIMEOUT_START, r"\btime\s+out\b", 0.85, {}),
+    (VoiceIntent.SERVER_CHECK, r"\bwho\s+serves?\b", 0.9, {}),
     (VoiceIntent.SERVER_CHECK, r"\bserver\?\b", 0.9, {}),
     (VoiceIntent.CONFIRM, r"\bconfirm\b", 0.9, {}),
     (VoiceIntent.CONFIRM, r"\byes\b", 0.8, {}),
@@ -92,6 +185,8 @@ _COMMAND_PATTERNS: List[tuple] = [
     (VoiceIntent.CANCEL, r"\bcancel\b", 0.9, {}),
     (VoiceIntent.CANCEL, r"\bno\b", 0.7, {}),
     (VoiceIntent.CANCEL, r"\babort\b", 0.85, {}),
+    (VoiceIntent.SET_SERVER, r"\bplayer\s+(one|1|a)\s+serves?\b", 0.85, {}),
+    (VoiceIntent.SET_SERVER, r"\bplayer\s+(two|2|b)\s+serves?\b", 0.85, {}),
 ]
 
 
@@ -156,6 +251,58 @@ class VoiceCommandGrammar:
                     slots=slots,
                     confidence=confidence,
                     safety_level=_SAFETY_MAP.get(intent, "unknown"),
+                    raw_transcript=raw,
+                    normalized_text=normalized,
+                )
+
+        # Navigation intents
+        for intent, pattern, confidence in _NAVIGATION_PATTERNS:
+            if re.search(pattern, text):
+                return VoiceParseResult(
+                    intent=intent,
+                    confidence=confidence,
+                    safety_level=_SAFETY_MAP.get(intent, "safe"),
+                    raw_transcript=raw,
+                    normalized_text=normalized,
+                )
+
+        # Admin intents
+        for intent, pattern, confidence in _ADMIN_PATTERNS:
+            if re.search(pattern, text):
+                slots = {}
+                if intent == VoiceIntent.ADMIN_ASSIGN_TABLE:
+                    table_match = re.search(r"\btable\s+(\w+)\b", text)
+                    if table_match:
+                        slots["table"] = table_match.group(1)
+                return VoiceParseResult(
+                    intent=intent,
+                    slots=slots,
+                    confidence=confidence,
+                    safety_level=_SAFETY_MAP.get(intent, "medium"),
+                    raw_transcript=raw,
+                    normalized_text=normalized,
+                )
+
+        # Rules query intents
+        for intent, pattern, confidence in _RULES_PATTERNS:
+            if re.search(pattern, text):
+                slots = {"question": raw}
+                return VoiceParseResult(
+                    intent=intent,
+                    slots=slots,
+                    confidence=confidence,
+                    safety_level=_SAFETY_MAP.get(intent, "read_only"),
+                    raw_transcript=raw,
+                    normalized_text=normalized,
+                )
+
+        # Accessibility intents
+        for intent, pattern, confidence in _ACCESSIBILITY_PATTERNS:
+            if re.search(pattern, text):
+                return VoiceParseResult(
+                    intent=intent,
+                    confidence=confidence,
+                    safety_level=_SAFETY_MAP.get(intent, "safe"),
                     raw_transcript=raw,
                     normalized_text=normalized,
                 )
@@ -318,6 +465,28 @@ def cheat_sheet() -> List[Dict[str, Any]]:
         (VoiceIntent.SET_SERVER, '"player one serves"', "Set server"),
         (VoiceIntent.CONFIRM, '"confirm"', "Confirm pending"),
         (VoiceIntent.CANCEL, '"cancel"', "Cancel pending"),
+        (VoiceIntent.NAVIGATE_DASHBOARD, '"open dashboard"', "Go to dashboard"),
+        (VoiceIntent.NAVIGATE_BRACKET, '"show bracket"', "Show bracket"),
+        (VoiceIntent.NAVIGATE_RANKINGS, '"show rankings"', "Show rankings"),
+        (VoiceIntent.NAVIGATE_PUBLIC_BOARD, '"show public board"', "Show public board"),
+        (VoiceIntent.NAVIGATE_CURRENT_MATCH, '"show current match"', "Show current match"),
+        (VoiceIntent.NAVIGATE_SCORING, '"back to scoring"', "Back to scoring"),
+        (VoiceIntent.NAVIGATE_HELP, '"show help"', "Show voice help"),
+        (VoiceIntent.ADMIN_CALL_NEXT, '"call next match"', "Call next match"),
+        (VoiceIntent.ADMIN_TABLE_READY, '"table ready"', "Mark table ready"),
+        (VoiceIntent.ADMIN_PUBLISH_RESULT, '"publish result"', "Publish result"),
+        (VoiceIntent.RULES_QUERY, '"ask rules"', "Ask rules question"),
+        (VoiceIntent.ACCESS_REPEAT, '"repeat"', "Repeat last score"),
+        (VoiceIntent.ACCESS_ANNOUNCE_SCORE, '"announce score"', "Announce score"),
+        (VoiceIntent.ACCESS_LOUDER, '"louder"', "Increase volume"),
+        (VoiceIntent.ACCESS_QUIETER, '"quieter"', "Decrease volume"),
+        (VoiceIntent.ACCESS_MUTE, '"mute"', "Mute audio"),
+        (VoiceIntent.ACCESS_UNMUTE, '"unmute"', "Unmute audio"),
+        (VoiceIntent.ACCESS_SLOWER, '"slower"', "Slower speech"),
+        (VoiceIntent.ACCESS_FASTER, '"faster"', "Faster speech"),
+        (VoiceIntent.ACCESS_LARGE_TEXT, '"large text"', "Large text mode"),
+        (VoiceIntent.ACCESS_HIGH_CONTRAST, '"high contrast"', "High contrast mode"),
+        (VoiceIntent.ACCESS_HELP, '"accessibility help"', "Accessibility help"),
     ]
     return [
         {

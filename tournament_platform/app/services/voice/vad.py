@@ -158,8 +158,8 @@ def create_vad(prefer: Optional[str] = None) -> VoiceActivityDetector:
     if prefer == "silero":
         vad = SileroVAD()
         if vad._load_error:
-            logger.warning("Silero VAD unavailable: %s; falling back to webrtcvad", vad._load_error)
-            return create_vad(prefer="webrtcvad")
+            logger.warning("Silero VAD unavailable: %s; falling back to amplitude", vad._load_error)
+            return AmplitudeVAD()
         return vad
     if prefer == "webrtcvad":
         vad = WebRTCVAD()
@@ -167,10 +167,8 @@ def create_vad(prefer: Optional[str] = None) -> VoiceActivityDetector:
             logger.warning("WebRTC VAD unavailable: %s; falling back to amplitude", vad._load_error)
             return AmplitudeVAD()
         return vad
-    # Auto-select: webrtcvad > silero > amplitude
-    vad = WebRTCVAD()
-    if vad._load_error:
-        vad = SileroVAD()
-        if vad._load_error:
-            return AmplitudeVAD()
+    # Default to AmplitudeVAD for reliability (especially continuous-mode
+    # float32 frames), then webrtcvad, then silero.
+    vad = AmplitudeVAD()
+    logger.info("Using AmplitudeVAD (default)")
     return vad

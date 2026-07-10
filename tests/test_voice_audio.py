@@ -131,6 +131,60 @@ class TestAudioChunkToPcmBytes:
         assert int16_result[0] == 32767 or int16_result[0] == 32766  # 1.0 * 32767
         assert int16_result[1] == -32768 or int16_result[1] == -32767  # -1.0 * 32767
 
+    def test_float32_stereo_48k_resamples_to_16k_mono_int16(self):
+        sr = 48000
+        t = np.linspace(0, 0.1, int(sr * 0.1), endpoint=False)
+        left = np.sin(2 * np.pi * 1000 * t)
+        right = np.cos(2 * np.pi * 1000 * t)
+        stereo = np.stack([left, right], axis=-1).astype(np.float32)
+        frame_bytes = stereo.tobytes()
+        chunk = AudioChunk(
+            frames=[frame_bytes],
+            duration_ms=100.0,
+            timestamp=0.0,
+            sample_rate=sr,
+            channels=2,
+        )
+        result = chunk.to_pcm_bytes()
+        assert len(result) > 0
+        # 0.1s of 16kHz mono int16 is ~3200 bytes; resampler padding
+        # may produce a slightly smaller frame, so check a loose bound.
+        assert 3000 <= len(result) <= 3300
+
+    def test_empty_frames_are_skipped(self):
+        sr = 16000
+        audio = np.array([100.0, -100.0], dtype=np.float32).tobytes()
+        chunk = AudioChunk(
+            frames=[b"", audio, b""],
+            duration_ms=100.0,
+            timestamp=0.0,
+            sample_rate=sr,
+            channels=1,
+        )
+        result = chunk.to_pcm_bytes()
+        # Should only contain the valid frame
+        assert len(result) == 4
+
+
+class TestVoiceAudioBufferTotalSamples:
+    """Tests for _total_samples accumulation correctness."""
+
+    def test_int16_frames_count_correctly(self):
+        buf = VoiceAudioBuffer(
+            sample_rate=16000,
+            channels=1,
+            sample_format=SAMPLE_FORMAT_INT16,
+            silence_threshold=0.0,
+        )
+        # 4 int16 samples = 8 bytes
+        frame = np.array([100, -100, 200, -200], dtype=np.int16).tobytes()
+        buf.push_frame(frame)
+        chunk = buf.flush()
+        assert chunk is not None
+        assert chunk.rms > 0
+        # After flush, internal accumulators are reset
+        assert buf._total_samples == 0
+
 
 class TestVoiceAudioBuffer:
     """Tests for VoiceAudioBuffer chunking behavior."""

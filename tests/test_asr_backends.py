@@ -9,6 +9,7 @@ from unittest.mock import patch, MagicMock
 
 from tournament_platform.app.services.asr_backends.base import ASRBackend, BackendStatus
 from tournament_platform.app.services.asr_backends.faster_whisper_backend import FasterWhisperBackend
+from tournament_platform.app.services.asr_backends.vosk_adapter import VoskGrammarASR
 from tournament_platform.app.services.asr_backends.factory import ASRBackendFactory
 from tournament_platform.app.services.voice_vocab import VoiceVocabulary
 
@@ -109,3 +110,61 @@ class TestASRBackendFactory:
         with patch.dict("os.environ", {"VOICE_ASR_BACKEND": "Faster-Whisper"}, clear=True):
             backend = ASRBackendFactory.create()
             assert backend.backend_name == "faster_whisper"
+
+
+class TestVoskGrammarASR:
+    """Tests for the Vosk grammar ASR backend."""
+
+    def test_backend_name(self):
+        backend = VoskGrammarASR()
+        assert backend.backend_name == "vosk"
+
+    def test_is_available_false_without_vosk(self):
+        with patch.dict("sys.modules", {"vosk": None}):
+            backend = VoskGrammarASR()
+            assert backend.is_available() is False
+
+    def test_is_available_false_without_model(self, tmp_path):
+        with patch.dict("os.environ", {"VOICE_ASR_VOSK_MODEL_PATH": str(tmp_path / "missing")}):
+            with patch.dict("sys.modules", {"vosk": MagicMock()}):
+                backend = VoskGrammarASR()
+                assert backend.is_available() is False
+
+    def test_is_available_true_with_model(self, tmp_path):
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        (model_dir / "am").mkdir()
+        with patch(
+            "tournament_platform.app.services.asr_backends.vosk_adapter.VOICE_ASR_VOSK_MODEL_PATH",
+            str(model_dir),
+        ):
+            with patch.dict("sys.modules", {"vosk": MagicMock()}):
+                backend = VoskGrammarASR()
+                assert backend.is_available() is True
+
+    def test_transcribe_pcm_returns_empty_on_failure(self):
+        backend = VoskGrammarASR()
+        with patch.object(backend, "_load_model", side_effect=RuntimeError("boom")):
+            assert backend.transcribe_pcm(b"\x00\x00") == ""
+
+    def test_get_status_when_unavailable(self):
+        backend = VoskGrammarASR()
+        with patch.dict("sys.modules", {"vosk": None}):
+            status = backend.get_status()
+            assert status.available is False
+            assert "vosk" in status.load_error.lower()
+            assert status.backend_name == "vosk"
+
+
+class TestASRBackendFactoryWithVosk:
+    """Tests for Vosk registration in factory."""
+
+    def test_vosk_backend_registered(self):
+        with patch.dict("os.environ", {"VOICE_ASR_BACKEND": "vosk"}, clear=True):
+            with patch.object(
+                VoskGrammarASR,
+                "is_available",
+                return_value=True,
+            ):
+                backend = ASRBackendFactory.create()
+                assert backend.backend_name == "vosk"

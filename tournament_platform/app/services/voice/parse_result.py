@@ -37,18 +37,28 @@ class VoiceParseResult:
         """Convert to the legacy wire type used by MatchManager."""
         from tournament_platform.app.services.voice_parser import VoiceScoreEvent
 
-        intent = self.intent
+        raw_intent = self.intent
+        # Accept both legacy parser strings and VoiceIntent enum members.
+        if hasattr(raw_intent, "value"):
+            intent = raw_intent.value
+        else:
+            intent = str(raw_intent)
+
         score_a = self.slots.get("score_a")
         score_b = self.slots.get("score_b")
         player = self.slots.get("player")
 
-        if intent == "score_point":
+        if intent == "increment":
+            event_type = "increment"
+        elif intent == "score_point":
             event_type = "increment"
         elif intent == "set_score":
             event_type = "set_score"
         elif intent == "undo":
             event_type = "undo"
         elif intent == "repeat_score":
+            event_type = "repeat"
+        elif intent == "repeat":
             event_type = "repeat"
         elif intent == "start_match":
             event_type = "start_match"
@@ -72,6 +82,38 @@ class VoiceParseResult:
             event_type = "confirm"
         elif intent == "cancel":
             event_type = "cancel"
+        elif intent == "unknown":
+            event_type = "unknown"
+        elif intent in (
+            "navigate_dashboard",
+            "navigate_bracket",
+            "navigate_rankings",
+            "navigate_public_board",
+            "navigate_current_match",
+            "navigate_scoring",
+            "navigate_help",
+            "admin_call_next",
+            "admin_table_ready",
+            "admin_assign_table",
+            "admin_mark_unavailable",
+            "admin_publish_result",
+            "admin_mark_no_show",
+            "admin_drop_player",
+            "admin_start_next_round",
+            "rules_query",
+            "access_repeat",
+            "access_announce_score",
+            "access_louder",
+            "access_quieter",
+            "access_mute",
+            "access_unmute",
+            "access_slower",
+            "access_faster",
+            "access_large_text",
+            "access_high_contrast",
+            "access_help",
+        ):
+            event_type = intent
         else:
             event_type = "unknown"
 

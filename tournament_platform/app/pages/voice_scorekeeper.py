@@ -77,6 +77,9 @@ from tournament_platform.app.services.asr_backends.factory import ASRBackendFact
 from tournament_platform.app.services.voice_vocab import VoiceVocabulary, TranscriptPostProcessor
 from tournament_platform.app.services.voice_audit import EventLogger
 from tournament_platform.app.services.voice_noise import NoiseFilter, NoiseProfiler
+from tournament_platform.app.services.voice.runtime_state import migrate_from_session_state, get_state, set_state, sync_legacy_keys
+from tournament_platform.app.services.voice.command_router import RouteContext, route_and_update_context, RouteDecision
+from tournament_platform.app.services.voice.confirmation import VoiceConfirmationStateMachine
 from tournament_platform.app.api_client import api_client
 from tournament_platform.services.commentary_service import (
     CommentaryService,
@@ -235,11 +238,180 @@ if 'voice_last_applied_event_ts' not in st.session_state:
 if 'pending_confirmations' not in st.session_state:
     st.session_state.pending_confirmations = []
 
+# VoiceConfirmationStateMachine singleton (Phase 1 / Phase 2 integration)
+if 'voice_confirmation_machine' not in st.session_state:
+    st.session_state.voice_confirmation_machine = VoiceConfirmationStateMachine(ttl_seconds=8.0)
+
+# Migrate legacy scattered keys to VoiceRuntimeState (Phase 1 / Phase 2)
+migrate_from_session_state()
+
 # Dataset recorder state (Phase 4)
 if 'voice_dataset_recorder' not in st.session_state:
     st.session_state.voice_dataset_recorder = VoiceDatasetRecorder(enabled=VOICE_DATASET_OPT_IN)
 if 'voice_dataset_samples' not in st.session_state:
     st.session_state.voice_dataset_samples = []
+
+# ============================================================================
+# Voice rerun helpers (one-shot flags)
+# ============================================================================
+_VOICE_RERUN_KEY = "_voice_needs_rerun"
+_VOICE_RERUN_REASON_KEY = "_voice_rerun_reason"
+
+
+def _request_voice_rerun(reason: str = "") -> None:
+    st.session_state[_VOICE_RERUN_KEY] = True
+    st.session_state[_VOICE_RERUN_REASON_KEY] = reason
+
+
+def _maybe_voice_rerun() -> None:
+    if st.session_state.get(_VOICE_RERUN_KEY):
+        st.session_state[_VOICE_RERUN_KEY] = False
+        st.rerun()
+
+
+def _process_voice_transcript(
+    transcript: str,
+    source: str = "debug",
+    enable_confirmation: bool = VOICE_ENABLE_CONFIRMATION,
+) -> Dict[str, Any]:
+    """Shared transcript processing for push-to-talk, continuous, and debug.
+
+    Returns a dict with keys:
+        success, reason, previous_score, new_score, parsed, route_result
+    """
+    processed = TranscriptPostProcessor(VoiceVocabulary.load()).process(transcript)
+    score_a = st.session_state.match_manager.state.score_a
+    score_b = st.session_state.match_manager.state.score_b
+    event = VoiceParser().parse(processed, current_score_a=score_a, current_score_b=score_b)
+    event.source = source
+
+    _parsed = VoiceParseResult(
+        intent=event.type,
+        confidence=event.confidence,
+        raw_transcript=event.raw_text,
+        slots={},
+    )
+    if hasattr(event, 'player') and event.player:
+        _parsed.slots['player'] = event.player
+    if hasattr(event, 'score_a') and event.score_a is not None:
+        _parsed.slots['score_a'] = event.score_a
+    if hasattr(event, 'score_b') and event.score_b is not None:
+        _parsed.slots['score_b'] = event.score_b
+
+    _route_ctx = RouteContext(
+        current_score_a=score_a,
+        current_score_b=score_b,
+        strict_mode=st.session_state.get("voice_strict_mode", False),
+        enable_confirmation=enable_confirmation,
+        last_applied_event_key=st.session_state.get("voice_last_applied_event_key"),
+        last_applied_event_ts=st.session_state.get("voice_last_applied_event_ts", 0.0),
+    )
+    route_result = route_and_update_context(_parsed, _route_ctx)
+
+    prev_score = st.session_state.match_manager.state.get_score_string()
+
+    if route_result.decision == RouteDecision.REJECT:
+        return {
+            "success": False,
+            "reason": route_result.reason,
+            "previous_score": prev_score,
+            "new_score": prev_score,
+            "parsed": _parsed,
+            "route_result": route_result,
+        }
+
+    if route_result.decision == RouteDecision.IGNORE:
+        return {
+            "success": False,
+            "reason": "duplicate_suppressed",
+            "previous_score": prev_score,
+            "new_score": prev_score,
+            "parsed": _parsed,
+            "route_result": route_result,
+        }
+
+    if route_result.decision == RouteDecision.CONFIRM:
+        _machine = st.session_state.get("voice_confirmation_machine")
+        if _machine is None:
+            _machine = VoiceConfirmationStateMachine(ttl_seconds=8.0)
+            st.session_state.voice_confirmation_machine = _machine
+        _pending_decision = _machine.submit(_parsed)
+        if _pending_decision == "pending":
+            _pending = {
+                "event_id": event.event_id,
+                "intent": event.type,
+                "slots": _parsed.slots,
+                "confidence": event.confidence,
+                "raw_transcript": event.raw_text,
+                "predicted_score_before": prev_score,
+                "predicted_score_after": prev_score,
+                "received_at": time.time(),
+                "source": source,
+            }
+            st.session_state.pending_confirmations.append(_pending)
+            st.session_state.last_voice_transcript = event.raw_text
+            st.session_state.last_voice_event = event
+            st.session_state.last_voice_feedback = "Awaiting confirmation"
+        else:
+            st.session_state.last_voice_feedback = "Confirmation busy — try again"
+        return {
+            "success": False,
+            "reason": "pending",
+            "previous_score": prev_score,
+            "new_score": prev_score,
+            "parsed": _parsed,
+            "route_result": route_result,
+        }
+
+    # APPLY
+    _score_event = VoiceScoreEvent(
+        type=event.type,
+        player=_parsed.slots.get("player"),
+        score_a=_parsed.slots.get("score_a"),
+        score_b=_parsed.slots.get("score_b"),
+        timestamp=time.time(),
+        event_id=event.event_id,
+        raw_text=event.raw_text,
+        confidence=event.confidence,
+        source=source,
+    )
+    success, msg = st.session_state.match_manager.apply_voice_event(_score_event)
+    new_score = st.session_state.match_manager.state.get_score_string()
+
+    if success:
+        st.session_state.voice_last_applied_event_key = _route_ctx.last_applied_event_key
+        st.session_state.voice_last_applied_event_ts = _route_ctx.last_applied_event_ts
+        st.session_state.last_voice_feedback = msg
+        st.session_state.last_voice_transcript = event.raw_text
+        st.session_state.last_voice_event = event
+        if event.type == "increment":
+            play_cue("point")
+        elif event.type == "undo":
+            play_cue("undo")
+        elif event.type == "set_score":
+            _e2 = st.session_state.match_manager.engine
+            if _e2.match_status == "game_won":
+                play_cue("game")
+            elif _e2.match_status == "match_won":
+                play_cue("match")
+        _tts_adapter = st.session_state.get("voice_tts_adapter")
+        if _tts_adapter and _tts_adapter.enabled:
+            _tts_adapter.speak(msg)
+        _request_voice_rerun(source)
+    else:
+        st.session_state.last_voice_feedback = msg
+        st.warning(f"🎤 Voice: {msg}")
+        play_cue("reject")
+
+    return {
+        "success": success,
+        "reason": msg,
+        "previous_score": prev_score,
+        "new_score": new_score,
+        "parsed": _parsed,
+        "route_result": route_result,
+    }
+
 
 # ============================================================================
 # Commentary Settings Initialization
@@ -349,7 +521,9 @@ class VoiceAudioProcessor(AudioProcessorBase):
         """
         import numpy as np
         
-        # Detect format from frame and update buffer accordingly
+        # Detect format from frame and update buffer accordingly.
+        # If incoming format differs from the current buffer state, flush the
+        # current buffer first so a chunk never contains mixed-format frames.
         fmt_name = getattr(getattr(frame, 'format', None), 'name', None)
         sample_rate = getattr(frame, 'sample_rate', None)
         channels = getattr(frame, 'channels', None)
@@ -359,6 +533,31 @@ class VoiceAudioProcessor(AudioProcessorBase):
             detected_format = SAMPLE_FORMAT_INT16
         elif fmt_name in ('flt', 'fltp', 'f32', 'f32p'):
             detected_format = SAMPLE_FORMAT_FLOAT32
+        
+        # Flush if any format parameter changed
+        needs_flush = False
+        if detected_format is not None and detected_format != self._sample_format:
+            needs_flush = True
+        if sample_rate is not None and sample_rate != self.audio_buffer.sample_rate:
+            needs_flush = True
+        if channels is not None and channels != self.audio_buffer.channels:
+            needs_flush = True
+        
+        if needs_flush:
+            with self.audio_buffer._lock:
+                buffered = len(self.audio_buffer._buffer)
+            if buffered > 0:
+                flushed = self.audio_buffer.flush()
+                if flushed:
+                    logger.info(
+                        "VoiceAudioProcessor: flushed chunk on format change "
+                        "(old_format=%s, new_format=%s, old_rate=%d, new_rate=%s, old_channels=%d, new_channels=%s)",
+                        self._sample_format, detected_format or self._sample_format,
+                        self.audio_buffer.sample_rate, sample_rate,
+                        self.audio_buffer.channels, channels,
+                    )
+                    self._start_worker()
+                    self._chunk_queue.put(flushed)
         
         if detected_format is not None and detected_format != self._sample_format:
             self._sample_format = detected_format
@@ -380,19 +579,34 @@ class VoiceAudioProcessor(AudioProcessorBase):
                 else:
                     fallback_format = SAMPLE_FORMAT_FLOAT32
                 if fallback_format != self._sample_format:
+                    needs_flush = True
+                    with self.audio_buffer._lock:
+                        buffered = len(self.audio_buffer._buffer)
+                    if buffered > 0:
+                        flushed = self.audio_buffer.flush()
+                        if flushed:
+                            logger.info(
+                                "VoiceAudioProcessor: flushed chunk on fallback format change "
+                                "(old_format=%s, new_format=%s)",
+                                self._sample_format, fallback_format,
+                            )
+                            self._start_worker()
+                            self._chunk_queue.put(flushed)
                     self._sample_format = fallback_format
                     if self.audio_buffer.sample_format != self._sample_format:
                         self.audio_buffer.update_format(sample_format=self._sample_format)
             except Exception:
                 pass
-
+        
         frame_bytes = frame.to_ndarray().tobytes()
         chunk = self.audio_buffer.push_frame(frame_bytes)
 
         if chunk is not None:
             logger.info(
-                "VoiceAudioProcessor: emitted chunk %.1f ms, RMS=%.4f, frames=%d",
+                "VoiceAudioProcessor: emitted chunk %.1f ms, RMS=%.4f, frames=%d, "
+                "format=%s, sample_rate=%d, channels=%d",
                 chunk.duration_ms, chunk.rms, len(chunk.frames),
+                chunk.sample_format, chunk.sample_rate, chunk.channels,
             )
             # Ensure worker is running and queue the chunk
             self._start_worker()
@@ -432,6 +646,20 @@ class VoiceAudioProcessor(AudioProcessorBase):
             if not pcm_bytes:
                 logger.debug("Empty PCM bytes, skipping transcription")
                 return
+
+            if chunk.rms < 0.01:
+                logger.debug(
+                    "Chunk RMS %.4f below floor, skipping transcription",
+                    chunk.rms,
+                )
+                return
+
+            logger.debug(
+                "Transcribing chunk: pcm_len=%d, chunk_format=%s, chunk_rate=%d, "
+                "chunk_channels=%d, chunk_rms=%.4f",
+                len(pcm_bytes), chunk.sample_format, chunk.sample_rate,
+                chunk.channels, chunk.rms,
+            )
 
             # Measure ASR latency for observability (Phase 1/5).
             start = time.time()
@@ -575,30 +803,39 @@ def _process_push_to_talk_audio(audio_file: Any) -> Optional[VoiceScoreEvent]:
         st.warning("No speech detected. Please try again.")
         return None
 
-    processed = TranscriptPostProcessor(VoiceVocabulary.load()).process(raw_text)
-    score_a = st.session_state.match_manager.state.score_a
-    score_b = st.session_state.match_manager.state.score_b
-    event = VoiceParser().parse(processed, current_score_a=score_a, current_score_b=score_b)
-    event.source = "asr_push_to_talk"
+    result = _process_voice_transcript(raw_text, source="push_to_talk")
+
+    if VOICE_DEBUG_EVENTS:
+        try:
+            _e = VoiceParser().parse(
+                TranscriptPostProcessor(VoiceVocabulary.load()).process(raw_text),
+                current_score_a=st.session_state.match_manager.state.score_a,
+                current_score_b=st.session_state.match_manager.state.score_b,
+            )
+            st.session_state.voice_event_logger.record(
+                _e,
+                accepted=result.get("success", False),
+                previous_score=result.get("previous_score", ""),
+                new_score=result.get("new_score", ""),
+                note="push_to_talk",
+            )
+        except Exception:
+            pass
 
     if VOICE_DATASET_OPT_IN:
         try:
             recorder = st.session_state.get("voice_dataset_recorder")
             if recorder is not None:
+                processed = TranscriptPostProcessor(VoiceVocabulary.load()).process(raw_text)
                 recorder.record(
                     transcript=processed,
-                    parsed_intent=event.type,
-                    expected_intent=event.type if event.type != "unknown" else None,
+                    parsed_intent=result.get("parsed").intent if result.get("parsed") else None,
+                    expected_intent=result.get("parsed").intent if result.get("parsed") and result.get("success") else None,
                     match_id=st.session_state.get("voice_selected_match_id"),
                     match_context={
-                        "score_before": f"{score_a}-{score_b}",
-                        "score_after": _predict_score_after(
-                            VoiceParseResult(
-                                intent=parse_command(processed, score_a, score_b).intent,
-                                slots=parse_command(processed, score_a, score_b).slots,
-                            )
-                        ) if event.type != "unknown" else f"{score_a}-{score_b}",
-                        "confidence": event.confidence,
+                        "score_before": result.get("previous_score", ""),
+                        "score_after": result.get("new_score", ""),
+                        "confidence": result.get("parsed").confidence if result.get("parsed") else 0.0,
                     },
                     mic_type="push_to_talk",
                     noise_condition="unknown",
@@ -606,7 +843,7 @@ def _process_push_to_talk_audio(audio_file: Any) -> Optional[VoiceScoreEvent]:
         except Exception as exc:
             logger.debug("Push-to-talk dataset record skipped: %s", exc)
 
-    return event
+    return result.get("parsed").to_score_event() if result.get("parsed") else None
 
 
 def _predict_score_after(parsed: VoiceParseResult) -> str:
@@ -627,9 +864,103 @@ def _predict_score_after(parsed: VoiceParseResult) -> str:
     return st.session_state.match_manager.state.get_score_string()
 
 
+PHASE3_NAVIGATION_INTENTS = {
+    VoiceIntent.NAVIGATE_DASHBOARD,
+    VoiceIntent.NAVIGATE_BRACKET,
+    VoiceIntent.NAVIGATE_RANKINGS,
+    VoiceIntent.NAVIGATE_PUBLIC_BOARD,
+    VoiceIntent.NAVIGATE_CURRENT_MATCH,
+    VoiceIntent.NAVIGATE_SCORING,
+    VoiceIntent.NAVIGATE_HELP,
+}
+
+PHASE3_ADMIN_INTENTS = {
+    VoiceIntent.ADMIN_CALL_NEXT,
+    VoiceIntent.ADMIN_TABLE_READY,
+    VoiceIntent.ADMIN_ASSIGN_TABLE,
+    VoiceIntent.ADMIN_MARK_UNAVAILABLE,
+    VoiceIntent.ADMIN_PUBLISH_RESULT,
+    VoiceIntent.ADMIN_MARK_NO_SHOW,
+    VoiceIntent.ADMIN_DROP_PLAYER,
+    VoiceIntent.ADMIN_START_NEXT_ROUND,
+}
+
+PHASE3_RULES_INTENTS = {
+    VoiceIntent.RULES_QUERY,
+}
+
+PHASE3_ACCESSIBILITY_INTENTS = {
+    VoiceIntent.ACCESS_REPEAT,
+    VoiceIntent.ACCESS_ANNOUNCE_SCORE,
+    VoiceIntent.ACCESS_LOUDER,
+    VoiceIntent.ACCESS_QUIETER,
+    VoiceIntent.ACCESS_MUTE,
+    VoiceIntent.ACCESS_UNMUTE,
+    VoiceIntent.ACCESS_SLOWER,
+    VoiceIntent.ACCESS_FASTER,
+    VoiceIntent.ACCESS_LARGE_TEXT,
+    VoiceIntent.ACCESS_HIGH_CONTRAST,
+    VoiceIntent.ACCESS_HELP,
+}
+
+
+def _handle_phase3_intent(event: Any, parsed: VoiceParseResult) -> Optional[Dict[str, Any]]:
+    intent = parsed.intent
+
+    if intent in PHASE3_NAVIGATION_INTENTS:
+        from tournament_platform.app.services.voice.navigation import NavigationCommandHandler
+        handler = NavigationCommandHandler()
+        result = handler.execute(intent, st.session_state.get("voice_runtime_state", {}).__dict__ if hasattr(st.session_state.get("voice_runtime_state", {}), "__dict__") else {})
+        if result.action == "navigate":
+            st.toast(f"🎤 Navigate: {result.payload.get('target')}", icon="🧭")
+            return {"action": "navigate", "message": result.message}
+        return {"action": "blocked", "message": result.message}
+
+    if intent in PHASE3_ADMIN_INTENTS:
+        from tournament_platform.app.services.voice.admin import AdminCommandHandler
+        handler = AdminCommandHandler()
+        action = handler.execute(intent, parsed.slots)
+        if action.requires_confirmation:
+            _pending = {
+                "event_id": parsed.event_id,
+                "intent": parsed.intent,
+                "slots": parsed.slots,
+                "confidence": parsed.confidence,
+                "raw_transcript": parsed.raw_transcript,
+                "predicted_score_before": st.session_state.match_manager.state.get_score_string(),
+                "predicted_score_after": st.session_state.match_manager.state.get_score_string(),
+                "received_at": time.time(),
+                "source": parsed.source,
+                "warning": handler.get_warning(intent),
+            }
+            st.session_state.pending_confirmations.append(_pending)
+            return {"action": "admin_pending", "message": f"Admin command pending: {action.message}"}
+        st.toast(f"🎤 Admin: {action.message}", icon="⚙️")
+        return {"action": "admin", "message": action.message}
+
+    if intent in PHASE3_RULES_INTENTS:
+        from tournament_platform.app.services.voice.rules_assistant import RulesAssistantHandler
+        handler = RulesAssistantHandler()
+        action = handler.execute(intent, parsed.slots)
+        st.info(f"📖 {action.message}")
+        return {"action": "rules", "message": action.message}
+
+    if intent in PHASE3_ACCESSIBILITY_INTENTS:
+        from tournament_platform.app.services.voice.accessibility import AccessibilityCommandHandler
+        handler = AccessibilityCommandHandler()
+        action = handler.execute(intent, parsed.slots, {})
+        st.toast(f"🎤 {action.message}", icon="♿")
+        return {"action": "accessibility", "message": action.message}
+
+    return None
+
+
 def _render_confirm_panel() -> None:
     pending = st.session_state.get("pending_confirmations", [])
     if not pending:
+        _machine = st.session_state.get("voice_confirmation_machine")
+        if _machine and not _machine.is_idle():
+            _machine.reset()
         return
 
     st.markdown("### ⏳ Pending Voice Confirmations")
@@ -646,12 +977,20 @@ def _render_confirm_panel() -> None:
                     _apply_pending(idx)
             with col_c:
                 if st.button("✖ Cancel", key=f"cancel_voice_{idx}", use_container_width=True):
+                    _machine = st.session_state.get("voice_confirmation_machine")
+                    if _machine:
+                        _machine.cancel()
+                        _machine.reset()
                     st.session_state.pending_confirmations.pop(idx)
                     st.session_state.last_voice_feedback = "Cancelled"
-                    st.rerun()
+                    _request_voice_rerun("cancel")
 
 
 def _apply_pending(idx: int) -> None:
+    _machine = st.session_state.get("voice_confirmation_machine")
+    if _machine:
+        _machine.confirm()
+        _machine.reset()
     item = st.session_state.pending_confirmations.pop(idx)
     intent_str = item.get("intent", "unknown")
     slots = item.get("slots", {})
@@ -696,6 +1035,23 @@ def _apply_pending(idx: int) -> None:
     elif intent_str == VoiceIntent.REPEAT_SCORE.value:
         event_type = "repeat"
         player = None
+    elif intent_str in [i.value for i in PHASE3_ADMIN_INTENTS]:
+        from tournament_platform.app.services.voice.admin import AdminCommandHandler
+        handler = AdminCommandHandler()
+        intent_enum = VoiceIntent(intent_str)
+        action = handler.execute(intent_enum, slots)
+        st.toast(f"🎤 Admin: {action.message}", icon="⚙️")
+        st.session_state.last_voice_feedback = action.message
+        if VOICE_DEBUG_EVENTS:
+            st.session_state.voice_event_logger.record(
+                VoiceScoreEvent(type=intent_str, raw_text=raw, confidence=confidence),
+                accepted=True,
+                previous_score=st.session_state.match_manager.state.get_score_string(),
+                new_score=st.session_state.match_manager.state.get_score_string(),
+                note="admin_confirmed",
+            )
+        _request_voice_rerun("admin_confirmed")
+        return
     else:
         event_type = "unknown"
         player = None
@@ -747,6 +1103,7 @@ def _apply_pending(idx: int) -> None:
                 persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
             except Exception as exc:
                 logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
+        _request_voice_rerun("confirmed")
     else:
         st.warning(f"🎤 Voice: {msg}")
         play_cue("reject")
@@ -770,6 +1127,11 @@ def _process_voice_events() -> None:
     """
     if not st.session_state.voice_listening:
         return
+
+    # Clear any one-shot rerun request from the previous run; the continuous
+    # listening loop below will continue draining events and rerunning.
+    st.session_state.pop(_VOICE_RERUN_KEY, None)
+    st.session_state.pop(_VOICE_RERUN_REASON_KEY, None)
 
     ctx = st.session_state.get("voice_webrtc_ctx")
     if ctx is None:
@@ -797,10 +1159,6 @@ def _process_voice_events() -> None:
 
     _current_score_a = st.session_state.match_manager.state.score_a
     _current_score_b = st.session_state.match_manager.state.score_b
-    _context = {
-        "strict_mode": st.session_state.get("voice_strict_mode", False),
-        "enable_confirmation": VOICE_ENABLE_CONFIRMATION,
-    }
 
     # Expire stale pending confirmations (> 8 s old).
     _now = time.time()
@@ -825,9 +1183,20 @@ def _process_voice_events() -> None:
         parsed.noise_rms = event.noise_rms
         parsed.speaker_label = getattr(event, "speaker_label", None)
 
-        decision = policy_decision(parsed, _context)
+        # Phase 2: route parsed command through deterministic router + confirmation state machine
+        _route_ctx = RouteContext(
+            current_score_a=_current_score_a,
+            current_score_b=_current_score_b,
+            strict_mode=st.session_state.get("voice_strict_mode", False),
+            # Continuous path auto-applies safe SCORE_POINT intents; risky
+            # intents still require confirmation per ConfirmationPolicy.
+            enable_confirmation=False,
+            last_applied_event_key=st.session_state.get("voice_last_applied_event_key"),
+            last_applied_event_ts=st.session_state.get("voice_last_applied_event_ts", 0.0),
+        )
+        route_result = route_and_update_context(parsed, _route_ctx)
 
-        if decision == "reject":
+        if route_result.decision == RouteDecision.REJECT:
             prev_score = st.session_state.match_manager.state.get_score_string()
             if VOICE_DEBUG_EVENTS:
                 st.session_state.voice_event_logger.record(
@@ -835,32 +1204,63 @@ def _process_voice_events() -> None:
                     accepted=False,
                     previous_score=prev_score,
                     new_score=prev_score,
-                    note="policy_rejected",
+                    note=f"router_rejected:{route_result.reason}",
                 )
-            st.session_state.last_voice_feedback = "Voice command rejected"
-            st.warning("🎤 Voice: command rejected")
+            st.session_state.last_voice_feedback = f"Voice command rejected: {route_result.reason}"
+            st.warning(f"🎤 Voice: command rejected ({route_result.reason})")
+            _request_voice_rerun("rejected")
             continue
 
-        if decision == "confirm":
-            _pending = {
-                "event_id": parsed.event_id,
-                "intent": parsed.intent,
-                "slots": parsed.slots,
-                "confidence": parsed.confidence,
-                "raw_transcript": parsed.raw_transcript,
-                "predicted_score_before": st.session_state.match_manager.state.get_score_string(),
-                "predicted_score_after": _predict_score_after(parsed),
-                "received_at": _now,
-                "source": parsed.source,
-            }
-            st.session_state.pending_confirmations.append(_pending)
-            st.session_state.last_voice_transcript = parsed.raw_transcript
-            st.session_state.last_voice_event = parsed.to_score_event()
-            st.session_state.last_voice_feedback = "Awaiting confirmation"
-            st.toast("🎤 Command pending confirmation", icon="⏳")
+        if route_result.decision == RouteDecision.IGNORE:
+            prev_score = st.session_state.match_manager.state.get_score_string()
+            if VOICE_DEBUG_EVENTS:
+                st.session_state.voice_event_logger.record(
+                    event,
+                    accepted=False,
+                    previous_score=prev_score,
+                    new_score=prev_score,
+                    note=f"router_ignored:{route_result.reason}",
+                )
+            st.session_state.last_voice_feedback = "Duplicate command suppressed"
+            st.toast("🎤 Duplicate command suppressed", icon="⚠️")
+            _request_voice_rerun("ignored")
+            continue
+
+        if route_result.decision == RouteDecision.CONFIRM:
+            _machine = st.session_state.get("voice_confirmation_machine")
+            if _machine is None:
+                _machine = VoiceConfirmationStateMachine(ttl_seconds=8.0)
+                st.session_state.voice_confirmation_machine = _machine
+            _pending_decision = _machine.submit(parsed)
+            if _pending_decision == "pending":
+                _pending = {
+                    "event_id": parsed.event_id,
+                    "intent": parsed.intent,
+                    "slots": parsed.slots,
+                    "confidence": parsed.confidence,
+                    "raw_transcript": parsed.raw_transcript,
+                    "predicted_score_before": st.session_state.match_manager.state.get_score_string(),
+                    "predicted_score_after": _predict_score_after(parsed),
+                    "received_at": _now,
+                    "source": parsed.source,
+                }
+                st.session_state.pending_confirmations.append(_pending)
+                st.session_state.last_voice_transcript = parsed.raw_transcript
+                st.session_state.last_voice_event = parsed.to_score_event()
+                st.session_state.last_voice_feedback = "Awaiting confirmation"
+                st.toast("🎤 Command pending confirmation", icon="⏳")
+                _request_voice_rerun("pending")
+            else:
+                st.session_state.last_voice_feedback = "Confirmation busy — try again"
+                st.warning("🎤 Voice: confirmation busy, please wait or cancel the pending command")
+                _request_voice_rerun("busy")
             continue
 
         # decision == "apply"
+        # Sync cooldown tracking from router context
+        st.session_state.voice_last_applied_event_key = _route_ctx.last_applied_event_key
+        st.session_state.voice_last_applied_event_ts = _route_ctx.last_applied_event_ts
+
         _score_event = parsed.to_score_event()
         if _score_event.type == "set_score" and _score_event.raw_text:
             _reparsed = processor.parser.parse(
@@ -873,8 +1273,23 @@ def _process_voice_events() -> None:
             _reparsed.requires_confirmation = _score_event.requires_confirmation
             _score_event = _reparsed
 
-        st.session_state.last_voice_transcript = parsed.raw_transcript
-        st.session_state.last_voice_event = _score_event
+        # Phase 3: Handle non-scoring intents (navigation, admin, rules, accessibility)
+        _phase3_result = _handle_phase3_intent(_score_event, parsed)
+        if _phase3_result is not None:
+            st.session_state.last_voice_transcript = parsed.raw_transcript
+            st.session_state.last_voice_event = _score_event
+            st.session_state.last_voice_feedback = _phase3_result.get("message", "")
+            st.toast(f"🎤 {_phase3_result.get('message', '')}", icon="✅")
+            if VOICE_DEBUG_EVENTS:
+                st.session_state.voice_event_logger.record(
+                    _score_event,
+                    accepted=True,
+                    previous_score=prev_score,
+                    new_score=prev_score,
+                    note=_phase3_result.get("action", "phase3"),
+                )
+            _request_voice_rerun("phase3")
+            continue
 
         prev_score = st.session_state.match_manager.state.get_score_string()
 
@@ -915,6 +1330,8 @@ def _process_voice_events() -> None:
             new_score = st.session_state.match_manager.state.get_score_string()
             note = "" if success else msg
             if success:
+                st.session_state.last_voice_transcript = parsed.raw_transcript
+                st.session_state.last_voice_event = _score_event
                 st.toast(f"🎤 {msg}", icon="✅")
                 # Sound cue for accepted voice event
                 if _score_event.type == "increment":
@@ -943,6 +1360,7 @@ def _process_voice_events() -> None:
                         persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
                     except Exception as exc:
                         logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
+                _request_voice_rerun("applied")
             else:
                 st.warning(f"🎤 Voice: {msg}")
                 play_cue("reject")
@@ -1901,7 +2319,7 @@ if st.session_state.voice_selected_match_id:
 # ============================================================================
 
 st.divider()
-st.subheader("🎤 Voice Scoring (Continuous Listening)")
+st.subheader("🎤 Voice Scoring")
 
 # Voice scoring toggle
 col_enable, col_status = st.columns([2, 1])
@@ -1909,7 +2327,8 @@ with col_enable:
     st.session_state.voice_scoring_enabled = st.toggle(
         "Enable Voice Scoring",
         value=st.session_state.voice_scoring_enabled,
-        help="Turn on continuous voice listening for score commands. Uses local faster-whisper ASR.",
+        help="Turn on voice scorekeeping. Push-to-talk is the default reliable mode. "
+             "Continuous listening is optional and experimental.",
     )
 with col_status:
     if st.session_state.voice_scoring_enabled:
@@ -1960,122 +2379,133 @@ with col_status:
                    "Directional/close microphones improve accuracy.")
 
 if st.session_state.voice_scoring_enabled:
-    # Check if streamlit-webrtc is available
-    try:
-        from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase  # noqa: F401
-        webrtc_available = True
-    except ImportError:
-        webrtc_available = False
-    
-    if not webrtc_available:
-        st.warning(
-            "⚠️ streamlit-webrtc is not installed. "
-            "Install it with: `pip install streamlit-webrtc` "
-            "or enable the `[live]` extras in pyproject.toml."
+    st.markdown("**Push-to-Talk** (recommended)")
+    st.caption("Click the microphone, speak your command, and release to send.")
+
+    # Continuous listening is optional and experimental.
+    with st.expander("🔬 Experimental: Continuous Listening", expanded=False):
+        st.caption(
+            "Uses streamlit-webrtc for hands-free continuous voice capture. "
+            "This mode is experimental and may miss commands in noisy environments. "
+            "Push-to-talk remains the default reliable mode."
         )
-        st.caption("You can still use the push-to-talk voice input below.")
-    else:
-        # Start/Stop listening controls
-        col_start, col_stop = st.columns(2)
-        with col_start:
-            if st.button("🎙️ Start Listening", type="primary", use_container_width=True):
-                if not st.session_state.voice_listening:
-                    st.session_state.voice_listening = True
-                    st.session_state.voice_event_log = []
-                    st.session_state.last_voice_transcript = ""
-                    st.session_state.last_voice_event = None
-                    st.session_state.last_voice_feedback = ""
-                    st.rerun()
-        with col_stop:
-            if st.button("⏹️ Stop Listening", use_container_width=True):
-                if st.session_state.voice_listening:
+        # Check if streamlit-webrtc is available
+        try:
+            from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase  # noqa: F401
+            webrtc_available = True
+        except ImportError:
+            webrtc_available = False
+
+        if not webrtc_available:
+            st.warning(
+                "⚠️ streamlit-webrtc is not installed. "
+                "Install it with: `pip install streamlit-webrtc` "
+                "or enable the `[live]` extras in pyproject.toml."
+            )
+            st.caption("You can still use the push-to-talk voice input below.")
+        else:
+            # Start/Stop listening controls
+            col_start, col_stop = st.columns(2)
+            with col_start:
+                if st.button("🎙️ Start Listening", type="primary", use_container_width=True):
+                    if not st.session_state.voice_listening:
+                        st.session_state.voice_listening = True
+                        st.session_state.voice_event_log = []
+                        st.session_state.last_voice_transcript = ""
+                        st.session_state.last_voice_event = None
+                        st.session_state.last_voice_feedback = ""
+                        st.session_state.voice_asr_status = None
+                        st.rerun()
+            with col_stop:
+                if st.button("⏹️ Stop Listening", use_container_width=True):
+                    if st.session_state.voice_listening:
+                        st.session_state.voice_listening = False
+                        ctx = st.session_state.get("voice_webrtc_ctx")
+                        if ctx and ctx.get("processor"):
+                            ctx["processor"].stop()
+                        st.rerun()
+
+            if st.session_state.voice_listening:
+                st.caption("Listening for score commands... Speak clearly into your microphone.")
+
+                # Initialize ASR status on first listen
+                if st.session_state.voice_asr_status is None:
+                    try:
+                        st.session_state.voice_asr_status = ASRBackendFactory.backend_status()
+                    except Exception as e:
+                        st.session_state.voice_asr_status = {"available": False, "load_error": str(e)}
+
+                # Show ASR status
+                asr_status = st.session_state.voice_asr_status
+                if is_dataclass(asr_status):
+                    asr_status = asdict(asr_status)
+                if asr_status and not asr_status.get("available", False):
+                    error_msg = asr_status.get("load_error", "Unknown error")
+                    st.error(f"⚠️ Local ASR not available: {error_msg}")
+                    st.caption("Voice scoring requires faster-whisper. Install with: `pip install faster-whisper`")
                     st.session_state.voice_listening = False
-                    ctx = st.session_state.get("voice_webrtc_ctx")
-                    if ctx and ctx.get("processor"):
-                        ctx["processor"].stop()
                     st.rerun()
-        
-        if st.session_state.voice_listening:
-            st.caption("Listening for score commands... Speak clearly into your microphone.")
-            
-            # Initialize ASR status on first listen
-            if st.session_state.voice_asr_status is None:
-                try:
-                    st.session_state.voice_asr_status = ASRBackendFactory.backend_status()
-                except Exception as e:
-                    st.session_state.voice_asr_status = {"available": False, "load_error": str(e)}
-            
-            # Show ASR status
-            asr_status = st.session_state.voice_asr_status
-            if is_dataclass(asr_status):
-                asr_status = asdict(asr_status)
-            if asr_status and not asr_status.get("available", False):
-                error_msg = asr_status.get("load_error", "Unknown error")
-                st.error(f"⚠️ Local ASR not available: {error_msg}")
-                st.caption("Voice scoring requires faster-whisper. Install with: `pip install faster-whisper`")
-                st.session_state.voice_listening = False
-                st.rerun()
-            
-            # WebRTC streamer
-            from streamlit_webrtc import webrtc_streamer, WebRtcMode
-            
-            # Stable processor factory — defined once per session, not recreated on rerun.
-            if "voice_webrtc_processor_factory" not in st.session_state:
-                _filtering = st.session_state.get("voice_noise_filtering", False)
-                _threshold = st.session_state.get("voice_noise_threshold", 0.0)
-                _strict = st.session_state.get("voice_strict_mode", False)
-                _vad = create_vad()
-                def _make_processor():
-                    return VoiceAudioProcessor(
-                        noise_gate_rms=_threshold if _filtering else 0.0,
-                        sample_format=SAMPLE_FORMAT_FLOAT32,
-                        voice_strict_mode=_strict,
-                        vad=_vad,
-                    )
-                st.session_state.voice_webrtc_processor_factory = _make_processor
-            
-            ctx = webrtc_streamer(
-                key="voice_score_webrtc",
-                mode=WebRtcMode.SENDONLY,
-                audio_processor_factory=st.session_state.voice_webrtc_processor_factory,
-                rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-                media_stream_constraints={"audio": True, "video": False},
-            )
-            
-            logger.info(
-                "WebRTC ctx: state=%s, audio_processor=%s",
-                ctx.state if ctx else "None",
-                "yes" if ctx and ctx.audio_processor else "no",
-            )
-            
-            # Store processor reference in session state
-            if ctx and ctx.audio_processor:
-                if st.session_state.voice_webrtc_ctx is None:
-                    st.session_state.voice_webrtc_ctx = {}
-                st.session_state.voice_webrtc_ctx["processor"] = ctx.audio_processor
-                logger.info("Stored audio processor in session state")
-            else:
-                logger.debug("No audio processor available yet (ctx=%s)", "present" if ctx else "None")
-            
-            # Show last heard phrase
-            if st.session_state.last_voice_transcript:
-                st.info(f"Last heard: **{st.session_state.last_voice_transcript}**")
-            
-            # Show parsed interpretation
-            if st.session_state.last_voice_event:
-                event = st.session_state.last_voice_event
-                if event.type == "set_score":
-                    st.success(f"Parsed: Set score to {event.score_a}-{event.score_b}")
-                elif event.type == "increment":
-                    st.success(f"Parsed: Point to Player {event.player}")
-                elif event.type == "undo":
-                    st.success("Parsed: Undo last point")
+
+                # WebRTC streamer
+                from streamlit_webrtc import webrtc_streamer, WebRtcMode
+
+                # Stable processor factory — defined once per session, not recreated on rerun.
+                if "voice_webrtc_processor_factory" not in st.session_state:
+                    _filtering = st.session_state.get("voice_noise_filtering", False)
+                    _threshold = st.session_state.get("voice_noise_threshold", 0.0)
+                    _strict = st.session_state.get("voice_strict_mode", False)
+                    _vad = create_vad()
+                    def _make_processor():
+                        return VoiceAudioProcessor(
+                            noise_gate_rms=_threshold if _filtering else 0.01,
+                            sample_format=SAMPLE_FORMAT_FLOAT32,
+                            voice_strict_mode=_strict,
+                            vad=_vad,
+                        )
+                    st.session_state.voice_webrtc_processor_factory = _make_processor
+
+                ctx = webrtc_streamer(
+                    key="voice_score_webrtc",
+                    mode=WebRtcMode.SENDONLY,
+                    audio_processor_factory=st.session_state.voice_webrtc_processor_factory,
+                    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+                    media_stream_constraints={"audio": True, "video": False},
+                )
+
+                logger.info(
+                    "WebRTC ctx: state=%s, audio_processor=%s",
+                    ctx.state if ctx else "None",
+                    "yes" if ctx and ctx.audio_processor else "no",
+                )
+
+                # Store processor reference in session state
+                if ctx and ctx.audio_processor:
+                    if st.session_state.voice_webrtc_ctx is None:
+                        st.session_state.voice_webrtc_ctx = {}
+                    st.session_state.voice_webrtc_ctx["processor"] = ctx.audio_processor
+                    logger.info("Stored audio processor in session state")
                 else:
-                    st.warning(f"Parsed: Unknown command (confidence: {event.confidence:.0%})")
-            
-            # Show last accepted update
-            if st.session_state.last_voice_feedback:
-                st.caption(f"Last update: {st.session_state.last_voice_feedback}")
+                    logger.debug("No audio processor available yet (ctx=%s)", "present" if ctx else "None")
+
+                # Show last heard phrase
+                if st.session_state.last_voice_transcript:
+                    st.info(f"Last heard: **{st.session_state.last_voice_transcript}**")
+
+                # Show parsed interpretation
+                if st.session_state.last_voice_event:
+                    event = st.session_state.last_voice_event
+                    if event.type == "set_score":
+                        st.success(f"Parsed: Set score to {event.score_a}-{event.score_b}")
+                    elif event.type == "increment":
+                        st.success(f"Parsed: Point to Player {event.player}")
+                    elif event.type == "undo":
+                        st.success("Parsed: Undo last point")
+                    else:
+                        st.warning(f"Parsed: Unknown command (confidence: {event.confidence:.0%})")
+
+                # Show last accepted update
+                if st.session_state.last_voice_feedback:
+                    st.caption(f"Last update: {st.session_state.last_voice_feedback}")
 
             # Confidence indicator
             if st.session_state.last_voice_event:
@@ -2084,15 +2514,6 @@ if st.session_state.voice_scoring_enabled:
                 _color = "🔴" if _conf_pct < 50 else ("🟡" if _conf_pct < 80 else "🟢")
                 st.progress(_conf, text=f"{_color} Confidence: {_conf_pct:.0f}%")
 
-            # Confirmation / cancel panel
-            _render_confirm_panel()
-
-            # Command cheat sheet
-            with st.expander("📋 Voice Command Cheat Sheet", expanded=False):
-                _cheat = command_cheat_sheet()
-                for row in _cheat:
-                    st.markdown(f"- **{row['example']}** — {row['description']}")
-            
             # Debug expander
             with st.expander("🔍 Voice Debug", expanded=False):
                 st.markdown("**Recent Voice Events**")
@@ -2113,35 +2534,74 @@ if st.session_state.voice_scoring_enabled:
                     st.session_state.voice_event_log = []
                     st.rerun()
 
+        # Confirmation / cancel panel (always visible when voice scoring is enabled)
+        if st.session_state.voice_scoring_enabled:
+            _render_confirm_panel()
+
+        # Debug voice panel (developer helper)
+        if st.session_state.voice_scoring_enabled:
+            with st.expander("🔧 Debug Voice Pipeline", expanded=False):
+                _debug_col1, _debug_col2 = st.columns(2)
+                with _debug_col1:
+                    _debug_transcript = st.text_input(
+                        "Debug transcript",
+                        key="voice_debug_transcript",
+                        placeholder="e.g. point red, point blue, undo",
+                    )
+                with _debug_col2:
+                    if st.button("Process debug command", key="voice_debug_process_btn", use_container_width=True):
+                        if _debug_transcript.strip():
+                            _debug_result = _process_voice_transcript(
+                                _debug_transcript.strip(),
+                                source="debug",
+                            )
+                            st.session_state["_voice_debug_last_result"] = _debug_result
+                            st.rerun()
+                        else:
+                            st.warning("Enter a transcript first.")
+
+                _last_debug = st.session_state.get("_voice_debug_last_result")
+                if _last_debug:
+                    st.markdown("**Last debug result**")
+                    st.json({
+                        "success": _last_debug.get("success"),
+                        "reason": _last_debug.get("reason"),
+                        "previous_score": _last_debug.get("previous_score"),
+                        "new_score": _last_debug.get("new_score"),
+                        "intent": _last_debug.get("parsed").intent if _last_debug.get("parsed") else None,
+                        "confidence": _last_debug.get("parsed").confidence if _last_debug.get("parsed") else None,
+                        "rerun_requested": bool(st.session_state.get(_VOICE_RERUN_KEY)),
+                    })
+
         # =====================================================================
         # Phase 9: Admin / Observability Screen
         # =====================================================================
-            with st.expander("📊 Voice Observability & Operations", expanded=False):
-                st.caption(
-                    "Structured audit log for voice scoring events. "
-                    "Gated by VOICE_DEBUG_EVENTS; exportable per match."
-                )
-                event_logger = st.session_state.get("voice_event_logger")
-                if event_logger is None:
-                    st.caption("Event logger not initialized.")
+        with st.expander("📊 Voice Observability & Operations", expanded=False):
+            st.caption(
+                "Structured audit log for voice scoring events. "
+                "Gated by VOICE_DEBUG_EVENTS; exportable per match."
+            )
+            event_logger = st.session_state.get("voice_event_logger")
+            if event_logger is None:
+                st.caption("Event logger not initialized.")
+            else:
+                recent_events = event_logger.recent(limit=50)
+                if recent_events:
+                    st.markdown(f"**Recent events (showing {len(recent_events)} of {len(event_logger._events)} retained)**")
+                    for i, entry in enumerate(reversed(recent_events), 1):
+                        status_icon = "✅" if entry.get("accepted") else "❌"
+                        note = entry.get("note", "")
+                        st.markdown(
+                            f"{status_icon} **{entry.get('event_type', '?')}** "
+                            f"`{entry.get('previous_score', '?')}` → `{entry.get('new_score', '?')}` "
+                            f"| conf: {entry.get('confidence', 0):.0%} "
+                            f"| speaker: {entry.get('speaker_label', '—')} "
+                            f"| {note}"
+                        )
+                        with st.popover("Details"):
+                            st.json(entry)
                 else:
-                    recent_events = event_logger.recent(limit=50)
-                    if recent_events:
-                        st.markdown(f"**Recent events (showing {len(recent_events)} of {len(event_logger._events)} retained)**")
-                        for i, entry in enumerate(reversed(recent_events), 1):
-                            status_icon = "✅" if entry.get("accepted") else "❌"
-                            note = entry.get("note", "")
-                            st.markdown(
-                                f"{status_icon} **{entry.get('event_type', '?')}** "
-                                f"`{entry.get('previous_score', '?')}` → `{entry.get('new_score', '?')}` "
-                                f"| conf: {entry.get('confidence', 0):.0%} "
-                                f"| speaker: {entry.get('speaker_label', '—')} "
-                                f"| {note}"
-                            )
-                            with st.popover("Details"):
-                                st.json(entry)
-                    else:
-                        st.caption("No events recorded yet. Enable VOICE_DEBUG_EVENTS to start logging.")
+                    st.caption("No events recorded yet. Enable VOICE_DEBUG_EVENTS to start logging.")
     
                     col_export, col_clear, col_info = st.columns(3)
                     with col_export:
@@ -2165,11 +2625,6 @@ if st.session_state.voice_scoring_enabled:
                             st.rerun()
                     with col_info:
                         st.caption(f"Retention: {VOICE_RETENTION_DAYS} days (0 = delete immediately)")
-        else:
-            # Not listening - show stopped state
-            if st.session_state.voice_webrtc_ctx and st.session_state.voice_webrtc_ctx.get("processor"):
-                st.session_state.voice_webrtc_ctx["processor"].stop()
-            st.caption("Click 'Start Listening' to begin voice scoring.")
 
 # ============================================================================
 # Process voice events AFTER WebRTC streamer is set up
@@ -2187,7 +2642,13 @@ st.subheader("🎤 Voice Input")
 if st.session_state.voice_scoring_enabled:
     audio_file = st.audio_input("🎙️ Push to Talk", key="voice_push_to_talk_input")
     if audio_file is not None:
-        event = _process_push_to_talk_audio(audio_file)
+        _file_fingerprint = getattr(audio_file, "name", "") + str(getattr(audio_file, "size", 0))
+        _cached_event = st.session_state.get("_voice_p2p_cache", {}).get(_file_fingerprint)
+        if _cached_event is None:
+            _cached_event = _process_push_to_talk_audio(audio_file)
+            if _cached_event is not None:
+                st.session_state.setdefault("_voice_p2p_cache", {})[_file_fingerprint] = _cached_event
+        event = _cached_event
         if event is not None:
             st.session_state.last_voice_transcript = event.raw_text
             st.session_state.last_voice_event = event
@@ -2197,21 +2658,23 @@ if st.session_state.voice_scoring_enabled:
             else:
                 st.success(f"🎤 Parsed: {event.type} (confidence: {event.confidence:.0%})")
 
-# Real-time mode controls
-col_mode1, col_mode2 = st.columns(2)
-with col_mode1:
-    if st.button("🎙️ Start Continuous", key="push_to_talk_btn", use_container_width=True, type="primary"):
-        st.session_state.listening = True
-        st.session_state.realtime_mode = False
-with col_mode2:
-    if st.button("🔴 Continuous Mode", key="continuous_mode_btn", use_container_width=True):
-        st.session_state.realtime_mode = True
-        st.session_state.listening = True
+# Legacy real-time mode controls (deprecated — use continuous listening expander above).
+with st.expander("⚙️ Legacy Audio Controls", expanded=False):
+    st.caption("These controls are deprecated. Use the continuous listening expander above for WebRTC mode.")
+    col_mode1, col_mode2 = st.columns(2)
+    with col_mode1:
+        if st.button("🎙️ Start Continuous", key="push_to_talk_btn", use_container_width=True, type="primary"):
+            st.session_state.listening = True
+            st.session_state.realtime_mode = False
+    with col_mode2:
+        if st.button("🔴 Continuous Mode", key="continuous_mode_btn", use_container_width=True):
+            st.session_state.realtime_mode = True
+            st.session_state.listening = True
 
-# Audio level indicator (for continuous mode)
-if st.session_state.realtime_mode:
-    st.progress(st.session_state.get('audio_level', 0.0), text="Audio Level")
-    st.caption("Listening continuously... Speak clearly into your microphone.")
+    # Audio level indicator (for continuous mode)
+    if st.session_state.realtime_mode:
+        st.progress(st.session_state.get('audio_level', 0.0), text="Audio Level")
+        st.caption("Listening continuously... Speak clearly into your microphone.")
 
 # ============================================================================
 # Dataset Recorder Panel (Phase 4)
@@ -2515,6 +2978,79 @@ if st.session_state.last_feedback:
 
 # Render pending commentary (speech + text preview)
 render_pending_commentary()
+
+# ============================================================================
+# Phase 4: Match Summary, Export, and Announcements
+# ============================================================================
+st.divider()
+st.subheader("📊 Match Analytics")
+
+_match_id = st.session_state.get("voice_selected_match_id")
+if _match_id:
+    col_sum, col_exp = st.columns(2)
+    with col_sum:
+        if st.button("📋 Generate Summary", key="generate_summary_btn", use_container_width=True):
+            from tournament_platform.app.services.voice.match_summary import MatchSummaryService
+            service = MatchSummaryService()
+            _meta = {
+                "players": [
+                    st.session_state.voice_selected_player1_name or "Player A",
+                    st.session_state.voice_selected_player2_name or "Player B",
+                ],
+                "tournament": "Current Tournament",
+                "score": st.session_state.match_manager.state.get_score_string(),
+                "winner": (
+                    st.session_state.match_manager.state.player_a
+                    if st.session_state.match_manager.engine.games_won_a
+                    > st.session_state.match_manager.engine.games_won_b
+                    else st.session_state.match_manager.state.player_b
+                ),
+            }
+            _summary = service.generate_match_summary(_match_id, _meta)
+            st.session_state.voice_match_summary = _summary
+            st.rerun()
+    with col_exp:
+        if st.button("📤 Export Report", key="export_report_btn", use_container_width=True):
+            from tournament_platform.app.services.voice.report_exporter import MatchReportExporter
+            exporter = MatchReportExporter()
+            _meta = {
+                "players": [
+                    st.session_state.voice_selected_player1_name or "Player A",
+                    st.session_state.voice_selected_player2_name or "Player B",
+                ],
+                "tournament": "Current Tournament",
+                "score": st.session_state.match_manager.state.get_score_string(),
+                "winner": (
+                    st.session_state.match_manager.state.player_a
+                    if st.session_state.match_manager.engine.games_won_a
+                    > st.session_state.match_manager.engine.games_won_b
+                    else st.session_state.match_manager.state.player_b
+                ),
+            }
+            _report = exporter.export_match_report(_match_id, _meta, include_summary=True, include_commentary=False)
+            timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+            st.download_button(
+                label=f"Download report_{timestamp}.md",
+                data=_report,
+                file_name=f"match_report_{_match_id}_{timestamp}.md",
+                mime="text/markdown",
+                key="download_match_report",
+            )
+
+    if "voice_match_summary" in st.session_state:
+        _s = st.session_state.voice_match_summary
+        st.markdown(f"**Summary:** {_s.winner} wins {_s.final_score}")
+        if _s.llm_text:
+            st.caption(_s.llm_text)
+
+# Announcements toggle
+st.divider()
+st.subheader("📢 Announcements")
+_ann_enabled = st.toggle("Enable automatic announcements", value=False, key="voice_announcements_toggle")
+if _ann_enabled:
+    st.caption("Automatic match/game announcements are enabled.")
+
+_maybe_voice_rerun()
 
 # Instructions
 st.divider()

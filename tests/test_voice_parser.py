@@ -297,9 +297,9 @@ class TestVoiceParser:
         event = parser.parse("stop listening")
         assert event.type == "unknown"
 
-    def test_parse_repeat_returns_unknown(self, parser):
+    def test_parse_repeat_returns_access_repeat(self, parser):
         event = parser.parse("repeat")
-        assert event.type == "unknown"
+        assert event.type == "access_repeat"
 
 
 class TestColorAliases:
@@ -349,3 +349,62 @@ class TestColorAliases:
         event = parser.parse("blue")
         assert event.confidence == 0.85
         assert event.type == "increment"
+
+
+# ============================================================================
+# Golden transcript corpus (Phase 1 regression guard)
+# ============================================================================
+
+# (transcript, expected_event_type, expected_slots_or_None)
+GOLDEN_TRANSCRIPTS = [
+    ("point red", "increment", {"player": "B"}),
+    ("point blue", "increment", {"player": "A"}),
+    ("red point", "increment", {"player": "B"}),
+    ("blue scores", "increment", {"player": "A"}),
+    ("score five four", "set_score", {"score_a": 5, "score_b": 4}),
+    ("set score 5 4", "set_score", {"score_a": 5, "score_b": 4}),
+    ("deuce", "set_score", {"score_a": 10, "score_b": 10}),  # allowed at 10-10
+    ("undo last point", "undo", {}),
+    ("confirm", "confirm", {}),
+    ("cancel", "cancel", {}),
+    ("repeat score", "repeat", {}),
+    ("what's the score", "repeat", {}),
+    ("start match", "start_match", {}),
+    ("pause", "pause_match", {}),
+    ("resume", "resume_match", {}),
+    ("next game", "start_next_game", {}),
+    ("end game", "end_game", {}),
+    ("timeout", "timeout_start", {}),
+    ("end timeout", "timeout_end", {}),
+    ("player one serves", "set_server", {"player": "A"}),
+    ("player two serves", "set_server", {"player": "B"}),
+    # Misheard / noisy examples (should be unknown)
+    ("hello world", "unknown", None),
+    ("play tennis", "unknown", None),
+    ("nice shot", "unknown", None),
+    ("right point", "unknown", None),
+]
+
+
+class TestGoldenTranscripts:
+    """Regression guard: golden command corpus."""
+
+    @pytest.mark.parametrize(
+        "transcript,expected_type,expected_slots",
+        GOLDEN_TRANSCRIPTS,
+    )
+    def test_golden_transcript(self, parser, transcript, expected_type, expected_slots):
+        extra_kwargs = {}
+        if transcript == "deuce":
+            extra_kwargs = {"current_score_a": 10, "current_score_b": 10}
+        event = parser.parse(transcript, **extra_kwargs)
+        assert event.type == expected_type, f"Failed for: {transcript}"
+        if expected_slots is not None:
+            slot_map = {
+                "player": "player",
+                "score_a": "score_a",
+                "score_b": "score_b",
+            }
+            for key, value in expected_slots.items():
+                attr = slot_map.get(key, key)
+                assert getattr(event, attr) == value, f"Slot mismatch for: {transcript}"

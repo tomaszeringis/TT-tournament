@@ -543,6 +543,31 @@ def render_public_board() -> None:
             db.close()
 
     # -------------------------------------------------------------------------
+    # Spectator Commentary Section
+    # -------------------------------------------------------------------------
+    st.divider()
+    st.subheader("🔊 Spectator Commentary")
+
+    try:
+        from tournament_platform.app.services.voice.event_log import VoiceEventRepository
+        commentary_events = VoiceEventRepository.get_by_match(
+            match_id=current_matches[0].get("match_id") if current_matches else 0,
+            limit=10,
+        )
+        commentary_texts = [
+            e.raw_transcript for e in commentary_events
+            if e.raw_transcript and e.status == "accepted"
+        ][:3]
+    except Exception:
+        commentary_texts = []
+
+    if commentary_texts:
+        for text in commentary_texts:
+            st.caption(f"🔊 {text}")
+    else:
+        st.caption("No commentary available yet.")
+
+    # -------------------------------------------------------------------------
     # Announcements Section
     # -------------------------------------------------------------------------
     st.divider()

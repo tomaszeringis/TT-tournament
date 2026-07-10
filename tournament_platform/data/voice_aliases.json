@@ -1,0 +1,12 @@
+{
+  "en": {
+    "point red": ["point red", "red point"],
+    "undo": ["undo", "take back"],
+    "score point": ["point to player one", "point to player two", "player one scores", "player two scores"]
+  },
+  "lt": {
+    "point red": ["taškas raudona", "raudona taškas"],
+    "undo": ["atgal", "atšaukti"],
+    "score point": ["taškas pirmam", "taškas antram"]
+  }
+}

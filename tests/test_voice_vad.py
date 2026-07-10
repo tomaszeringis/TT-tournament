@@ -102,17 +102,15 @@ class TestCreateVad:
             vad = create_vad(prefer="webrtcvad")
             assert isinstance(vad, AmplitudeVAD)
 
-    def test_prefer_silero_falls_back(self):
+    def test_prefer_silero_falls_back_to_amplitude(self):
         mock_vad = MagicMock()
         with patch.dict(sys.modules, {"silero_vad": None, "webrtcvad": MagicMock(Vad=MagicMock(return_value=mock_vad))}):
             vad = create_vad(prefer="silero")
-            assert isinstance(vad, WebRTCVAD)
+            assert isinstance(vad, AmplitudeVAD)
 
-    def test_auto_select_webrtcvad(self):
-        mock_vad = MagicMock()
-        with patch.dict(sys.modules, {"webrtcvad": MagicMock(Vad=MagicMock(return_value=mock_vad))}):
-            vad = create_vad()
-            assert isinstance(vad, WebRTCVAD)
+    def test_auto_select_amplitude_vad(self):
+        vad = create_vad()
+        assert isinstance(vad, AmplitudeVAD)
 
     def test_auto_select_amplitude_when_none_available(self):
         with patch.dict(sys.modules, {"webrtcvad": None, "silero_vad": None}):

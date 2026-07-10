@@ -54,6 +54,7 @@ Provides-Extra: live
 Requires-Dist: streamlit-webrtc>=0.45.0; extra == "live"
 Requires-Dist: av>=12.0.0; extra == "live"
 Requires-Dist: numpy>=1.24.0; extra == "live"
+Requires-Dist: vosk>=0.3.45; extra == "live"
 Provides-Extra: speech
 Requires-Dist: speechbrain>=1.0.0; extra == "speech"
 Requires-Dist: torch>=2.0.0; extra == "speech"

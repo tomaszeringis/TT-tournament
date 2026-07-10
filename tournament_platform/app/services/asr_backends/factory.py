@@ -12,6 +12,7 @@ from typing import Optional
 
 from tournament_platform.app.services.asr_backends.base import ASRBackend, BackendStatus
 from tournament_platform.app.services.asr_backends.faster_whisper_backend import FasterWhisperBackend
+from tournament_platform.app.services.asr_backends.vosk_adapter import VoskGrammarASR
 from tournament_platform.app.services.voice_vocab import VoiceVocabulary
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ except Exception:
     pass
 
 _BACKENDS["faster_whisper"] = FasterWhisperBackend
+_BACKENDS["vosk"] = VoskGrammarASR
 
 
 class ASRBackendFactory:

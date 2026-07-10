@@ -37,45 +37,64 @@ class AudioChunk:
     def to_pcm_bytes(self) -> bytes:
         """
         Convert accumulated frames to mono PCM 16kHz int16 bytes.
-        
-        Returns:
-            Mono PCM 16kHz audio as bytes suitable for faster-whisper.
+
+        Decodes all frames, mixes stereo to mono, resamples to 16 kHz if
+        needed, and produces int16 output suitable for faster-whisper.
+        Falls back to numpy interp if av resampling is unavailable.
         """
         if not self.frames:
             return b""
 
-        # Decode all frames to numpy arrays, handling both int16 and float32
+        # Decode all frames to float32 arrays, handling both int16 and float32
         arrays = []
         for frame_bytes in self.frames:
+            if not frame_bytes:
+                continue
             if self.sample_format == SAMPLE_FORMAT_INT16:
                 audio = np.frombuffer(frame_bytes, dtype=np.int16)
-                # Convert int16 [-32768, 32767] to float32 [-1, 1] for processing
+                if len(audio) == 0:
+                    continue
                 audio = audio.astype(np.float32) / 32768.0
             else:
                 audio = np.frombuffer(frame_bytes, dtype=np.float32)
+                if len(audio) == 0:
+                    continue
             arrays.append(audio)
 
         if not arrays:
             return b""
 
-        # Concatenate all audio
         combined = np.concatenate(arrays)
 
         # Convert to mono if stereo
-        if self.channels == 2:
+        if self.channels == 2 and len(combined) % 2 == 0:
             combined = combined.reshape(-1, 2).mean(axis=1)
 
-        # Resample to 16kHz if needed
-        target_rate = 16000
-        if self.sample_rate != target_rate:
-            # Simple linear interpolation resampling
+        # Resample to 16 kHz if needed; prefer av for quality/parity with
+        # the push-to-talk path, fall back to numpy if av is unavailable.
+        if self.sample_rate != 16000 and len(combined) > 0:
+            try:
+                import av
+
+                ndarray = combined.reshape(1, -1).astype(np.float32)
+                frame = av.AudioFrame.from_ndarray(ndarray, format="flt", layout="mono")
+                frame.rate = self.sample_rate
+                resampler = av.AudioResampler(format="s16", layout="mono", rate=16000)
+                resampled = resampler.resample(frame)
+                out = b"".join(f.to_ndarray().tobytes() for f in resampled)
+                if out:
+                    return out
+            except Exception:
+                pass
+
             duration = len(combined) / self.sample_rate
-            target_length = int(duration * target_rate)
-            indices = np.linspace(0, len(combined) - 1, target_length)
-            combined = np.interp(indices, np.arange(len(combined)), combined)
+            target_len = int(duration * 16000)
+            if target_len > 0:
+                indices = np.linspace(0, len(combined) - 1, target_len)
+                combined = np.interp(indices, np.arange(len(combined)), combined)
 
         # Convert float32 [-1, 1] to int16 [-32768, 32767]
-        int16_audio = (combined * 32767).astype(np.int16)
+        int16_audio = np.clip(combined * 32767, -32768, 32767).astype(np.int16)
         return int16_audio.tobytes()
 
 
@@ -93,8 +112,8 @@ class VoiceAudioBuffer:
         channels: int = 2,
         silence_threshold: float = 0.01,
         min_speech_duration_ms: float = 300.0,
-        max_chunk_duration_ms: float = 3000.0,
-        silence_duration_ms: float = 500.0,
+        max_chunk_duration_ms: float = 2000.0,
+        silence_duration_ms: float = 400.0,
         noise_gate_rms: float = 0.0,
         sample_format: str = SAMPLE_FORMAT_FLOAT32,
         vad: Optional["VoiceActivityDetector"] = None,
@@ -212,7 +231,11 @@ class VoiceAudioBuffer:
             self._buffer.append(frame_bytes)
             
             # Estimate total samples (approximate from frame size)
-            self._total_samples += len(frame_bytes) // (4 * self.channels)
+            if self.sample_format == SAMPLE_FORMAT_INT16:
+                bytes_per_sample = 2
+            else:
+                bytes_per_sample = 4  # float32
+            self._total_samples += len(frame_bytes) // (bytes_per_sample * self.channels)
             
             # Update last speech time if this frame contains speech
             if is_speech:
