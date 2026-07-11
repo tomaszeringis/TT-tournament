@@ -4,9 +4,14 @@ import streamlit_authenticator as stauth
 import yaml
 
 from tournament_platform.config import settings
-from tournament_platform.app.design_system import GLOBAL_STYLES
+from tournament_platform.app.design_system import GLOBAL_STYLES, BRAND
+from tournament_platform.app.components.tour import render_tour_dialog
 
-st.set_page_config(page_title="TT Platform", layout="wide")
+st.set_page_config(
+    page_title=f"{BRAND['name']} Tournament Platform",
+    page_icon=BRAND["favicon"],
+    layout="wide",
+)
 
 # Apply global design system styles
 st.markdown(GLOBAL_STYLES, unsafe_allow_html=True)
@@ -54,7 +59,7 @@ if authentication_status:
     except Exception:
         pass
     
-    st.title("TT Platform")
+    st.title(f"{BRAND['name']} Tournament Platform")
     st.space("medium")
     
     # Multi-page navigation using st.navigation (Streamlit 1.35+)
@@ -80,11 +85,11 @@ if authentication_status:
         st.Page(os.path.join(app_dir, "pages", "ai_assistant.py"), title="AI Assistant (Experimental)", icon="🤖"),
     ]
 
-    # Admin (only for admin users)
+    # Admin (visible to admin and operator users)
     admin_pages = []
-    if user_role == "admin":
+    if user_role in ("admin", "operator"):
         admin_pages.append(
-            st.Page(os.path.join(app_dir, "pages", "admin.py"), title="Admin", icon="👨\u200d💼")
+            st.Page(os.path.join(app_dir, "pages", "admin.py"), title="Admin / Operator", icon="👨\u200d💼")
         )
 
     # Experimental extras (kept behind debug flag)
@@ -112,7 +117,23 @@ if authentication_status:
 
     # Show user info and logout button in sidebar
     with st.sidebar:
-        st.divider()
+        # Brand logo + tagline lockup (placeholder paths, see assets/brand/README.md)
+        st.markdown(
+            f"""
+            <div style="padding: 0.5rem 0.25rem 0.75rem; margin-bottom: 0.5rem;">
+                <img
+                    src="{BRAND['logo_dark']}"
+                    alt="{BRAND['name']}"
+                    style="height: 28px; width: auto;"
+                    onerror="this.style.display='none'; this.insertAdjacentHTML('afterend', '<span style=&quot;font-weight:900; font-size:20px; letter-spacing:2px; color:#FFFFFF;&quot;>{BRAND['name']}</span>');"
+                />
+                <br/>
+                <small style="opacity:0.7; font-size:10px; color:#B0B3B8;">{BRAND['tagline']}</small>
+            </div>
+            <hr style="border: none; border-top: 1px solid #333436; margin: 0 0 0.75rem;" />
+            """,
+            unsafe_allow_html=True,
+        )
         st.markdown(f"**Logged in as:** {name or username}")
         st.markdown(f"**Role:** {user_role}")
         st.divider()

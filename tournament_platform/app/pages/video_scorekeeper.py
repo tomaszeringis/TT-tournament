@@ -8,8 +8,13 @@ A human-in-the-loop score assistant that:
 """
 
 import streamlit as st
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 
-st.set_page_config(page_title="Video Scorekeeper - TT Platform", layout="wide")
+from tournament_platform.app.design_system import apply_global_styles
+from tournament_platform.app.components.tour import render_tour
+
+st.set_page_config(page_title="LIT_IT Video Scorekeeper", layout="wide")
+apply_global_styles()
 import tempfile
 import os
 from typing import Optional, List, Dict
@@ -311,7 +316,9 @@ def render_current_score() -> None:
 # Page UI
 # ============================================================================
 
-st.title("Video Scorekeeper")
+st.title("LIT_IT Video Scorekeeper")
+if get_script_run_ctx() is not None:
+    render_tour("video_scorekeeper")
 st.caption("AI-assisted point suggestions with human confirmation. Upload a video to get started.")
 
 # Active Tournament Match Selector

@@ -6,7 +6,10 @@ This module provides real-time video analysis for Phase 4.
 
 import streamlit as st
 
-st.set_page_config(page_title="Video Scorekeeper Live - TT Platform", layout="wide")
+from tournament_platform.app.design_system import apply_global_styles
+
+st.set_page_config(page_title="LIT_IT Video Scorekeeper Live", layout="wide")
+apply_global_styles()
 from typing import Optional
 
 from tournament_platform.services.video_scorekeeper import (

@@ -15,6 +15,8 @@ from tournament_platform.services.tournament_read_models import (
     list_tournaments,
     get_public_schedule,
 )
+from tournament_platform.app.design_system import apply_global_styles
+from tournament_platform.app.components.tour import render_tour
 
 
 @st.cache_data(ttl=60, show_spinner="Loading tournaments...")
@@ -37,65 +39,25 @@ def load_schedule(tournament_id: int) -> List[Dict[str, Any]]:
         db.close()
 
 
-def render_schedule_board() -> None:
-    """Render the schedule/calendar board page."""
-    st.set_page_config(
-        page_title="Schedule Board",
-        page_icon="📅",
-        layout="wide",
-    )
+def render_schedule_tab(tournament_id: int, start_date, days_ahead: int) -> None:
+    """Render the schedule/calendar board content for a tournament.
 
-    st.title("Schedule Board")
-    st.caption("View and plan tournament matches by date/time")
-
-    # Load tournaments
-    try:
-        tournaments = load_tournaments()
-    except Exception as e:
-        st.error(f"Failed to load tournaments: {e}")
-        st.stop()
-
-    if not tournaments:
-        st.info("No tournaments found. Create a tournament first.")
-        st.stop()
-
-    # Tournament selector
-    tournament_options = {t["name"]: t["id"] for t in tournaments}
-    selected_name = st.selectbox(
-        "Select Tournament",
-        options=list(tournament_options.keys()),
-        index=0,
-        key="schedule_tournament_select",
-    )
-    selected_id = tournament_options[selected_name]
-
-    # Date range selector
-    col1, col2 = st.columns(2)
-    with col1:
-        start_date = st.date_input(
-            "Start Date",
-            value=datetime.now(timezone.utc).date(),
-            key="schedule_start_date",
-        )
-    with col2:
-        days_ahead = st.number_input(
-            "Days to Show",
-            min_value=1,
-            max_value=30,
-            value=7,
-            key="schedule_days_ahead",
-        )
+    This is a ``set_page_config``-free renderer suitable for embedding inside
+    other pages (e.g. as an Admin tab). It expects the caller to provide the
+    tournament id and date-range parameters.
+    """
+    selected_id = tournament_id
 
     # Load schedule
     try:
         matches = load_schedule(selected_id)
     except Exception as e:
         st.error(f"Failed to load schedule: {e}")
-        st.stop()
+        return
 
     if not matches:
         st.info("No matches scheduled yet. Generate a tournament bracket first.")
-        st.stop()
+        return
 
     # Filter matches by date range
     end_date = start_date + timedelta(days=days_ahead)
@@ -112,7 +74,7 @@ def render_schedule_board() -> None:
 
     if not filtered_matches:
         st.info(f"No matches scheduled between {start_date} and {end_date}.")
-        st.stop()
+        return
 
     # Group matches by date
     matches_by_date: Dict[str, List[Dict[str, Any]]] = {}
@@ -179,7 +141,7 @@ def render_schedule_board() -> None:
     st.divider()
     st.subheader("📤 Export Schedule")
 
-    if st.button("Download as CSV"):
+    if st.button("Download as CSV", key=f"schedule_download_csv_{selected_id}"):
         # Create CSV data
         csv_data = []
         for m in filtered_matches:
@@ -197,9 +159,71 @@ def render_schedule_board() -> None:
         st.download_button(
             label="Download CSV",
             data=csv,
-            file_name=f"{selected_name.replace(' ', '_')}_schedule.csv",
+            file_name=f"tournament_{selected_id}_schedule.csv",
             mime="text/csv",
+            key=f"schedule_download_csv_btn_{selected_id}",
         )
+
+
+def render_schedule_board() -> None:
+    """Render the standalone schedule/calendar board page.
+
+    Thin wrapper that owns ``set_page_config`` + the tournament selector and
+    delegates the actual rendering to :func:`render_schedule_tab`. Retained so
+    the module stays runnable as a standalone page / deep-link even though it is
+    no longer registered in the navigation.
+    """
+    st.set_page_config(
+        page_title="LIT_IT Schedule Board",
+        page_icon="📅",
+        layout="wide",
+    )
+
+    apply_global_styles()
+
+    st.title("📅 LIT_IT Schedule Board")
+    render_tour("schedule_board")
+    st.caption("View and plan tournament matches by date/time")
+
+    # Load tournaments
+    try:
+        tournaments = load_tournaments()
+    except Exception as e:
+        st.error(f"Failed to load tournaments: {e}")
+        st.stop()
+
+    if not tournaments:
+        st.info("No tournaments found. Create a tournament first.")
+        st.stop()
+
+    # Tournament selector
+    tournament_options = {t["name"]: t["id"] for t in tournaments}
+    selected_name = st.selectbox(
+        "Select Tournament",
+        options=list(tournament_options.keys()),
+        index=0,
+        key="schedule_tournament_select",
+    )
+    selected_id = tournament_options[selected_name]
+
+    # Date range selector
+    col1, col2 = st.columns(2)
+    with col1:
+        start_date = st.date_input(
+            "Start Date",
+            value=datetime.now(timezone.utc).date(),
+            key="schedule_start_date",
+        )
+    with col2:
+        days_ahead = st.number_input(
+            "Days to Show",
+            min_value=1,
+            max_value=30,
+            value=7,
+            key="schedule_days_ahead",
+        )
+
+    render_schedule_tab(selected_id, start_date, days_ahead)
 
 
 if __name__ == "__main__":

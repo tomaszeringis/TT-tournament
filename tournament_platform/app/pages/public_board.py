@@ -19,6 +19,17 @@ from tournament_platform.services.tournament_read_models import (
     get_public_rankings,
 )
 from tournament_platform.app.components.player_path import render_player_path
+from tournament_platform.app.design_system import (
+    COLORS,
+    BRAND,
+    apply_global_styles,
+    render_litit_match_card,
+    render_litit_coming_up_card,
+    render_litit_delayed_card,
+    render_litit_announcement_card,
+    render_litit_result_row,
+)
+from tournament_platform.app.components.tour import render_tour
 
 
 def is_kiosk_mode() -> bool:
@@ -159,130 +170,17 @@ def load_announcements(limit: int = 10) -> List[Dict[str, Any]]:
 
 def render_match_card(match: Dict[str, Any], label: str = "Match") -> None:
     """Render a large match card for TV/projector display."""
-    p1 = match.get("player1") or "TBD"
-    p2 = match.get("player2") or "TBD"
-    score = match.get("score") or "vs"
-    winner = match.get("winner") or "Pending"
-    status = match.get("status") or "pending"
-    call_status = match.get("call_status") or "not_called"
-    location = match.get("location") or "No table"
-    round_num = match.get("round_number")
-
-    # Determine status color
-    if status == "completed":
-        status_icon = "🟢"
-        border_color = "#4CAF50"
-    elif call_status == "active":
-        status_icon = "🔴"
-        border_color = "#f44336"
-    elif call_status == "called":
-        status_icon = "🟡"
-        border_color = "#FFC107"
-    else:
-        status_icon = "🔵"
-        border_color = "#2196F3"
-
-    # Build round label
-    round_str = f"Round {round_num}" if round_num else ""
-    table_str = f"Table {location}" if location and location != "No table" else "No table"
-    label_str = " · ".join([x for x in [round_str, table_str] if x])
-
-    st.markdown(
-        f"""
-        <div style="
-            border: 3px solid {border_color};
-            border-radius: 12px;
-            padding: 20px;
-            margin: 10px 0;
-            background-color: #1e1e1e;
-        ">
-            <div style="text-align: center; font-size: 14px; color: #aaa; margin-bottom: 8px;">
-                {status_icon} {label} &nbsp;|&nbsp; {label_str}
-            </div>
-            <div style="display: flex; justify-content: space-around; align-items: center;">
-                <div style="text-align: center; flex: 1;">
-                    <div style="font-size: 28px; font-weight: bold; color: #fff;">
-                        {p1}
-                    </div>
-                    <div style="font-size: 48px; font-weight: bold; color: {'#4CAF50' if winner == p1 else '#fff'};">
-                        {score.split('-')[0] if '-' in score else score}
-                    </div>
-                </div>
-                <div style="font-size: 36px; color: #888; padding: 0 20px;">VS</div>
-                <div style="text-align: center; flex: 1;">
-                    <div style="font-size: 28px; font-weight: bold; color: #fff;">
-                        {p2}
-                    </div>
-                    <div style="font-size: 48px; font-weight: bold; color: {'#4CAF50' if winner == p2 else '#fff'};">
-                        {score.split('-')[1] if '-' in score else score}
-                    </div>
-                </div>
-            </div>
-            <div style="text-align: center; font-size: 16px; color: #aaa; margin-top: 8px;">
-                Winner: {winner}
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    render_litit_match_card(match, label=label)
 
 
 def render_coming_up_card(match: Dict[str, Any]) -> None:
     """Render a smaller card for coming up matches."""
-    p1 = match.get("player1") or "TBD"
-    p2 = match.get("player2") or "TBD"
-    location = match.get("location") or "No table"
-    round_num = match.get("round_number")
-    scheduled = match.get("scheduled_time")
-    time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
-
-    st.markdown(
-        f"""
-        <div style="
-            border: 2px solid #2196F3;
-            border-radius: 8px;
-            padding: 12px;
-            margin: 8px 0;
-            background-color: #1e1e1e;
-        ">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span style="color: #aaa; font-size: 12px;">{time_str} · Table {location}</span>
-                <span style="font-size: 14px;"><b>{p1}</b> vs <b>{p2}</b></span>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    render_litit_coming_up_card(match)
 
 
 def render_delayed_card(match: Dict[str, Any]) -> None:
     """Render a card for delayed matches."""
-    p1 = match.get("player1") or "TBD"
-    p2 = match.get("player2") or "TBD"
-    location = match.get("location") or "No table"
-    operator_note = match.get("operator_note") or ""
-    scheduled = match.get("scheduled_time")
-    time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
-
-    st.markdown(
-        f"""
-        <div style="
-            border: 2px solid #FF9800;
-            border-radius: 8px;
-            padding: 12px;
-            margin: 8px 0;
-            background-color: #1e1e1e;
-        ">
-            <div style="font-size: 14px; color: #FF9800; margin-bottom: 4px;">
-                ⏸️ DELAYED
-            </div>
-            <div style="font-size: 16px;"><b>{p1}</b> vs <b>{p2}</b></div>
-            <div style="color: #aaa; font-size: 12px;">Table: {location} | Scheduled: {time_str}</div>
-            {f'<div style="color: #888; font-size: 12px; margin-top: 4px;">Note: {operator_note}</div>' if operator_note else ''}
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    render_litit_delayed_card(match)
 
 
 def render_public_board() -> None:
@@ -291,11 +189,14 @@ def render_public_board() -> None:
     kiosk = is_kiosk_mode()
     
     st.set_page_config(
-        page_title="Tournament Board",
-        page_icon="🏆",
+        page_title=f"{BRAND['name']} Tournament Board",
+        page_icon=BRAND["favicon"],
         layout="wide",
         initial_sidebar_state="collapsed" if kiosk else "expanded",
     )
+
+    # Inject LitIT brand theme styles
+    apply_global_styles()
 
     # Kiosk mode styling - hide sidebar and footer for clean TV display
     if kiosk:
@@ -314,9 +215,10 @@ def render_public_board() -> None:
     # Title with timestamp
     now = datetime.now(timezone.utc)
     st.markdown(
-        f"<h1 style='text-align: center;'>🏆 Public Tournament Board</h1>",
+        f"<h1 style='text-align: center;'>🏆 {BRAND['name']} Tournament Board</h1>",
         unsafe_allow_html=True,
     )
+    render_tour("public_board")
     st.caption(f"Last updated: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
     # Kiosk mode toggle in sidebar (only when not in kiosk mode)
@@ -426,7 +328,7 @@ def render_public_board() -> None:
                     mins = int(diff.total_seconds() // 60)
                     secs = int(diff.total_seconds() % 60)
                     st.markdown(
-                        f"<div style='text-align: center; font-size: 24px; color: #4CAF50; margin: 10px 0;'>"
+                        f"<div style='text-align: center; font-size: 24px; color: {COLORS['accent_green']}; margin: 10px 0;'>"
                         f"⏰ Next match in: {mins}m {secs}s"
                         f"</div>",
                         unsafe_allow_html=True,
@@ -497,24 +399,7 @@ def render_public_board() -> None:
             scheduled = m.get("scheduled_time")
             time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
 
-            st.markdown(
-                f"""
-                <div style="
-                    display: flex;
-                    justify-content: space-between;
-                    align-items: center;
-                    padding: 10px 16px;
-                    border-bottom: 1px solid #333;
-                ">
-                    <span style="color: #aaa; font-size: 14px;">{time_str}</span>
-                    <span style="flex: 1; text-align: center; font-size: 18px;">
-                        <b>{p1}</b> {score} <b>{p2}</b>
-                    </span>
-                    <span style="color: #4CAF50; font-size: 14px;">🏆 {winner}</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            render_litit_result_row(p1, p2, score, winner, time_str)
     else:
         st.info("No completed matches yet.")
 
@@ -581,24 +466,9 @@ def render_public_board() -> None:
 
     if announcements:
         for ann in announcements:
-            st.markdown(
-                f"""
-                <div style="
-                    border: 2px solid #4CAF50;
-                    border-radius: 8px;
-                    padding: 12px;
-                    margin: 8px 0;
-                    background-color: #1e1e1e;
-                ">
-                    <div style="font-size: 18px; font-weight: bold; color: #4CAF50;">
-                        📣 {ann.get('message', '')}
-                    </div>
-                    <div style="color: #aaa; font-size: 12px; margin-top: 4px;">
-                        {ann.get('created_at', 'N/A')}
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
+            render_litit_announcement_card(
+                ann.get('message', ''),
+                ann.get('created_at', 'N/A'),
             )
     else:
         st.info("No announcements yet.")

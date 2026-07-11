@@ -141,13 +141,22 @@ class TestSummarizeMatch:
         assert result["score_string"] == "3-11, 5-11, 8-11"
     
     def test_not_complete_after_2_games(self):
-        """Test match not complete after 2 game wins."""
+        """Test match not complete after 2 game wins in best-of-5."""
         game_scores = [(11, 3), (11, 5)]
-        result = summarize_match(game_scores)
+        result = summarize_match(game_scores, best_of=5)
         assert result["player1_games"] == 2
         assert result["player2_games"] == 0
         assert result["winner_side"] is None
         assert result["is_complete"] is False
+
+    def test_complete_after_2_games_best_of_3(self):
+        """Test match complete after 2 game wins in best-of-3."""
+        game_scores = [(11, 3), (11, 5)]
+        result = summarize_match(game_scores, best_of=3)
+        assert result["player1_games"] == 2
+        assert result["player2_games"] == 0
+        assert result["winner_side"] == 1
+        assert result["is_complete"] is True
     
     def test_mixed_game_scores(self):
         """Test mixed game scores (player1 wins 3-2)."""

@@ -1,6 +1,6 @@
 import streamlit as st
 
-st.set_page_config(page_title="Tournament Dashboard - TT Platform", layout="wide")
+st.set_page_config(page_title="LIT_IT Dashboard", layout="wide")
 import pandas as pd
 import plotly.graph_objects as go
 import requests
@@ -13,7 +13,13 @@ from tournament_platform.app.utils import (
 )
 from tournament_platform.app.components.ai_status import render_ai_status_badge
 from tournament_platform.app.components.rankings_panel import render_rankings_panel
+from tournament_platform.app.design_system import (
+    apply_global_styles,
+    render_litit_result_row,
+    render_litit_upcoming_row,
+)
 
+apply_global_styles()
 from tournament_platform.models import SessionLocal, Player, Match, Tournament, MatchStatus
 from tournament_platform.config import settings
 from tournament_platform.services.ai_engine import AIEngine
@@ -150,6 +156,7 @@ def create_radar_chart(player_name, player_matches):
         polar=dict(radialaxis=dict(visible=True, range=[0, 100])),
         showlegend=True,
         height=500,
+        template="plotly_dark",
         title=f"Player Performance: {player_name}"
     )
 
@@ -323,24 +330,7 @@ def render_recent_results_tab(data):
                 scheduled = m['Scheduled Time']
                 time_str = scheduled.strftime('%H:%M') if scheduled else "--:--"
 
-                st.markdown(
-                    f"""
-                    <div style="
-                        display: flex;
-                        justify-content: space-between;
-                        align-items: center;
-                        padding: 10px 16px;
-                        border-bottom: 1px solid #333;
-                    ">
-                        <span style="color: #aaa; font-size: 14px;">{time_str}</span>
-                        <span style="flex: 1; text-align: center; font-size: 18px;">
-                            <b>{p1}</b> {score} <b>{p2}</b>
-                        </span>
-                        <span style="color: #4CAF50; font-size: 14px;">🏆 {winner}</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                render_litit_result_row(p1, p2, score, winner, time_str)
         else:
             st.info("No completed matches yet.")
     else:
@@ -368,24 +358,7 @@ def render_upcoming_matches_tab(data):
 
                 status_icon = "🔴" if status == "active" else "🔵"
 
-                st.markdown(
-                    f"""
-                    <div style="
-                        display: flex;
-                        justify-content: space-between;
-                        align-items: center;
-                        padding: 10px 16px;
-                        border-bottom: 1px solid #333;
-                    ">
-                        <span style="color: #aaa; font-size: 14px;">{time_str}</span>
-                        <span style="flex: 1; text-align: center; font-size: 18px;">
-                            {status_icon} <b>{p1}</b> vs <b>{p2}</b>
-                        </span>
-                        <span style="color: #aaa; font-size: 14px;">{status.title()}</span>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                render_litit_upcoming_row(p1, p2, time_str, status, status_icon)
         else:
             st.info("No upcoming matches scheduled.")
     else:
@@ -394,7 +367,7 @@ def render_upcoming_matches_tab(data):
 
 def render_dashboard():
     """Render the optimized dashboard page with tabs."""
-    st.title("Tournament Dashboard")
+    st.title("📊 LIT_IT Dashboard")
 
     try:
         data = load_dashboard_data()

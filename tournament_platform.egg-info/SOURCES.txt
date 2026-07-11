@@ -1,20 +1,25 @@
 README.md
 pyproject.toml
 tests/test_admin_maintenance.py
+tests/test_admin_tabs.py
 tests/test_ai_suggestions.py
 tests/test_api_client.py
 tests/test_asr_backends.py
+tests/test_brand_assets.py
+tests/test_design_system.py
 tests/test_duplicate_players.py
 tests/test_health_service.py
 tests/test_live_scoring.py
 tests/test_match_manager_engine.py
 tests/test_match_score.py
+tests/test_page_titles.py
 tests/test_phase0_quick_wins.py
 tests/test_regression.py
 tests/test_scheduler.py
 tests/test_score_engine.py
 tests/test_settings.py
 tests/test_swiss_strategy.py
+tests/test_tour_framework.py
 tests/test_voice_ai_grounding.py
 tests/test_voice_asr.py
 tests/test_voice_audio.py
@@ -28,6 +33,7 @@ tests/test_voice_llm.py
 tests/test_voice_noise.py
 tests/test_voice_parser.py
 tests/test_voice_runtime_state.py
+tests/test_voice_score_pipeline.py
 tests/test_voice_service.py
 tests/test_voice_speaker.py
 tests/test_voice_tts.py
@@ -71,6 +77,7 @@ tournament_platform/alembic/versions/007_add_operator_workflow.py
 tournament_platform/alembic/versions/008_add_multimodal_models.py
 tournament_platform/alembic/versions/009_add_event_models.py
 tournament_platform/alembic/versions/010_add_voice_event_models.py
+tournament_platform/alembic/versions/011_add_match_game_scores.py
 tournament_platform/alembic/versions/__init__.py
 tournament_platform/api/multimodal_schemas.py
 tournament_platform/api/schemas.py
@@ -96,6 +103,7 @@ tournament_platform/app/components/player_path.py
 tournament_platform/app/components/player_registration.py
 tournament_platform/app/components/rankings_panel.py
 tournament_platform/app/components/spoken_commentary.py
+tournament_platform/app/components/tour.py
 tournament_platform/app/components/__pycache__/__init__.cpython-313.pyc
 tournament_platform/app/components/__pycache__/ai_chat.cpython-313.pyc
 tournament_platform/app/components/__pycache__/ai_status.cpython-313.pyc
@@ -110,6 +118,7 @@ tournament_platform/app/components/__pycache__/player_path.cpython-313.pyc
 tournament_platform/app/components/__pycache__/player_registration.cpython-313.pyc
 tournament_platform/app/components/__pycache__/rankings_panel.cpython-313.pyc
 tournament_platform/app/components/__pycache__/spoken_commentary.cpython-313.pyc
+tournament_platform/app/components/__pycache__/tour.cpython-313.pyc
 tournament_platform/app/components/interactive_bracket/__init__.py
 tournament_platform/app/components/interactive_bracket/interactive_bracket.py
 tournament_platform/app/components/interactive_bracket/__pycache__/__init__.cpython-313.pyc

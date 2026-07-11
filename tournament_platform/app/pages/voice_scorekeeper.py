@@ -9,6 +9,12 @@ A privacy-focused scorekeeping system using:
 """
 
 import streamlit as st
+from streamlit.runtime.scriptrunner import get_script_run_ctx
+
+# Only configure the page when running as a Streamlit script (not on import),
+# so the module stays import-safe for unit tests.
+if get_script_run_ctx() is not None:
+    st.set_page_config(page_title="LIT_IT Voice Scorekeeper", layout="wide")
 
 import asyncio
 import os
@@ -81,6 +87,8 @@ from tournament_platform.app.services.voice.runtime_state import migrate_from_se
 from tournament_platform.app.services.voice.command_router import RouteContext, route_and_update_context, RouteDecision
 from tournament_platform.app.services.voice.confirmation import VoiceConfirmationStateMachine
 from tournament_platform.app.api_client import api_client
+from tournament_platform.app.design_system import apply_global_styles
+from tournament_platform.app.components.tour import render_tour
 from tournament_platform.services.commentary_service import (
     CommentaryService,
     CommentarySettings,
@@ -731,6 +739,11 @@ def persist_voice_match_to_db(match_id: int, engine) -> None:
             return
 
         match.score = f"{engine.games_won_a}-{engine.games_won_b}"
+        match.game_scores = (
+            ", ".join(f"{a}-{b}" for a, b in engine.round_scores)
+            if engine.round_scores
+            else None
+        )
 
         if engine.match_status == "match_won":
             match.status = MatchStatus.completed
@@ -751,6 +764,102 @@ def persist_voice_match_to_db(match_id: int, engine) -> None:
         db.commit()
     except Exception as e:
         logger.error("Failed to persist voice match %s to DB: %s", match_id, e)
+        try:
+            db.rollback()
+        except Exception:
+            pass
+    finally:
+        db.close()
+
+
+def _get_persisted_match_meta(match_id: int, engine) -> Dict[str, Any]:
+    """Get match metadata from the DB row if available, falling back to engine state."""
+    db = SessionLocal()
+    try:
+        match = db.query(Match).filter(Match.id == match_id).first()
+        if match:
+            game_scores_list = []
+            if match.game_scores:
+                game_scores_list = [s.strip() for s in match.game_scores.split(",") if s.strip()]
+            return {
+                "score": match.score or f"{engine.games_won_a}-{engine.games_won_b}",
+                "winner": match.winner
+                or (
+                    engine.player_a_name
+                    if engine.games_won_a > engine.games_won_b
+                    else engine.player_b_name
+                ),
+                "game_scores": game_scores_list
+                or [f"{a}-{b}" for a, b in engine.round_scores],
+            }
+    finally:
+        db.close()
+    return {
+        "score": f"{engine.games_won_a}-{engine.games_won_b}",
+        "winner": engine.player_a_name
+        if engine.games_won_a > engine.games_won_b
+        else engine.player_b_name,
+        "game_scores": [f"{a}-{b}" for a, b in engine.round_scores],
+    }
+
+
+def finalize_voice_match(match_id: int, engine) -> None:
+    """Validate, complete, persist game_scores, and update ratings for a won match.
+
+    Guarded against double-run via the persisted DB ``Match.status`` check.
+    """
+    from tournament_platform.services.match_reporting import (
+        ReportMatchCommand,
+        report_existing_match,
+        MatchAlreadyCompletedError,
+    )
+    from tournament_platform.services.ranking_service import RatingManager
+
+    db = SessionLocal()
+    try:
+        match = db.query(Match).filter(Match.id == match_id).first()
+        if match is None or match.status == MatchStatus.completed:
+            return
+
+        winner_name = (
+            engine.player_a_name
+            if engine.games_won_a > engine.games_won_b
+            else engine.player_b_name
+        )
+        score_str = f"{engine.games_won_a}-{engine.games_won_b}"
+        game_scores_str = (
+            ", ".join(f"{a}-{b}" for a, b in engine.round_scores)
+            if engine.round_scores
+            else None
+        )
+
+        command = ReportMatchCommand(
+            match_id=match_id,
+            winner=winner_name,
+            score=score_str,
+            game_scores=game_scores_str,
+        )
+        updated_match = report_existing_match(db, command)
+
+        if (
+            updated_match.winner_id
+            and updated_match.player1_id
+            and updated_match.player2_id
+        ):
+            winner_id = updated_match.winner_id
+            loser_id = (
+                updated_match.player2_id
+                if winner_id == updated_match.player1_id
+                else updated_match.player1_id
+            )
+            rating_manager = RatingManager()
+            rating_manager.update_ratings(winner_id, loser_id, db_session=db)
+    except MatchAlreadyCompletedError:
+        pass
+    except Exception as exc:
+        logger.error(
+            "Failed to finalize voice match %s: %s", match_id, exc
+        )
         try:
             db.rollback()
         except Exception:
@@ -1100,6 +1209,8 @@ def _apply_pending(idx: int) -> None:
         _voice_match_id = st.session_state.get("voice_selected_match_id")
         if _voice_match_id:
             try:
+                if st.session_state.match_manager.engine.match_status == "match_won":
+                    finalize_voice_match(_voice_match_id, st.session_state.match_manager.engine)
                 persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
             except Exception as exc:
                 logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
@@ -1357,6 +1468,8 @@ def _process_voice_events() -> None:
                 _voice_match_id = st.session_state.get("voice_selected_match_id")
                 if _voice_match_id:
                     try:
+                        if st.session_state.match_manager.engine.match_status == "match_won":
+                            finalize_voice_match(_voice_match_id, st.session_state.match_manager.engine)
                         persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
                     except Exception as exc:
                         logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
@@ -1897,6 +2010,9 @@ def render_selected_match_summary() -> None:
 # ============================================================================
 
 st.title("Voice Scorekeeper")
+if get_script_run_ctx() is not None:
+    render_tour("voice_scorekeeper")
+apply_global_styles()
 st.caption("Speak to update scores. The system uses local transcription - no data leaves your machine.")
 
 # Commentary Settings
@@ -2038,7 +2154,7 @@ score_col1, score_colc, score_col2 = st.columns([1, 1, 1])
 
 with score_col1:
     st.markdown(f"<div style='text-align:center;'><h3>{st.session_state.match_manager.state.player_a}</h3></div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='text-align:center; font-size:72px; font-weight:bold; color:#1f77b4;'>{st.session_state.match_manager.state.score_a}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align:center; font-size:72px; font-weight:bold; color:#0066FF;'>{st.session_state.match_manager.state.score_a}</div>", unsafe_allow_html=True)
     _b1, _b2 = st.columns(2)
     with _b1:
         if st.button("➕ A", key="add_point_a", use_container_width=True):
@@ -2048,6 +2164,12 @@ with score_col1:
             st.toast(msg, icon="✅")
             play_cue("point")
             _build_and_store_commentary("point_a", st.session_state.match_manager.state, prev_state)
+            _voice_match_id = st.session_state.get("voice_selected_match_id")
+            if _voice_match_id:
+                try:
+                    persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
+                except Exception as exc:
+                    logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
             st.rerun()
     with _b2:
         if st.button("➖ A", key="sub_point_a", use_container_width=True):
@@ -2060,6 +2182,12 @@ with score_col1:
                     st.session_state.last_feedback = f"Point removed from {st.session_state.match_manager.state.player_a}"
                     st.toast(st.session_state.last_feedback, icon="↩️")
                     _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
+            _voice_match_id = st.session_state.get("voice_selected_match_id")
+            if _voice_match_id:
+                try:
+                    persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
+                except Exception as exc:
+                    logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
             st.rerun()
 
 with score_colc:
@@ -2083,6 +2211,12 @@ with score_colc:
         st.toast(msg, icon="↩️")
         play_cue("undo")
         _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
+        _voice_match_id = st.session_state.get("voice_selected_match_id")
+        if _voice_match_id:
+            try:
+                persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
+            except Exception as exc:
+                logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
         st.rerun()
     if st.button("🔄 Reset", key="reset", use_container_width=True):
         prev_state = copy.deepcopy(st.session_state.match_manager.state)
@@ -2091,6 +2225,12 @@ with score_colc:
         st.toast(msg, icon="🔄")
         play_cue("undo")
         _build_and_store_commentary("reset", st.session_state.match_manager.state, prev_state)
+        _voice_match_id = st.session_state.get("voice_selected_match_id")
+        if _voice_match_id:
+            try:
+                persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
+            except Exception as exc:
+                logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
         st.rerun()
     # Voice status
     if st.session_state.get("last_voice_feedback"):
@@ -2131,7 +2271,7 @@ with score_colc:
 
 with score_col2:
     st.markdown(f"<div style='text-align:center;'><h3>{st.session_state.match_manager.state.player_b}</h3></div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='text-align:center; font-size:72px; font-weight:bold; color:#ff7f0e;'>{st.session_state.match_manager.state.score_b}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div style='text-align:center; font-size:72px; font-weight:bold; color:#FF6D00;'>{st.session_state.match_manager.state.score_b}</div>", unsafe_allow_html=True)
     _b1, _b2 = st.columns(2)
     with _b1:
         if st.button("➕ B", key="add_point_b", use_container_width=True):
@@ -2141,6 +2281,12 @@ with score_col2:
             st.toast(msg, icon="✅")
             play_cue("point")
             _build_and_store_commentary("point_b", st.session_state.match_manager.state, prev_state)
+            _voice_match_id = st.session_state.get("voice_selected_match_id")
+            if _voice_match_id:
+                try:
+                    persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
+                except Exception as exc:
+                    logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
             st.rerun()
     with _b2:
         if st.button("➖ B", key="sub_point_b", use_container_width=True):
@@ -2189,11 +2335,23 @@ with _rem1:
     if st.button("🔄 Rematch", key="rematch_btn", use_container_width=True, type="primary"):
         _mm.rematch()
         st.toast("Rematch! First server swapped.", icon="🔄")
+        _voice_match_id = st.session_state.get("voice_selected_match_id")
+        if _voice_match_id:
+            try:
+                persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
+            except Exception as exc:
+                logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
         st.rerun()
 with _rem2:
     if st.button("🆕 New Match", key="new_match_btn", use_container_width=True):
         _mm.reset_match()
         st.toast("New match ready.", icon="🆕")
+        _voice_match_id = st.session_state.get("voice_selected_match_id")
+        if _voice_match_id:
+            try:
+                persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
+            except Exception as exc:
+                logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
         st.rerun()
 with _rem3:
     if st.button("📤 Submit Result", key="submit_from_scoreboard_btn", use_container_width=True):
@@ -2250,7 +2408,8 @@ if st.session_state.voice_selected_match_id:
             st.markdown(f"  Game {i}: {s1}-{s2} ({winner} wins)")
         
         # Show match summary
-        summary = summarize_match(in_progress_games)
+        _e_local = st.session_state.match_manager.engine
+        summary = summarize_match(in_progress_games, best_of=_e_local.best_of)
         if summary["is_complete"]:
             winner_name = p1_name if summary["winner_side"] == 1 else p2_name
             st.success(f"🏆 Match complete! {winner_name} wins {summary['player1_games']}-{summary['player2_games']}")
@@ -2296,23 +2455,24 @@ if st.session_state.voice_selected_match_id:
     
     # Submit match result button (only if match is complete)
     if in_progress_games:
-        summary = summarize_match(in_progress_games)
+        _e_local = st.session_state.match_manager.engine
+        summary = summarize_match(in_progress_games, best_of=_e_local.best_of)
         if summary["is_complete"]:
             if st.button("📤 Submit Match Result", key="submit_match_btn", use_container_width=True, type="primary"):
-                winner_name = p1_name if summary["winner_side"] == 1 else p2_name
-                score_str = summary["score_string"]
+                _e_sub = st.session_state.match_manager.engine
+                _winner_name = p1_name if _e_sub.games_won_a > _e_sub.games_won_b else p2_name
                 
-                with st.status("Submitting match result...", expanded=False) as status:
-                    response = api_client.report_match_legacy(match_id, score_str, winner_name)
-                    if response is not None:
+                with st.status("Finalizing match result...", expanded=False) as status:
+                    try:
+                        finalize_voice_match(match_id, _e_sub)
                         clear_in_progress_games(match_id)
                         clear_selected_match()
-                        status.update(label="Match result submitted!", state="complete", expanded=False)
-                        st.success(f"✅ Match result submitted! {winner_name} wins {score_str}")
+                        status.update(label="Match result finalized!", state="complete", expanded=False)
+                        st.success(f"✅ Match result finalized! {_winner_name} wins {_e_sub.games_won_a}-{_e_sub.games_won_b}")
                         st.rerun()
-                    else:
-                        status.update(label="Submission failed", state="error", expanded=False)
-                        st.error("❌ Failed to submit match result. Check API connection.")
+                    except Exception as exc:
+                        status.update(label="Finalization failed", state="error", expanded=False)
+                        st.error(f"❌ Failed to finalize match result: {exc}")
 
 # ============================================================================
 # Voice Scoring Section (WebRTC + Local ASR)
@@ -2759,7 +2919,8 @@ with col_report_text:
                         "post",
                         "/api/match/parse",
                         json=parse_payload,
-                        error_context="match result parsing"
+                        error_context="match result parsing",
+                        parse_json=True,
                     )
                     if response:
                         st.session_state.report_parsed = response
@@ -2782,23 +2943,37 @@ with col_report_text:
             st.warning("Please enter a match result first.")
 
 # Step 2: Review parsed result
-if st.session_state.report_parsed:
-    st.divider()
-    st.markdown("**Step 2: Review Parsed Result**")
-    parsed = st.session_state.report_parsed
+if st.session_state.report_parsed is not None:
+    if isinstance(st.session_state.report_parsed, dict):
+        parsed = st.session_state.report_parsed
+    elif hasattr(st.session_state.report_parsed, "json"):
+        try:
+            parsed = st.session_state.report_parsed.json()
+            st.session_state.report_parsed = parsed
+        except Exception:
+            parsed = None
+            st.session_state.report_parsed = None
+    else:
+        parsed = None
+        st.session_state.report_parsed = None
 
-    # Status badge
-    status_color = {
-        "success": "🟢",
-        "needs_review": "🟡",
-        "error": "🔴"
-    }.get(st.session_state.report_status, "⚪")
-    st.markdown(f"**Status:** {status_color} {st.session_state.report_status}")
+    if parsed and isinstance(parsed, dict):
+        st.divider()
+        st.markdown("**Step 2: Review Parsed Result**")
+        parsed = st.session_state.report_parsed
 
-    # Show warnings if any
-    if parsed.get("warnings"):
-        for warning in parsed["warnings"]:
-            st.warning(f"⚠️ {warning}")
+        # Status badge
+        status_color = {
+            "success": "🟢",
+            "needs_review": "🟡",
+            "error": "🔴"
+        }.get(st.session_state.report_status, "⚪")
+        st.markdown(f"**Status:** {status_color} {st.session_state.report_status}")
+
+        # Show warnings if any
+        if parsed.get("warnings"):
+            for warning in parsed["warnings"]:
+                st.warning(f"⚠️ {warning}")
 
     # Review card - show selected match context prominently
     with st.container(border=True):
@@ -2956,7 +3131,8 @@ if st.session_state.report_parsed:
                             "post",
                             "/api/report",
                             json=payload,
-                            error_context="match result submission"
+                            error_context="match result submission",
+                            parse_json=True,
                         )
                         if response is not None:
                             st.session_state.report_transcript = ""
@@ -2992,19 +3168,20 @@ if _match_id:
         if st.button("📋 Generate Summary", key="generate_summary_btn", use_container_width=True):
             from tournament_platform.app.services.voice.match_summary import MatchSummaryService
             service = MatchSummaryService()
-            _meta = {
+            _engine = st.session_state.match_manager.engine
+            _meta_base = {
                 "players": [
                     st.session_state.voice_selected_player1_name or "Player A",
                     st.session_state.voice_selected_player2_name or "Player B",
                 ],
                 "tournament": "Current Tournament",
-                "score": st.session_state.match_manager.state.get_score_string(),
-                "winner": (
-                    st.session_state.match_manager.state.player_a
-                    if st.session_state.match_manager.engine.games_won_a
-                    > st.session_state.match_manager.engine.games_won_b
-                    else st.session_state.match_manager.state.player_b
-                ),
+            }
+            _persisted = _get_persisted_match_meta(_match_id, _engine)
+            _meta = {
+                **_meta_base,
+                "score": _persisted["score"],
+                "winner": _persisted["winner"],
+                "game_scores": _persisted["game_scores"],
             }
             _summary = service.generate_match_summary(_match_id, _meta)
             st.session_state.voice_match_summary = _summary
@@ -3013,19 +3190,20 @@ if _match_id:
         if st.button("📤 Export Report", key="export_report_btn", use_container_width=True):
             from tournament_platform.app.services.voice.report_exporter import MatchReportExporter
             exporter = MatchReportExporter()
-            _meta = {
+            _engine = st.session_state.match_manager.engine
+            _meta_base = {
                 "players": [
                     st.session_state.voice_selected_player1_name or "Player A",
                     st.session_state.voice_selected_player2_name or "Player B",
                 ],
                 "tournament": "Current Tournament",
-                "score": st.session_state.match_manager.state.get_score_string(),
-                "winner": (
-                    st.session_state.match_manager.state.player_a
-                    if st.session_state.match_manager.engine.games_won_a
-                    > st.session_state.match_manager.engine.games_won_b
-                    else st.session_state.match_manager.state.player_b
-                ),
+            }
+            _persisted = _get_persisted_match_meta(_match_id, _engine)
+            _meta = {
+                **_meta_base,
+                "score": _persisted["score"],
+                "winner": _persisted["winner"],
+                "game_scores": _persisted["game_scores"],
             }
             _report = exporter.export_match_report(_match_id, _meta, include_summary=True, include_commentary=False)
             timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")

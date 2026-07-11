@@ -5,7 +5,11 @@ Allows browsing and managing registered datasets.
 
 import streamlit as st
 
-st.set_page_config(page_title="Dataset Catalog - TT Platform", layout="wide")
+from tournament_platform.app.design_system import apply_global_styles
+from tournament_platform.app.components.tour import render_tour
+
+st.set_page_config(page_title="LIT_IT Dataset Catalog", layout="wide")
+apply_global_styles()
 import pandas as pd
 from typing import List, Optional
 
@@ -21,7 +25,8 @@ def get_registry() -> DatasetRegistry:
 
 def show():
     """Display the dataset catalog page."""
-    st.title("Dataset Catalog")
+    st.title("LIT_IT Dataset Catalog")
+    render_tour("dataset_catalog")
     st.markdown("Browse and manage datasets for the Multimodal AI system.")
     
     registry = get_registry()

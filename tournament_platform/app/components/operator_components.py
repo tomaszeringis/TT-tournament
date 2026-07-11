@@ -8,7 +8,6 @@ import streamlit as st
 import pandas as pd
 from typing import Dict, Any, List, Optional, Callable
 
-
 def render_match_queue_item(
     match: Dict[str, Any],
     on_call: Callable[[int], None],
@@ -58,33 +57,42 @@ def render_match_queue_item(
 
 
 def render_table_status_card(table: Dict[str, Any]) -> None:
-    """Render a table status card."""
-    status = table.get("status", "available")
+    """Render a table status card.
+
+    Tolerant of two data shapes:
+    - ``get_table_availability_summary()``: keys ``name``,
+      ``has_active_or_called_match``, ``current_match_label``.
+    - ``get_table_status()``: keys ``table_name``, ``status``,
+      ``current_match``/``next_match`` (dicts).
+    """
+    name = table.get("name") or table.get("table_name") or "Table"
     is_active = table.get("is_active")
 
-    if is_active:
-        if status == "busy":
-            st.markdown(f"🔴 **{table['table_name']}** (busy)")
-        else:
-            st.markdown(f"🟢 **{table['table_name']}** (available)")
-
-        current = table.get("current_match")
-        if current:
-            st.markdown(f"🎮 **Current:** {current['player1']} vs {current['player2']}")
-
-        next_m = table.get("next_match")
-        if next_m:
-            st.markdown(f"⏭️ **Next:** {next_m['player1']} vs {next_m['player2']}")
+    # Determine busy state from either shape.
+    status = table.get("status")
+    if status is not None:
+        is_busy = status == "busy"
     else:
-        st.markdown(f"⚪ **{table['table_name']}** (inactive)")
+        is_busy = bool(table.get("has_active_or_called_match", False))
 
-        current = table.get("current_match")
-        if current:
-            st.markdown(f"🎮 **Current:** {current['player1']} vs {current['player2']}")
+    if is_active:
+        if is_busy:
+            st.markdown(f"🔴 **{name}** :red[(busy)]")
+        else:
+            st.markdown(f"🟢 **{name}** :green[(available)]")
+    else:
+        st.markdown(f"⚪ **{name}** :gray[(inactive)]")
 
-        next_m = table.get("next_match")
-        if next_m:
-            st.markdown(f"⏭️ **Next:** {next_m['player1']} vs {next_m['player2']}")
+    # Current match — support either the dict shape or the label shape.
+    current = table.get("current_match")
+    if isinstance(current, dict):
+        st.markdown(f"🎮 **Current:** {current.get('player1', '?')} vs {current.get('player2', '?')}")
+    elif table.get("current_match_label"):
+        st.markdown(f"🎮 **Current:** {table['current_match_label']}")
+
+    next_m = table.get("next_match")
+    if isinstance(next_m, dict):
+        st.markdown(f"⏭️ **Next:** {next_m.get('player1', '?')} vs {next_m.get('player2', '?')}")
 
 
 def render_health_kpi(health: Dict[str, Any]) -> None:

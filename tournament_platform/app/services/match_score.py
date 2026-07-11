@@ -97,13 +97,14 @@ def get_game_winner(score1: int, score2: int) -> Optional[int]:
     return None
 
 
-def summarize_match(game_scores: List[Tuple[int, int]]) -> Dict:
+def summarize_match(game_scores: List[Tuple[int, int]], best_of: int = 3) -> Dict:
     """
     Summarize a match from a list of game scores.
     
     Args:
         game_scores: List of (score1, score2) tuples for each game.
-        
+        best_of: Best-of format (e.g., 3 or 5). Defaults to 3.
+         
     Returns:
         Dict with:
         - player1_games: int
@@ -121,14 +122,13 @@ def summarize_match(game_scores: List[Tuple[int, int]]) -> Dict:
         else:
             player2_games += 1
     
-    # Determine winner
+    needed = best_of // 2 + 1
     winner_side = None
-    if player1_games >= 3:
+    if player1_games >= needed:
         winner_side = 1
-    elif player2_games >= 3:
+    elif player2_games >= needed:
         winner_side = 2
     
-    # Build score string
     score_string = ", ".join(f"{s1}-{s2}" for s1, s2 in game_scores)
     
     return {

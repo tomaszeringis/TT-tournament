@@ -9,9 +9,12 @@ This file is kept as a redirect for backward compatibility.
 
 import streamlit as st
 
-st.set_page_config(page_title="Participants - TT Platform", layout="wide")
+from tournament_platform.app.design_system import apply_global_styles
 
-st.title("Participants (Moved)")
+st.set_page_config(page_title="LIT_IT Participants (Moved)", layout="wide")
+apply_global_styles()
+
+st.title("LIT_IT Participants (Moved)")
 st.caption("Participant management has been moved to the Events & Draws page.")
 
 st.info("👥 **Participants** functionality is now available in the **Events & Draws** page under the **Participants** tab.")

@@ -5,7 +5,11 @@ Tracks model training and evaluation experiments.
 
 import streamlit as st
 
-st.set_page_config(page_title="Experiment Dashboard - TT Platform", layout="wide")
+from tournament_platform.app.design_system import apply_global_styles
+from tournament_platform.app.components.tour import render_tour
+
+st.set_page_config(page_title="LIT_IT Experiment Dashboard", layout="wide")
+apply_global_styles()
 import pandas as pd
 from typing import List, Optional
 import json
@@ -22,7 +26,8 @@ def get_registry() -> DatasetRegistry:
 
 def show():
     """Display the experiment dashboard page."""
-    st.title("Experiment Dashboard")
+    st.title("LIT_IT Experiment Dashboard")
+    render_tour("experiment_dashboard")
     st.markdown("Track and manage ML model training/evaluation experiments.")
     
     # Tabs for different views

@@ -15,6 +15,8 @@ from tournament_platform.services.bracket_manager import TournamentState
 from tournament_platform.app.components.interactive_bracket import interactive_bracket
 from tournament_platform.app.components.participants_panel import render_participants_panel, get_all_players
 from tournament_platform.app.utils import render_status_badge
+from tournament_platform.app.design_system import apply_global_styles
+from tournament_platform.app.components.tour import render_tour
 
 
 def calculate_bracket_size(participant_count: int) -> int:
@@ -56,7 +58,7 @@ def render_tournament_creation_wizard():
     Step 3: participants
     Step 4: review and create
     """
-    st.subheader("🏆 Create New Tournament")
+    st.subheader("🏆 Create New LIT_IT Tournament")
     
     # Initialize session state for wizard
     if 'wizard_step' not in st.session_state:
@@ -693,18 +695,14 @@ def render_active_tournaments():
 
 def render_events_draws():
     """Render the main Events & Draws page."""
-    st.set_page_config(page_title="Events & Draws", page_icon="🎫", layout="wide")
+    st.set_page_config(page_title="LIT_IT Events & Draws", page_icon="🎫", layout="wide")
+    apply_global_styles()
 
-    # Add onboarding tooltip for first-time users
-    if "onboarding_step" not in st.session_state:
-        st.session_state.onboarding_step = 1
+    render_tour("tournament")
 
     tab_create, tab_participants, tab_draws = st.tabs(["Create Tournament", "Participants", "Active Tournaments"])
 
     with tab_create:
-        # Onboarding help
-        if st.session_state.onboarding_step == 1:
-            st.info("👋 **First time?** Create your tournament in 4 simple steps. Start by entering a name!")
         render_tournament_creation_wizard()
 
     with tab_participants:

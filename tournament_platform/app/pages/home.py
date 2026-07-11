@@ -15,7 +15,8 @@ from datetime import datetime
 from tournament_platform.models import SessionLocal, Tournament, Match, MatchStatus
 from tournament_platform.app.components.page_header import render_page_header
 from tournament_platform.app.components.empty_state import render_empty_state
-from tournament_platform.app.components.getting_started_tour import render_getting_started_tour
+from tournament_platform.app.components.tour import render_tour
+from tournament_platform.app.design_system import apply_global_styles
 
 
 @st.cache_data(ttl=30, show_spinner="Loading home data...")
@@ -135,15 +136,18 @@ def render_live_operations(data: dict):
 
 def render_home():
     """Render the main home page."""
+    # Inject LitIT brand theme styles
+    apply_global_styles()
+
     # Page header
     render_page_header(
-        title="Tournament Platform",
+        title="LIT_IT Tournament Platform",
         description="Manage your table tennis tournaments with ease",
         icon="🏓"
     )
 
     # Getting Started tour
-    render_getting_started_tour()
+    render_tour("home")
 
     # Load data
     try:
@@ -191,5 +195,5 @@ def render_home():
 
 # Note: This code only runs when the file is executed directly by Streamlit
 if __name__ == "__main__":
-    st.set_page_config(page_title="Home", page_icon="🏠", layout="wide")
+    st.set_page_config(page_title="LIT_IT Home", page_icon="🏠", layout="wide")
     render_home()

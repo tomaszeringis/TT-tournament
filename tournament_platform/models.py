@@ -95,6 +95,7 @@ class Match(Base):
     player2 = Column(String)
     winner = Column(String, nullable=True)
     score = Column(String, nullable=True)
+    game_scores = Column(Text, nullable=True)
     status = Column(Enum(MatchStatus), default=MatchStatus.pending)
     tournament_id = Column(Integer, ForeignKey("tournaments.id"), nullable=True)
     scheduled_time = Column(DateTime, default=datetime.datetime.utcnow)

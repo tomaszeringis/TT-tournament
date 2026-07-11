@@ -6,6 +6,8 @@ Reusable empty state component for when no data is available.
 
 import streamlit as st
 
+from tournament_platform.app.design_system import COLORS
+
 
 def render_empty_state(
     icon: str = "📭",
@@ -28,9 +30,12 @@ def render_empty_state(
     with col2:
         st.markdown(f"<div style='text-align: center; padding: 2rem;'>", unsafe_allow_html=True)
         st.markdown(f"<div style='font-size: 48px;'>{icon}</div>", unsafe_allow_html=True)
-        st.markdown(f"<h3 style='margin: 0;'>{title}</h3>", unsafe_allow_html=True)
+        st.markdown(f"<h3 style='margin: 0; color: {COLORS['text_primary']};'>{title}</h3>", unsafe_allow_html=True)
         if description:
-            st.markdown(f"<p style='color: #888; margin: 0.5rem 0;'>{description}</p>", unsafe_allow_html=True)
+            st.markdown(
+                f"<p style='color: {COLORS['text_secondary']}; margin: 0.5rem 0;'>{description}</p>",
+                unsafe_allow_html=True,
+            )
         st.markdown("</div>", unsafe_allow_html=True)
 
         if cta_label and cta_key:

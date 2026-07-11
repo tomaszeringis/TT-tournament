@@ -7,8 +7,9 @@ Combines the Tournament Assistant and Rules Q&A into a single page with tabs.
 """
 
 import streamlit as st
+from streamlit.runtime.scriptrunner import get_script_run_ctx
 
-st.set_page_config(page_title="AI Assistant - TT Platform", layout="wide")
+st.set_page_config(page_title="LIT_IT AI Assistant", layout="wide")
 import requests
 from typing import Optional
 import uuid
@@ -28,6 +29,7 @@ from tournament_platform.app.components.ai_chat import (
     render_announcement_text_area,
 )
 from tournament_platform.app.design_system import apply_global_styles
+from tournament_platform.app.components.tour import render_tour
 from tournament_platform.models import SessionLocal, Match, MatchStatus, Player
 
 # Apply design system styles
@@ -67,7 +69,9 @@ EXAMPLE_QUESTIONS = [
 # ---------------------------------------------------------------------------
 # Page UI
 # ---------------------------------------------------------------------------
-st.title("AI Assistant")
+st.title("LIT_IT AI Assistant")
+if get_script_run_ctx() is not None:
+    render_tour("ai_assistant")
 st.caption("Ask tournament, rules, ranking, schedule, and operations questions.")
 
 # Show AI status

@@ -9,9 +9,12 @@ This file is kept as a redirect for backward compatibility.
 
 import streamlit as st
 
-st.set_page_config(page_title="Rankings - TT Platform", layout="wide")
+from tournament_platform.app.design_system import apply_global_styles
 
-st.title("Rankings (Moved)")
+st.set_page_config(page_title="LIT_IT Rankings (Moved)", layout="wide")
+apply_global_styles()
+
+st.title("LIT_IT Rankings (Moved)")
 st.caption("Rankings have been moved to the Dashboard page.")
 
 st.info("🏆 **Rankings** functionality is now available in the **Dashboard** page under the **Rankings** tab.")

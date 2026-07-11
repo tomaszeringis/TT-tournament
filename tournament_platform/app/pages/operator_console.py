@@ -118,6 +118,7 @@ def load_audit_log(limit: int = 100) -> List[Dict[str, Any]]:
 
 # Import the centralized API client
 from tournament_platform.app.api_client import api_client
+from tournament_platform.app.design_system import apply_global_styles
 
 
 def call_match(match_id: int, table: Optional[str] = None) -> Dict[str, Any]:
@@ -501,12 +502,14 @@ def render_table_status_tab(selected_id: int) -> None:
 def render_operator_console() -> None:
     """Render the operator console page with tabs."""
     st.set_page_config(
-        page_title="Match Center",
+        page_title="LIT_IT Match Center",
         page_icon="🎛️",
         layout="wide",
     )
 
-    st.title("Match Center")
+    apply_global_styles()
+
+    st.title("🎛️ LIT_IT Match Center")
     st.caption("Manage match flow and table assignments")
 
     # Load tournaments

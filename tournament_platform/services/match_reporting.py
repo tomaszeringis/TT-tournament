@@ -1,3 +1,5 @@
+from typing import Optional
+
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 from tournament_platform.models import Match, MatchStatus, Player
@@ -8,6 +10,7 @@ class ReportMatchCommand(BaseModel):
     match_id: int
     winner: str
     score: str
+    game_scores: Optional[str] = None
 
     @field_validator('score')
     @classmethod
@@ -73,6 +76,8 @@ def report_existing_match(db: Session, command: ReportMatchCommand) -> Match:
         match.player1_id if command.winner == p1_name else match.player2_id
     )
     match.score = command.score
+    if command.game_scores:
+        match.game_scores = command.game_scores
     match.status = MatchStatus.completed
 
     db.commit()

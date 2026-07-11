@@ -20,6 +20,11 @@ credentials:
       name: Admin User
       password: 'CHANGE_ME_IN_STREAMLIT_SECRETS'
       role: admin
+    operator:
+      email: operator@corp.com
+      name: Operator User
+      password: 'CHANGE_ME_IN_STREAMLIT_SECRETS'
+      role: operator
 cookie:
   expiry_days: 30
   key: CHANGE_ME_IN_ENV

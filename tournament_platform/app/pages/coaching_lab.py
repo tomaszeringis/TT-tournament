@@ -5,7 +5,11 @@ Provides interface for session analysis and coaching feedback.
 
 import streamlit as st
 
-st.set_page_config(page_title="Coaching Lab - TT Platform", layout="wide")
+from tournament_platform.app.design_system import apply_global_styles
+from tournament_platform.app.components.tour import render_tour
+
+st.set_page_config(page_title="LIT_IT Coaching Lab", layout="wide")
+apply_global_styles()
 import pandas as pd
 from typing import List, Optional
 import json
@@ -30,7 +34,8 @@ def get_intent_classifier() -> IntentClassifier:
 
 def show():
     """Display the coaching lab page."""
-    st.title("Coaching Lab")
+    st.title("LIT_IT Coaching Lab")
+    render_tour("coaching_lab")
     st.markdown("Analyze table tennis sessions and get AI-powered coaching feedback.")
     
     # Tabs for different views

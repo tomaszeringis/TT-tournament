@@ -1,7 +1,7 @@
 import streamlit as st
 import streamlit_shadcn_ui as ui
 
-st.set_page_config(page_title="Admin Console - TT Platform", layout="wide")
+st.set_page_config(page_title="LIT_IT Admin Console", layout="wide")
 import pandas as pd
 from datetime import datetime, timezone
 
@@ -29,6 +29,15 @@ from tournament_platform.app.utils import (
 )
 from tournament_platform.config import settings
 from tournament_platform.app.settings import API_BASE_URL, SHOW_DEBUG_DETAILS
+from tournament_platform.app.design_system import apply_global_styles
+from tournament_platform.app.components.tour import render_tour
+
+apply_global_styles()
+
+# Embeddable renderers merged into Admin as tabs (module aliases to avoid the
+# duplicate `load_tournaments` helper name clash across page modules).
+import tournament_platform.app.pages.operator_console as op
+import tournament_platform.app.pages.schedule_board as sched
 
 
 @st.cache_data(ttl=30, show_spinner="Loading database summary...")
@@ -64,7 +73,8 @@ def get_cached_tournaments():
         db.close()
 
 
-st.title("Admin / Operator Console")
+st.title("LIT_IT Admin / Operator Console")
+render_tour("admin")
 st.space("medium")
 
 try:
@@ -73,7 +83,14 @@ except Exception as e:
     st.error("Database connection failed. Please check logs for details.")
 
 # Admin dashboard tabs
-admin_tabs = st.tabs(["Database Overview", "Match Management", "System Health", "Danger Zone"])
+admin_tabs = st.tabs([
+    "Database Overview",
+    "Match Management",
+    "Operator Console",
+    "Schedule Board",
+    "System Health",
+    "Danger Zone",
+])
 
 # Tab 1: Database Overview
 with admin_tabs[0]:
@@ -178,8 +195,84 @@ with admin_tabs[1]:
             clear_streamlit_cache()
             st.toast("Cache cleared!", icon="✅")
 
-# Tab 3: System Health
+# Tab 3: Operator Console
 with admin_tabs[2]:
+    st.subheader("🎛️ Operator Console")
+    st.caption("Manage match flow and table assignments")
+
+    try:
+        op_tournaments = op.load_tournaments()
+    except Exception as e:
+        st.error(f"Failed to load tournaments: {e}")
+        op_tournaments = []
+
+    if not op_tournaments:
+        st.info("No tournaments found. Create a tournament first.")
+    else:
+        op_options = {t["name"]: t["id"] for t in op_tournaments}
+        op_selected_name = st.selectbox(
+            "Select Tournament",
+            options=list(op_options.keys()),
+            index=0,
+            key="admin_op_tournament_select",
+        )
+        op_selected_id = op_options[op_selected_name]
+
+        if st.button("🔄 Refresh", key="admin_op_refresh"):
+            st.cache_data.clear()
+            st.rerun()
+
+        st.divider()
+
+        op_subtabs = st.tabs(["Match Queue", "Table Status"])
+        with op_subtabs[0]:
+            op.render_match_queue_tab(op_selected_id)
+        with op_subtabs[1]:
+            op.render_table_status_tab(op_selected_id)
+
+# Tab 4: Schedule Board
+with admin_tabs[3]:
+    st.subheader("📅 Schedule Board")
+    st.caption("View and plan tournament matches by date/time")
+
+    try:
+        sched_tournaments = sched.load_tournaments()
+    except Exception as e:
+        st.error(f"Failed to load tournaments: {e}")
+        sched_tournaments = []
+
+    if not sched_tournaments:
+        st.info("No tournaments found. Create a tournament first.")
+    else:
+        sched_options = {t["name"]: t["id"] for t in sched_tournaments}
+        sched_selected_name = st.selectbox(
+            "Select Tournament",
+            options=list(sched_options.keys()),
+            index=0,
+            key="admin_sched_tournament_select",
+        )
+        sched_selected_id = sched_options[sched_selected_name]
+
+        sched_col1, sched_col2 = st.columns(2)
+        with sched_col1:
+            sched_start_date = st.date_input(
+                "Start Date",
+                value=datetime.now(timezone.utc).date(),
+                key="admin_sched_start_date",
+            )
+        with sched_col2:
+            sched_days_ahead = st.number_input(
+                "Days to Show",
+                min_value=1,
+                max_value=30,
+                value=7,
+                key="admin_sched_days_ahead",
+            )
+
+        sched.render_schedule_tab(sched_selected_id, sched_start_date, int(sched_days_ahead))
+
+# Tab 5: System Health
+with admin_tabs[4]:
     st.subheader("💚 System Health")
     
     # Perform real health checks using extracted helpers
@@ -311,8 +404,8 @@ with admin_tabs[2]:
     st.write("**Last Updated**")
     st.caption(f"System health checked at: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
-# Tab 4: Danger Zone
-with admin_tabs[3]:
+# Tab 6: Danger Zone
+with admin_tabs[5]:
     st.subheader(" Danger Zone")
     st.warning(
         "Actions in this section are destructive and cannot be undone. "

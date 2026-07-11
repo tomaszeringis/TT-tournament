@@ -15,6 +15,7 @@ import plotly.graph_objects as go
 from datetime import datetime
 from typing import Optional
 
+from tournament_platform.app.design_system import apply_global_styles
 from tournament_platform.models import SessionLocal, Player, Match, MatchStatus, RatingHistory
 from tournament_platform.app.components.page_header import render_page_header
 
@@ -97,7 +98,7 @@ def render_rating_trend(rating_history: list):
         y=df['rating'],
         mode='lines+markers',
         name='Rating',
-        line=dict(color='#4CAF50', width=2),
+        line=dict(color='#00C853', width=2),
     ))
 
     fig.update_layout(
@@ -198,5 +199,6 @@ def render_player_profile():
 
 # Note: This code only runs when the file is executed directly by Streamlit
 if __name__ == "__main__":
-    st.set_page_config(page_title="Player Profile", page_icon="👤", layout="wide")
+    st.set_page_config(page_title="LIT_IT Player Profile", page_icon="👤", layout="wide")
+    apply_global_styles()
     render_player_profile()
