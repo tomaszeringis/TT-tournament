@@ -36,6 +36,7 @@ itables>=2.0.0
 requests>=2.31.0
 pydantic>=2.7.0
 pydantic-settings>=2.0.0
+segno>=1.5.0
 
 # Speech & Audio
 faster-whisper>=1.0.3

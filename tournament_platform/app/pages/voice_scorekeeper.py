@@ -2009,6 +2009,8 @@ def render_selected_match_summary() -> None:
 # Page UI
 # ============================================================================
 
+from tournament_platform.app.components.brand_assets import render_brand_icon
+render_brand_icon("voice_scorekeeper")
 st.title("Voice Scorekeeper")
 if get_script_run_ctx() is not None:
     render_tour("voice_scorekeeper")

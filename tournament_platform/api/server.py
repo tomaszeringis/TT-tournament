@@ -693,6 +693,140 @@ async def api_merge_players(
         raise HTTPException(status_code=500, detail="Failed to merge players")
 
 
+@app.post("/api/operator/players/import-csv")
+async def api_import_players_csv(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Bulk-import players from uploaded CSV text.
+
+    Validates every row before writing. Only rows that pass validation (no errors
+    and no duplicates) are committed, and they are committed inside a single
+    transaction so a failure rolls back the whole import (no partial imports).
+    """
+    try:
+        from tournament_platform.app.components.csv_import_panel import (
+            parse_csv_text,
+            validate_rows,
+            partition_rows,
+            commit_rows,
+        )
+        from tournament_platform.config import settings
+
+        data = await request.json()
+        raw_csv = data.get("csv")
+        if not raw_csv:
+            raise HTTPException(status_code=400, detail="Missing 'csv' field")
+
+        rows = parse_csv_text(raw_csv)
+        existing = [
+            {"name": p.name, "email": p.email}
+            for p in db.query(Player).all()
+        ]
+        results = validate_rows(rows, existing)
+        importable, skipped = partition_rows(results)
+
+        if not importable:
+            return {
+                "status": "success",
+                "created": 0,
+                "skipped": len(skipped),
+                "preview": [
+                    {
+                        "line": r["line"],
+                        "name": r["name"],
+                        "email": r["email"],
+                        "errors": r["errors"],
+                        "duplicate_existing": r["duplicate_existing"],
+                        "duplicate_intra": r["duplicate_intra"],
+                    }
+                    for r in skipped
+                ],
+            }
+
+        created, errors = commit_rows(
+            importable,
+            db,
+            default_rating=settings.DEFAULT_PLAYER_RATING,
+            import_source="import",
+            registration_status="approved",
+        )
+        if errors:
+            raise HTTPException(status_code=400, detail="; ".join(errors))
+
+        log_audit(
+            db,
+            action="import_players_csv",
+            entity_type="player",
+            entity_id=None,
+            actor="operator",
+            payload={"created": created, "skipped": len(skipped)},
+        )
+
+        return {
+            "status": "success",
+            "created": created,
+            "skipped": len(skipped),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error importing players CSV: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to import players")
+
+
+@app.post("/api/public/register")
+async def api_public_register(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    """
+    Public self-registration (flag-gated; disabled by default).
+
+    Creates a player with ``registration_status='pending'`` and
+    ``import_source='self_register'``. An organizer must approve the player
+    before they appear in tournament selection.
+    """
+    from tournament_platform.config import settings
+
+    if not settings.ENABLE_SELF_REGISTRATION:
+        raise HTTPException(status_code=403, detail="Self-registration is disabled")
+
+    try:
+        data = await request.json()
+        name = (data.get("name") or "").strip()
+        email = (data.get("email") or "").strip()
+        if not name or not email:
+            raise HTTPException(status_code=400, detail="Name and email are required")
+
+        existing = db.query(Player).filter(
+            (Player.name == name) | (Player.email == email)
+        ).first()
+        if existing:
+            raise HTTPException(status_code=409, detail="Player already registered")
+
+        player = Player(
+            name=name,
+            email=email,
+            rating=settings.DEFAULT_PLAYER_RATING,
+            import_source="self_register",
+            registration_status="pending",
+        )
+        db.add(player)
+        db.commit()
+        return {
+            "status": "success",
+            "player_id": player.id,
+            "registration_status": "pending",
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in public register: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to register")
+
+
 # ============================================================================
 # Table Availability Endpoints
 # ============================================================================

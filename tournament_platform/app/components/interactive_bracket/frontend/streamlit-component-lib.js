@@ -33,12 +33,20 @@
 
     /**
      * Event management.
+     *
+     * The official streamlit-component-lib dispatches a CustomEvent whose
+     * payload lives on `event.detail`. Consumers (index.html) therefore read
+     * `event.detail.args` / `event.detail.theme`. This shim receives raw
+     * postMessage MessageEvents where the payload lives on `event.data` and
+     * `event.detail` is undefined. We MUST normalize to `{ detail: <payload> }`
+     * so the render handler doesn't throw `Cannot read properties of undefined`
+     * before it can size the iframe (which previously left the bracket blank).
      */
     events: {
       addEventListener: function(type, callback) {
         window.addEventListener("message", function(event) {
-          if (event.data.type === type) {
-            callback(event);
+          if (event.data && event.data.type === type) {
+            callback({ detail: event.data });
           }
         });
       }

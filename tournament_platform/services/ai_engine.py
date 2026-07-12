@@ -23,9 +23,9 @@ logger = logging.getLogger(__name__)
 
 class MatchReport(BaseModel):
     """Structured response from AI engine for match analysis"""
-    summary: str
-    key_play: str
-    predicted_winner: str
+    summary: Optional[str] = None
+    key_play: Optional[str] = None
+    predicted_winner: Optional[str] = None
 
 class MatchResult(BaseModel):
     """Structured match result extracted from speech with explicit player-score mapping"""

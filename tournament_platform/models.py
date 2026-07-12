@@ -48,6 +48,10 @@ class Player(Base):
     email = Column(String)
     rating = Column(Integer, default=1200)
 
+    # Onboarding workflow fields (nullable to preserve legacy rows)
+    import_source = Column(String, nullable=True)        # manual | import | self_register
+    registration_status = Column(String, nullable=True)  # approved | pending
+
     # Relationships
     rating_history = relationship("RatingHistory", back_populates="player", cascade="all, delete-orphan")
 

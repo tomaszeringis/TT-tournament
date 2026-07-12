@@ -362,6 +362,14 @@ class ApiClient:
             json={"score1": score1, "score2": score2, "winner": winner}
         )
 
+    def import_players_csv(self, csv_text: str) -> Optional[Dict[str, Any]]:
+        """Bulk-import players from CSV text via the operator endpoint."""
+        return self.post("/api/operator/players/import-csv", json={"csv": csv_text})
+
+    def public_register(self, name: str, email: str) -> Optional[Dict[str, Any]]:
+        """Public self-registration (flag-gated on the server)."""
+        return self.post("/api/public/register", json={"name": name, "email": email})
+
 
 # Default singleton instance
 api_client = ApiClient()

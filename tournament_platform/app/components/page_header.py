@@ -11,6 +11,7 @@ def render_page_header(
     title: str,
     description: str = "",
     icon: str = "",
+    icon_name: str = None,
     actions: list = None,
 ):
     """
@@ -20,10 +21,19 @@ def render_page_header(
         title: The main page title
         description: Optional description/subtitle text
         icon: Optional emoji or icon to display before title
+        icon_name: Optional logical LITIT icon key (e.g. ``"dashboard"``) rendered
+            as a small brand mark above the title via ``brand_assets``.
         actions: Optional list of (label, key) tuples for action buttons
     """
-    # Title (icons intentionally omitted)
-    st.title(title)
+    if icon_name:
+        try:
+            from tournament_platform.app.components.brand_assets import render_brand_icon
+            render_brand_icon(icon_name, width=40)
+        except Exception:
+            pass
+
+    # Title
+    st.title(f"{icon + ' ' if icon else ''}{title}")
 
     # Description
     if description:

@@ -26,6 +26,8 @@ def get_registry() -> DatasetRegistry:
 
 def show():
     """Display the experiment dashboard page."""
+    from tournament_platform.app.components.brand_assets import render_brand_icon
+    render_brand_icon("experiment_dashboard")
     st.title("LIT_IT Experiment Dashboard")
     render_tour("experiment_dashboard")
     st.markdown("Track and manage ML model training/evaluation experiments.")

@@ -52,13 +52,20 @@ STATUS_COLORS = {
 }
 
 # Brand metadata
+# Paths are resolved robustly (absolute, CWD-independent) via the brand helper.
+from tournament_platform.app.components.brand import (
+    TAGLINE,
+    logo_path,
+    icon_path,
+)
+
 BRAND = {
-    "name": "LIT_IT",
-    "full_name": "LIT_IT Tournament Platform",
-    "tagline": "part of NTT DATA",
-    "logo_light": "assets/brand/litit-logo-light.svg",
-    "logo_dark": "assets/brand/litit-logo-dark.svg",
-    "favicon": "assets/brand/litit-favicon.svg",
+    "name": "TT Tournament Platform",
+    "full_name": "TT Tournament Platform",
+    "tagline": TAGLINE,
+    "logo_light": logo_path(),
+    "logo_dark": logo_path(),
+    "favicon": icon_path(),
 }
 
 # Spacing
@@ -570,8 +577,77 @@ GLOBAL_STYLES = """
     ::-webkit-scrollbar-thumb:hover {
         background: #6B7280;
     }
+
+    /* Touch targets: minimum 44px for mobile/tablet playability */
+    .stButton > button {
+        min-height: 44px;
+    }
+    .stButton > button[data-baseweb="button"] {
+        min-width: 44px;
+    }
+    input[type="text"], input[type="email"], input[type="number"], textarea {
+        min-height: 44px;
+    }
+
+    /* Freshness / status chips */
+    .pb-chip {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        border: 1px solid #333436;
+        background-color: #1A1C1B;
+        color: #B0B3B8;
+    }
+    .pb-chip.green { border-color: #00C853; color: #00C853; }
+    .pb-chip.blue  { border-color: #0066FF; color: #0066FF; }
+    .pb-chip.amber { border-color: #FF6D00; color: #FF6D00; }
+    .pb-chip.red   { border-color: #FF1744; color: #FF1744; }
+
+    /* QR code container */
+    .qr-container {
+        display: inline-block;
+        background: #FFFFFF;
+        padding: 8px;
+        border-radius: 8px;
+    }
+    .qr-container svg { display: block; }
 </style>
 """
+
+
+def render_chip(label: str, color: str = "default") -> None:
+    """Render a small status/freshness chip.
+
+    ``color`` should be one of: default, green, blue, amber, red.
+    """
+    import streamlit as st
+
+    css_class = "" if color == "default" else f" {color}"
+    st.markdown(
+        f'<span class="pb-chip{css_class}">{label}</span>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_qr_code(url: str, scale: int = 4) -> None:
+    """Render an inline SVG QR code for ``url`` (pure-Python, no Pillow).
+
+    Falls back to a copyable link if ``segno`` is unavailable.
+    """
+    import streamlit as st
+
+    try:
+        import segno
+
+        qr_svg = segno.make(url).svg(scale=scale, out=None, border=0, xmldecl=False)
+        st.markdown(
+            f'<div class="qr-container">{qr_svg}</div>',
+            unsafe_allow_html=True,
+        )
+    except Exception:
+        st.markdown(f"[Link]({url})")
 
 
 def apply_global_styles() -> None:

@@ -69,6 +69,8 @@ EXAMPLE_QUESTIONS = [
 # ---------------------------------------------------------------------------
 # Page UI
 # ---------------------------------------------------------------------------
+from tournament_platform.app.components.brand_assets import render_brand_icon
+render_brand_icon("ai_assistant")
 st.title("LIT_IT AI Assistant")
 if get_script_run_ctx() is not None:
     render_tour("ai_assistant")

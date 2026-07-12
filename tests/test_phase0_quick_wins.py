@@ -327,3 +327,34 @@ class TestPublicReadMode:
         from tournament_platform.app.pages.public_board import is_public_read_mode
         # The function should be importable and callable
         assert is_public_read_mode.__code__.co_varnames == ('st',) or True  # Function exists
+
+
+class TestPublicBoardShareAndFreshness:
+    """Test the real share URL and freshness helper (Phase 1)."""
+
+    def test_get_public_url_includes_tournament(self):
+        from tournament_platform.app.pages.public_board import get_public_url
+        url = get_public_url(tournament_id=42, kiosk=True)
+        assert "tournament=42" in url
+        assert "kiosk=1" in url
+
+    def test_get_public_url_uses_config_base(self):
+        from tournament_platform.app.pages.public_board import get_public_url
+        from tournament_platform.config import settings
+        url = get_public_url()
+        assert url.startswith(settings.PUBLIC_BOARD_BASE_URL.rstrip("/"))
+
+    def test_render_freshness_bar_callable(self):
+        from tournament_platform.app.pages.public_board import render_freshness_bar
+        assert callable(render_freshness_bar)
+
+
+class TestWizardLabels:
+    """Test the wizard progress labels (Phase 1)."""
+
+    def test_wizard_step_labels(self):
+        from tournament_platform.app.pages.events_draws import render_tournament_creation_wizard
+        import inspect
+        source = inspect.getsource(render_tournament_creation_wizard)
+        for label in ["Basics", "Format", "Players", "Review"]:
+            assert label in source

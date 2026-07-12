@@ -14,6 +14,8 @@ from tournament_platform.app.design_system import apply_global_styles
 st.set_page_config(page_title="LIT_IT Participants (Moved)", layout="wide")
 apply_global_styles()
 
+from tournament_platform.app.components.brand_assets import render_brand_icon
+render_brand_icon("participants")
 st.title("LIT_IT Participants (Moved)")
 st.caption("Participant management has been moved to the Events & Draws page.")
 

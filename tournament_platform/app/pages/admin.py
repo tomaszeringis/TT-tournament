@@ -73,6 +73,8 @@ def get_cached_tournaments():
         db.close()
 
 
+from tournament_platform.app.components.brand_assets import render_brand_icon
+render_brand_icon("admin_operator")
 st.title("LIT_IT Admin / Operator Console")
 render_tour("admin")
 st.space("medium")

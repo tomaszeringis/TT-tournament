@@ -1,2 +1,0 @@
-[console_scripts]
-tournament-platform = tournament_platform.app.main:main

@@ -260,12 +260,16 @@ def render_overview_tab(data):
                         status.update(label="Analysis complete", state="complete", expanded=False)
 
                         st.write("**Summary:**")
-                        st.write(report.summary)
+                        if report.summary:
+                            st.write(report.summary)
 
                         st.write("**Key Play:**")
-                        st.write(report.key_play)
+                        if report.key_play:
+                            st.write(report.key_play)
 
-                        st.write(f"**Predicted Winner:** {report.predicted_winner}")
+                        st.write("**Predicted Winner:**")
+                        if report.predicted_winner:
+                            st.write(report.predicted_winner)
                     except Exception as e:
                         status.update(label="Error occurred", state="error", expanded=False)
                         st.error(f"Error generating insights: {e}")
@@ -367,6 +371,8 @@ def render_upcoming_matches_tab(data):
 
 def render_dashboard():
     """Render the optimized dashboard page with tabs."""
+    from tournament_platform.app.components.brand_assets import render_brand_icon
+    render_brand_icon("dashboard")
     st.title("📊 LIT_IT Dashboard")
 
     try:

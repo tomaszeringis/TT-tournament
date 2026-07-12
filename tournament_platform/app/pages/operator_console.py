@@ -3,10 +3,10 @@ Match Center
 
 A control panel for tournament operators to manage match flow.
 Features:
-- Match call queue with conflict detection
-- Table status overview
-- Rescheduling interface
-- Audit log viewer
+- Lane-based match flow (Now Playing, Up Next, Needs Attention, Table Status, Recent Results)
+- Quick actions, command bar, and voice shortcut
+- Manual score entry with draft + undo
+- Rescheduling, duplicate detection, health, audit, and announcements
 """
 
 import streamlit as st
@@ -45,7 +45,17 @@ from tournament_platform.app.components.operator_components import (
     render_audit_log,
     render_announcements_section,
     render_issues_table,
+    render_health_kpi,
+    render_now_playing_lane,
+    render_up_next_lane,
+    render_needs_attention_lane,
+    render_recent_results_lane,
 )
+from tournament_platform.app.components.manual_score_panel import render_manual_score_panel
+
+# Import the centralized API client
+from tournament_platform.app.api_client import api_client
+from tournament_platform.app.design_system import apply_global_styles
 
 
 # ============================================================================
@@ -116,11 +126,6 @@ def load_audit_log(limit: int = 100) -> List[Dict[str, Any]]:
 # API Helper Functions
 # ============================================================================
 
-# Import the centralized API client
-from tournament_platform.app.api_client import api_client
-from tournament_platform.app.design_system import apply_global_styles
-
-
 def call_match(match_id: int, table: Optional[str] = None) -> Dict[str, Any]:
     """Call a match via API."""
     result = api_client.call_match(match_id, table)
@@ -157,295 +162,48 @@ def reset_call_match(match_id: int) -> Dict[str, Any]:
     return result if result is not None else {"status": "error", "message": "API request failed"}
 
 
-# ============================================================================
-# UI Rendering - Tab-based Organization
-# ============================================================================
-
-def render_match_queue_tab(selected_id: int) -> None:
-    """Render the Match Queue tab content."""
-    # -------------------------------------------------------------------------
-    # Quick Actions Section
-    # -------------------------------------------------------------------------
-    def on_call_next():
-        try:
-            queue = load_operator_queue(selected_id)
-            next_match = next((m for m in queue if m.get("call_status") == "not_called"), None)
-            if next_match:
-                result = call_match(next_match["id"])
-                st.success(f"Match called: {result.get('message', '')}")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.info("No matches ready to call")
-        except Exception as e:
-            st.error(f"Failed to call match: {e}")
-
-    def on_start_next():
-        try:
-            queue = load_operator_queue(selected_id)
-            next_match = next((m for m in queue if m.get("call_status") == "called"), None)
-            if next_match:
-                result = start_match(next_match["id"])
-                st.success(f"Match started: {result.get('message', '')}")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.info("No matches ready to start")
-        except Exception as e:
-            st.error(f"Failed to start match: {e}")
-
-    def on_complete_next():
-        try:
-            queue = load_operator_queue(selected_id)
-            next_match = next((m for m in queue if m.get("call_status") == "active"), None)
-            if next_match:
-                result = complete_match(next_match["id"])
-                st.success(f"Match completed: {result.get('message', '')}")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.info("No active matches to complete")
-        except Exception as e:
-            st.error(f"Failed to complete match: {e}")
-
-    def on_delay_next():
-        try:
-            queue = load_operator_queue(selected_id)
-            next_match = next((m for m in queue if m.get("call_status") in ("not_called", "called", "active")), None)
-            if next_match:
-                result = delay_match(next_match["id"])
-                st.info(f"Match delayed: {result.get('message', '')}")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.info("No matches to delay")
-        except Exception as e:
-            st.error(f"Failed to delay match: {e}")
-
-    render_quick_actions(on_call_next, on_start_next, on_complete_next, on_delay_next)
-
-    st.divider()
-
-    # -------------------------------------------------------------------------
-    # Command Bar Section
-    # -------------------------------------------------------------------------
-    def on_command_submit(command_text: str, tournament_id: int):
-        parsed = parse_operator_command(command_text)
-
-        if parsed.intent.value == "unknown":
-            st.error(f"Unknown command: '{command_text}'")
-        else:
-            st.info(f"Intent: **{parsed.intent.value}** | Confidence: {parsed.confidence:.0%}")
-            st.markdown(f"**Preview:** {parsed.preview}")
-
-            if not parsed.requires_confirmation:
-                db = SessionLocal()
-                try:
-                    result = apply_operator_command(
-                        db,
-                        parsed,
-                        confirmed=True,
-                        tournament_id=tournament_id,
-                    )
-                    if result.get("status") == "success":
-                        st.success(result.get("message", "Command executed"))
-                        if result.get("data"):
-                            st.json(result.get("data"))
-                    else:
-                        st.error(result.get("message", "Command failed"))
-                except Exception as e:
-                    st.error(f"Error executing command: {e}")
-                finally:
-                    db.close()
-            else:
-                if st.button("✅ Confirm Action", key="confirm_command"):
-                    db = SessionLocal()
-                    try:
-                        result = apply_operator_command(
-                            db,
-                            parsed,
-                            confirmed=True,
-                            tournament_id=tournament_id,
-                        )
-                        if result.get("status") == "success":
-                            st.success(result.get("message", "Command executed"))
-                            st.cache_data.clear()
-                            st.rerun()
-                        else:
-                            st.error(result.get("message", "Command failed"))
-                    except Exception as e:
-                        st.error(f"Error executing command: {e}")
-                    finally:
-                        db.close()
-
-    render_command_bar(on_command_submit, selected_id)
-
-    st.divider()
-
-    # -------------------------------------------------------------------------
-    # Voice Shortcut Section
-    # -------------------------------------------------------------------------
-    def on_voice_command(text: str, tournament_id: int):
-        parsed = parse_operator_command(text)
-
-        if parsed.intent.value == "unknown":
-            st.error(f"Unknown command: '{text}'")
-        else:
-            st.info(f"Intent: **{parsed.intent.value}** | Confidence: {parsed.confidence:.0%}")
-            st.markdown(f"**Preview:** {parsed.preview}")
-
-            if not parsed.requires_confirmation:
-                db = SessionLocal()
-                try:
-                    result = apply_operator_command(
-                        db,
-                        parsed,
-                        confirmed=True,
-                        tournament_id=tournament_id,
-                    )
-                    if result.get("status") == "success":
-                        st.success(result.get("message", "Command executed"))
-                        if result.get("data"):
-                            st.json(result.get("data"))
-                    else:
-                        st.error(result.get("message", "Command failed"))
-                except Exception as e:
-                    st.error(f"Error executing command: {e}")
-                finally:
-                    db.close()
-            else:
-                if st.button("✅ Confirm Voice Command", key="confirm_voice_command"):
-                    db = SessionLocal()
-                    try:
-                        result = apply_operator_command(
-                            db,
-                            parsed,
-                            confirmed=True,
-                            tournament_id=tournament_id,
-                        )
-                        if result.get("status") == "success":
-                            st.success(result.get("message", "Command executed"))
-                            st.cache_data.clear()
-                            st.rerun()
-                        else:
-                            st.error(result.get("message", "Command failed"))
-                    except Exception as e:
-                        st.error(f"Error executing command: {e}")
-                    finally:
-                        db.close()
-
-    render_voice_shortcut(on_voice_command, selected_id)
-
-    st.divider()
-
-    # -------------------------------------------------------------------------
-    # Match Queue List Section
-    # -------------------------------------------------------------------------
-    st.subheader("📋 Match Queue")
-
+def _dispatch(fn, match_id: int, verb: str) -> None:
+    """Run an operator action then clear cache and rerun (mirrors prior behavior)."""
     try:
-        queue = load_operator_queue(selected_id)
-        table_status = load_table_status(selected_id)
+        fn(match_id)
+        st.cache_data.clear()
+        st.rerun()
     except Exception as e:
-        st.error(f"Failed to load queue: {e}")
-        queue = []
-        table_status = []
+        st.error(f"Failed to {verb} match: {e}")
 
-    if queue:
-        for match in queue:
-            match_id = match.get("id")
-            call_status = match.get("call_status", "not_called")
 
-            with st.container(border=True):
-                col_info, col_actions = st.columns([3, 1])
+def _build_callbacks() -> Dict[str, Any]:
+    """Build the action-callback dict used by the lane renderers."""
+    return {
+        "call": lambda mid: _dispatch(call_match, mid, "call"),
+        "start": lambda mid: _dispatch(start_match, mid, "start"),
+        "complete": lambda mid: _dispatch(complete_match, mid, "complete"),
+        "delay": lambda mid: _dispatch(delay_match, mid, "delay"),
+        "reset": lambda mid: _dispatch(reset_call_match, mid, "reset"),
+        "reschedule": lambda mid, iso, tbl: _dispatch(
+            lambda m=mid: reschedule_match(m, iso, tbl), mid, "reschedule"
+        ),
+    }
 
-                with col_info:
-                    st.markdown(f"**{match.get('player1', '?')} vs {match.get('player2', '?')}**")
-                    st.markdown(f"📍 {match.get('location', 'No table')}")
-                    st.markdown(f"⏰ {match.get('scheduled_time', 'No time')}")
-                    st.markdown(f"🏷️ {match.get('display_label', 'Match')}")
 
-                    conflict_flags = match.get("conflict_flags", [])
-                    if "table_conflict" in conflict_flags:
-                        st.error("⚠️ Table conflict detected!")
-                    if "missing_table" in conflict_flags:
-                        st.warning("⚠️ No table assigned")
+def _partition_queue(queue: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
+    """Partition the operator queue into lane buckets.
 
-                with col_actions:
-                    if call_status == "not_called":
-                        if st.button("📢 Call", key=f"call_{match_id}"):
-                            result = call_match(match_id)
-                            st.success(f"Match called: {result.get('message', '')}")
-                            st.cache_data.clear()
-                            st.rerun()
-                    elif call_status == "called":
-                        if st.button("▶️ Start", key=f"start_{match_id}"):
-                            result = start_match(match_id)
-                            st.success(f"Match started: {result.get('message', '')}")
-                            st.cache_data.clear()
-                            st.rerun()
-                    elif call_status == "active":
-                        if st.button("✅ Complete", key=f"complete_{match_id}"):
-                            result = complete_match(match_id)
-                            st.success(f"Match completed: {result.get('message', '')}")
-                            st.cache_data.clear()
-                            st.rerun()
-
-                    if st.button("⏸ Delay", key=f"delay_{match_id}"):
-                        result = delay_match(match_id)
-                        st.info(f"Match delayed: {result.get('message', '')}")
-                        st.cache_data.clear()
-                        st.rerun()
-
-                    if st.button("🔄 Reset", key=f"reset_{match_id}"):
-                        result = reset_call_match(match_id)
-                        st.info(f"Match reset: {result.get('message', '')}")
-                        st.cache_data.clear()
-                        st.rerun()
-
-                    if st.button("📅 Reschedule", key=f"reschedule_{match_id}"):
-                        st.session_state[f"show_reschedule_{match_id}"] = True
-
-                    if st.session_state.get(f"show_reschedule_{match_id}"):
-                        with st.form(key=f"reschedule_form_{match_id}"):
-                            col_date, col_time = st.columns([1, 1])
-                            with col_date:
-                                new_date = st.date_input(
-                                    "Date",
-                                    value=datetime.now(timezone.utc).date(),
-                                    key=f"new_date_{match_id}"
-                                )
-                            with col_time:
-                                new_time_input = st.time_input(
-                                    "Time",
-                                    value=datetime.now(timezone.utc).time(),
-                                    key=f"new_time_{match_id}"
-                                )
-
-                            table_options = [""] + [t["table_name"] for t in table_status]
-                            new_table = st.selectbox(
-                                "Table (optional)",
-                                options=table_options,
-                                index=0,
-                                key=f"new_table_{match_id}"
-                            )
-
-                            submitted = st.form_submit_button("Save")
-                            if submitted:
-                                combined_dt = datetime.combine(new_date, new_time_input)
-                                combined_dt = combined_dt.replace(tzinfo=timezone.utc)
-
-                                if combined_dt < datetime.now(timezone.utc):
-                                    st.error("Please select a date/time in the future")
-                                else:
-                                    iso_time = combined_dt.isoformat()
-                                    result = reschedule_match(match_id, iso_time, new_table if new_table else None)
-                                    st.success(f"Match rescheduled: {result.get('message', '')}")
-                                    st.session_state[f"show_reschedule_{match_id}"] = False
-                                    st.cache_data.clear()
-                                    st.rerun()
-    else:
-        st.info("No matches in queue.")
+    - now_playing: active or called (plus delayed surfaced as attention elsewhere)
+    - up_next: queued/pending/not_called
+    - completed: status == completed
+    Each match appears in exactly one primary lane bucket.
+    """
+    now_playing = [m for m in queue if m.get("call_status") in ("active", "called")]
+    up_next = [m for m in queue if m.get("call_status") in ("not_called", "queued", "pending")]
+    delayed = [m for m in queue if m.get("call_status") == "delayed"]
+    completed = [m for m in queue if m.get("status") == "completed"]
+    return {
+        "now_playing": now_playing,
+        "delayed": delayed,
+        "up_next": up_next,
+        "completed": completed,
+    }
 
 
 def render_table_status_tab(selected_id: int) -> None:
@@ -499,8 +257,47 @@ def render_table_status_tab(selected_id: int) -> None:
     render_table_status_section(table_availability, on_set_max_tables, on_create_tables)
 
 
+def render_match_queue_tab(selected_id: int) -> None:
+    """Render the Match Queue lane view (used by Admin and Operator Console).
+
+    Kept as a stable entry point for ``admin.py`` and tests; it reuses the same
+    lane renderers and manual score panel as the full console.
+    """
+    try:
+        queue = load_operator_queue(selected_id)
+        table_status = load_table_status(selected_id)
+    except Exception as e:
+        st.error(f"Failed to load queue: {e}")
+        return
+
+    for m in queue:
+        m["_table_status"] = table_status
+
+    partitions = _partition_queue(queue)
+    callbacks = _build_callbacks()
+
+    render_now_playing_lane(
+        partitions["now_playing"] + partitions["delayed"], callbacks, key_prefix="adm_now"
+    )
+
+    st.divider()
+
+    render_up_next_lane(partitions["up_next"], callbacks, key_prefix="adm_upnext")
+
+    st.divider()
+
+    st.subheader("✍️ Manual Score Entry")
+    st.caption("Draft the score with undo. Only confirmed results are committed.")
+    active_only = [m for m in partitions["now_playing"] if m.get("call_status") == "active"]
+    if active_only:
+        for m in active_only:
+            render_manual_score_panel(m, key_prefix="adm_msp")
+    else:
+        st.info("No active matches to score. Start a match first.")
+
+
 def render_operator_console() -> None:
-    """Render the operator console page with tabs."""
+    """Render the operator console page with lane-based organization."""
     st.set_page_config(
         page_title="LIT_IT Match Center",
         page_icon="🎛️",
@@ -509,6 +306,8 @@ def render_operator_console() -> None:
 
     apply_global_styles()
 
+    from tournament_platform.app.components.brand_assets import render_brand_icon
+    render_brand_icon("admin_operator")
     st.title("🎛️ LIT_IT Match Center")
     st.caption("Manage match flow and table assignments")
 
@@ -540,89 +339,35 @@ def render_operator_console() -> None:
 
     st.divider()
 
-    # Tabs for Match Center
-    tabs = st.tabs(["Match Queue", "Table Status"])
-
-    with tabs[0]:
-        render_match_queue_tab(selected_id)
-
-    with tabs[1]:
-        render_table_status_tab(selected_id)
-
-    st.divider()
-
     # -------------------------------------------------------------------------
-    # Match Reporting Section
+    # Load shared data once (fixes the previous `queue` name-resolution bug)
     # -------------------------------------------------------------------------
-    st.subheader("📊 Match Reporting")
-    st.caption("Quick score entry for completed matches")
+    try:
+        queue = load_operator_queue(selected_id)
+        table_status = load_table_status(selected_id)
+    except Exception as e:
+        st.error(f"Failed to load queue: {e}")
+        queue = []
+        table_status = []
 
-    active_matches = [m for m in queue if m.get("call_status") == "active"]
+    # Attach table status so lane reschedule forms can offer tables.
+    for m in queue:
+        m["_table_status"] = table_status
 
-    if active_matches:
-        for match in active_matches:
-            match_id = match.get("id")
-            p1 = match.get("player1", "?")
-            p2 = match.get("player2", "?")
-            current_score = match.get("score", "0-0")
+    active = [m for m in queue if m.get("call_status") in ("active", "called")]
+    delayed = [m for m in queue if m.get("call_status") == "delayed"]
+    up_next = [m for m in queue if m.get("call_status") in ("not_called", "queued", "pending")]
+    completed = [m for m in queue if m.get("status") == "completed"]
 
-            with st.container(border=True):
-                st.markdown(f"**{p1} vs {p2}**")
+    partitions = _partition_queue(queue)
+    active = partitions["now_playing"]
+    delayed = partitions["delayed"]
+    up_next = partitions["up_next"]
+    completed = partitions["completed"]
 
-                col_score, col_winner, col_report = st.columns([2, 2, 1])
-
-                with col_score:
-                    score_input = st.text_input(
-                        "Score (e.g., 11-9)",
-                        value=current_score,
-                        key=f"score_input_{match_id}",
-                        label_visibility="collapsed",
-                    )
-
-                with col_winner:
-                    winner_options = [p1, p2, "Not decided"]
-                    winner = st.selectbox(
-                        "Winner",
-                        options=winner_options,
-                        key=f"winner_select_{match_id}",
-                        label_visibility="collapsed",
-                    )
-
-                with col_report:
-                    st.markdown("###")
-                    if st.button("Report", key=f"report_{match_id}", type="primary"):
-                        try:
-                            s1, s2 = map(int, score_input.split("-"))
-                            if s1 < 0 or s2 < 0:
-                                st.error("Scores must be non-negative")
-                            else:
-                                result = api_client.report_match(
-                                    match_id=match_id,
-                                    score1=s1,
-                                    score2=s2,
-                                    winner=winner if winner != "Not decided" else None,
-                                )
-                                if result and result.get("status") == "success":
-                                    st.success("Match reported!")
-                                    st.cache_data.clear()
-                                    st.rerun()
-                                else:
-                                    st.error(f"Failed to report: {result.get('message', 'Unknown error')}")
-                        except ValueError:
-                            st.error("Invalid score format. Use '11-9' format.")
-    else:
-        st.info("No active matches to report. Start a match first.")
-
-    st.divider()
-
-    # -------------------------------------------------------------------------
-    # Health Dashboard Section
-    # -------------------------------------------------------------------------
-    st.subheader("📊 Tournament Health")
-
+    # Tournament health (for issues lane + KPIs)
     @st.cache_data(ttl=10, show_spinner="Loading health data...")
     def load_tournament_health(tournament_id: int) -> Dict[str, Any]:
-        """Load tournament health data."""
         db = SessionLocal()
         try:
             from tournament_platform.services.health_service import get_tournament_health
@@ -636,29 +381,105 @@ def render_operator_console() -> None:
         st.error(f"Failed to load health data: {e}")
         health = {"match_counts": {}, "table_utilization": {}, "issues": []}
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Active Matches", health.get("match_counts", {}).get("active", 0))
-    with col2:
-        st.metric("Called Matches", health.get("match_counts", {}).get("called", 0))
-    with col3:
-        st.metric("Delayed Matches", health.get("match_counts", {}).get("delayed", 0))
-    with col4:
-        st.metric("Table Utilization", f"{health.get('table_utilization', {}).get('utilization_percent', 0)}%")
-
     issues = health.get("issues", [])
-    render_issues_table(issues)
+    callbacks = _build_callbacks()
+
+    # -------------------------------------------------------------------------
+    # Lanes
+    # -------------------------------------------------------------------------
+    tabs = st.tabs(["Now Playing", "Up Next", "Needs Attention", "Table Status", "Recent Results"])
+
+    with tabs[0]:
+        # Quick actions (Call/Start/Complete/Delay Next)
+        def on_call_next():
+            nxt = next((m for m in queue if m.get("call_status") == "not_called"), None)
+            if nxt:
+                _dispatch(call_match, nxt["id"], "call")
+            else:
+                st.info("No matches ready to call")
+
+        def on_start_next():
+            nxt = next((m for m in queue if m.get("call_status") == "called"), None)
+            if nxt:
+                _dispatch(start_match, nxt["id"], "start")
+            else:
+                st.info("No matches ready to start")
+
+        def on_complete_next():
+            nxt = next((m for m in queue if m.get("call_status") == "active"), None)
+            if nxt:
+                _dispatch(complete_match, nxt["id"], "complete")
+            else:
+                st.info("No active matches to complete")
+
+        def on_delay_next():
+            nxt = next((m for m in queue if m.get("call_status") in ("not_called", "called", "active")), None)
+            if nxt:
+                _dispatch(delay_match, nxt["id"], "delay")
+            else:
+                st.info("No matches to delay")
+
+        render_quick_actions(on_call_next, on_start_next, on_complete_next, on_delay_next)
+
+        st.divider()
+
+        def on_command_submit(command_text: str, tournament_id: int):
+            _apply_command(command_text, tournament_id)
+
+        render_command_bar(on_command_submit, selected_id)
+
+        st.divider()
+
+        def on_voice_command(text: str, tournament_id: int):
+            _apply_command(text, tournament_id)
+
+        render_voice_shortcut(on_voice_command, selected_id)
+
+        st.divider()
+
+        render_now_playing_lane(active + delayed, callbacks, key_prefix="now")
+
+        st.divider()
+
+        # Manual score entry (draft + undo) for active matches
+        st.subheader("✍️ Manual Score Entry")
+        st.caption("Draft the score with undo. Only confirmed results are committed.")
+        active_only = [m for m in active if m.get("call_status") == "active"]
+        if active_only:
+            for m in active_only:
+                render_manual_score_panel(m, key_prefix="msp")
+        else:
+            st.info("No active matches to score. Start a match first.")
+
+    with tabs[1]:
+        render_up_next_lane(up_next, callbacks, key_prefix="upnext")
+
+    with tabs[2]:
+        render_needs_attention_lane(issues, queue, callbacks, key_prefix="attn")
+
+    with tabs[3]:
+        render_table_status_tab(selected_id)
+
+    with tabs[4]:
+        render_recent_results_lane(completed)
 
     st.divider()
 
     # -------------------------------------------------------------------------
-    # Duplicate Players Section
+    # Tournament Health KPIs (compact, always visible)
+    # -------------------------------------------------------------------------
+    st.subheader("📊 Tournament Health")
+    render_health_kpi(health)
+
+    st.divider()
+
+    # -------------------------------------------------------------------------
+    # Duplicate Player Detection
     # -------------------------------------------------------------------------
     st.subheader("🔍 Duplicate Player Detection")
 
     @st.cache_data(ttl=30, show_spinner="Scanning for duplicates...")
     def load_duplicate_candidates() -> List[Dict[str, Any]]:
-        """Load duplicate player candidates."""
         db = SessionLocal()
         try:
             from tournament_platform.services.duplicate_players import find_duplicate_candidates
@@ -746,7 +567,7 @@ def render_operator_console() -> None:
     st.divider()
 
     # -------------------------------------------------------------------------
-    # Player Path Section
+    # Player Path
     # -------------------------------------------------------------------------
     st.subheader("🎯 Player Path")
 
@@ -765,7 +586,7 @@ def render_operator_console() -> None:
     st.divider()
 
     # -------------------------------------------------------------------------
-    # Audit Log Section
+    # Audit Log
     # -------------------------------------------------------------------------
     try:
         audit = load_audit_log(limit=50)
@@ -778,9 +599,61 @@ def render_operator_console() -> None:
     st.divider()
 
     # -------------------------------------------------------------------------
-    # Announcements Section
+    # Announcements
     # -------------------------------------------------------------------------
     render_announcements_section(selected_id, selected_name)
+
+
+def _apply_command(command_text: str, tournament_id: int) -> None:
+    """Parse and apply an operator command (from command bar or voice)."""
+    parsed = parse_operator_command(command_text)
+
+    if parsed.intent.value == "unknown":
+        st.error(f"Unknown command: '{command_text}'")
+        return
+
+    st.info(f"Intent: **{parsed.intent.value}** | Confidence: {parsed.confidence:.0%}")
+    st.markdown(f"**Preview:** {parsed.preview}")
+
+    if not parsed.requires_confirmation:
+        db = SessionLocal()
+        try:
+            result = apply_operator_command(
+                db,
+                parsed,
+                confirmed=True,
+                tournament_id=tournament_id,
+            )
+            if result.get("status") == "success":
+                st.success(result.get("message", "Command executed"))
+                if result.get("data"):
+                    st.json(result.get("data"))
+            else:
+                st.error(result.get("message", "Command failed"))
+        except Exception as e:
+            st.error(f"Error executing command: {e}")
+        finally:
+            db.close()
+    else:
+        if st.button("✅ Confirm Action", key="confirm_command"):
+            db = SessionLocal()
+            try:
+                result = apply_operator_command(
+                    db,
+                    parsed,
+                    confirmed=True,
+                    tournament_id=tournament_id,
+                )
+                if result.get("status") == "success":
+                    st.success(result.get("message", "Command executed"))
+                    st.cache_data.clear()
+                    st.rerun()
+                else:
+                    st.error(result.get("message", "Command failed"))
+            except Exception as e:
+                st.error(f"Error executing command: {e}")
+            finally:
+                db.close()
 
 
 if __name__ == "__main__":

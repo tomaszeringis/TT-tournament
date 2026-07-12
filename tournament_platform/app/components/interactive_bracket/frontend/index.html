@@ -81,7 +81,7 @@
         #bracket-wrapper {
             width: 100%;
             height: 100%;
-            overflow: hidden;
+            overflow: auto;
             cursor: grab;
             display: flex;
             align-items: center;
@@ -222,52 +222,85 @@
             root.style.setProperty('--font', theme.font);
         }
 
-        function onRender(event) {
-            // Apply theme
-            applyTheme(event.detail.theme);
+        function showRenderError(container, message, detail) {
+            if (!container) return;
+            container.innerHTML =
+                '<div style="color: #ff4b4b; padding: 20px; text-align: center;">' +
+                '<h3 style="margin: 0 0 8px 0;">Bracket could not be displayed</h3>' +
+                '<p style="margin: 0;">' + (message || 'An unexpected error occurred while rendering the bracket.') + '</p>' +
+                (detail ? '<small style="opacity: 0.7;">' + detail + '</small>' : '') +
+                '</div>';
+        }
 
-            const args = event.detail.args;
+        function onRender(event) {
+            const detail = (event && event.detail) || {};
+            const args = detail.args || {};
             const bracket_data = args.bracket_data;
             const height = args.height || 600;
-            
+            // Never let the iframe collapse to near-zero height, even on error.
+            const safeHeight = Math.max(height, 200);
+
             const container = document.getElementById('bracket-container');
             const wrapper = document.getElementById('bracket-wrapper');
 
-            if (window.bracketsViewer && bracket_data) {
-                // Clear and render
-                container.innerHTML = '';
-                window.bracketsViewer.render(bracket_data, {
-                    selector: '#bracket-container',
-                    responsive: true,
-                    separatedChildCount: true,
-                    showStageName: true,
-                    showFinal: true,
-                    onMatchClick: (match) => {
-                        Streamlit.setComponentValue(match);
-                    }
-                });
+            try {
+                // Apply theme (guarded: theme may be missing on some hosts).
+                applyTheme(detail.theme);
 
-                // Initialize Panzoom
-                if (!panzoomInstance && window.Panzoom) {
-                    panzoomInstance = Panzoom(container, {
-                        maxScale: 3,
-                        minScale: 0.3,
-                        contain: 'outside'
+                // Surface any error that was captured before render (e.g. during
+                // library load). Previously this was only checked once at initial
+                // page load, so late errors were swallowed silently.
+                if (window.lastError) {
+                    showRenderError(
+                        container,
+                        window.lastError.msg,
+                        'Line: ' + window.lastError.lineNo + ', Column: ' + window.lastError.columnNo
+                    );
+                    Streamlit.setFrameHeight(safeHeight);
+                    return;
+                }
+
+                if (window.bracketsViewer && bracket_data) {
+                    // Clear and render
+                    container.innerHTML = '';
+                    window.bracketsViewer.render(bracket_data, {
+                        selector: '#bracket-container',
+                        responsive: true,
+                        separatedChildCount: true,
+                        showStageName: true,
+                        showFinal: true,
+                        onMatchClick: (match) => {
+                            Streamlit.setComponentValue(match);
+                        }
                     });
 
-                    wrapper.addEventListener('wheel', panzoomInstance.zoomWithWheel);
-                    
-                    document.getElementById('zoom-in').addEventListener('click', () => panzoomInstance.zoomIn());
-                    document.getElementById('zoom-out').addEventListener('click', () => panzoomInstance.zoomOut());
-                    document.getElementById('reset').addEventListener('click', () => panzoomInstance.reset());
-                }
-            } else if (!bracket_data) {
-                container.innerHTML = '<p style="padding: 20px;">No bracket data provided.</p>';
-            } else {
-                container.innerHTML = '<p style="color: red; padding: 20px;">Error: Libraries failed to load.</p>';
-            }
+                    // Initialize Panzoom
+                    if (!panzoomInstance && window.Panzoom) {
+                        panzoomInstance = Panzoom(container, {
+                            maxScale: 3,
+                            minScale: 0.3,
+                            contain: 'outside'
+                        });
 
-            Streamlit.setFrameHeight(height); 
+                        wrapper.addEventListener('wheel', panzoomInstance.zoomWithWheel);
+
+                        document.getElementById('zoom-in').addEventListener('click', () => panzoomInstance.zoomIn());
+                        document.getElementById('zoom-out').addEventListener('click', () => panzoomInstance.zoomOut());
+                        document.getElementById('reset').addEventListener('click', () => panzoomInstance.reset());
+                    }
+                } else if (!bracket_data) {
+                    container.innerHTML = '<p style="padding: 20px;">No bracket data provided.</p>';
+                } else {
+                    showRenderError(container, 'The tournament bracket library failed to load.');
+                }
+            } catch (err) {
+                // A render failure must not leave a silent, zero-height blank.
+                console.error("Bracket render error:", err);
+                showRenderError(container, 'The bracket data could not be rendered.', err && err.message);
+            } finally {
+                // Always set a frame height so the iframe is never collapsed.
+                Streamlit.setFrameHeight(safeHeight);
+            }
         }
 
         // Register the render callback

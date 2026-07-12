@@ -147,6 +147,15 @@ class Settings(BaseSettings):
     VIDEO_FRAME_SKIP: int = 2  # Process every Nth frame for performance
     VIDEO_AUTO_SUGGEST: bool = False  # Auto-suggest in live mode
 
+    # -------------------------------------------------------------------------
+    # UX & Market-Driven features (all opt-in; safe defaults)
+    # -------------------------------------------------------------------------
+    ENABLE_AI_MATCH_INSIGHTS: bool = False       # Post-match AI insight cards
+    ENABLE_SELF_REGISTRATION: bool = False      # Public self-serve registration
+    ENABLE_CSV_BULK_IMPORT: bool = True         # CSV bulk participant import
+    PUBLIC_BOARD_BASE_URL: str = "http://localhost:8501/public_board"
+    PUBLIC_BOARD_STALE_SECONDS: int = 60         # Threshold for "data may be stale"
+
     @model_validator(mode='after')
     def resolve_absolute_paths(self):
         """Resolve relative paths to absolute paths at runtime."""

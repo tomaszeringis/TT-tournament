@@ -357,3 +357,221 @@ def render_announcements_section(tournament_id: int, tournament_name: str) -> No
                 st.caption(f"Status: {ann.get('sent_status', 'unknown')} | {ann.get('created_at', 'N/A')}")
     else:
         st.info("No announcements yet.")
+
+
+# ============================================================================
+# Operator Console "lanes" (Phase 3 reorganization)
+# Each lane partitions the same operator queue into a focused, actionable view.
+# ============================================================================
+
+ActionCallbacks = Dict[str, Callable[[int], None]]
+
+
+def _render_lane_match_card(
+    match: Dict[str, Any],
+    callbacks: ActionCallbacks,
+    key_prefix: str = "lane",
+) -> None:
+    """Render a single match card inside a lane with status-appropriate actions."""
+    conflict_flags = match.get("conflict_flags", [])
+    has_conflict = "table_conflict" in conflict_flags
+    missing_table = "missing_table" in conflict_flags
+    missing_time = "missing_scheduled_time" in conflict_flags
+
+    with st.container(border=True):
+        col_info, col_actions = st.columns([3, 1])
+
+        with col_info:
+            st.markdown(f"**{match.get('player1', '?')} vs {match.get('player2', '?')}**")
+            st.markdown(f"📍 {match.get('location', 'No table')}")
+            st.markdown(f"⏰ {match.get('scheduled_time', 'No time')}")
+            st.markdown(f"🏷️ {match.get('display_label', 'Match')}")
+
+            if has_conflict:
+                st.error("⚠️ Table conflict detected!")
+            if missing_table:
+                st.warning("⚠️ No table assigned")
+            if missing_time:
+                st.warning("⚠️ No scheduled time")
+
+        with col_actions:
+            match_id = match.get("id")
+            call_status = match.get("call_status", "not_called")
+
+            if call_status == "not_called":
+                st.button(
+                    "📢 Call",
+                    key=f"{key_prefix}_call_{match_id}",
+                    on_click=lambda mid=match_id: callbacks["call"](mid),
+                )
+            elif call_status == "called":
+                st.button(
+                    "▶️ Start",
+                    key=f"{key_prefix}_start_{match_id}",
+                    on_click=lambda mid=match_id: callbacks["start"](mid),
+                )
+            elif call_status == "active":
+                st.button(
+                    "✅ Complete",
+                    key=f"{key_prefix}_complete_{match_id}",
+                    on_click=lambda mid=match_id: callbacks["complete"](mid),
+                )
+
+            st.button(
+                "⏸ Delay",
+                key=f"{key_prefix}_delay_{match_id}",
+                on_click=lambda mid=match_id: callbacks["delay"](mid),
+            )
+            st.button(
+                "🔄 Reset",
+                key=f"{key_prefix}_reset_{match_id}",
+                on_click=lambda mid=match_id: callbacks["reset"](mid),
+            )
+            if st.button("📅 Reschedule", key=f"{key_prefix}_resch_{match_id}"):
+                st.session_state[f"show_reschedule_{key_prefix}_{match_id}"] = True
+
+            if st.session_state.get(f"show_reschedule_{key_prefix}_{match_id}"):
+                _render_reschedule_form(match, callbacks, key_prefix)
+
+
+def _render_reschedule_form(
+    match: Dict[str, Any],
+    callbacks: ActionCallbacks,
+    key_prefix: str,
+) -> None:
+    """Render the reschedule form for a match inside its lane card."""
+    from datetime import datetime, timezone
+
+    match_id = match.get("id")
+    table_status = match.get("_table_status", [])
+
+    with st.form(key=f"{key_prefix}_reschedule_form_{match_id}"):
+        col_date, col_time = st.columns([1, 1])
+        with col_date:
+            new_date = st.date_input(
+                "Date",
+                value=datetime.now(timezone.utc).date(),
+                key=f"{key_prefix}_new_date_{match_id}",
+            )
+        with col_time:
+            new_time_input = st.time_input(
+                "Time",
+                value=datetime.now(timezone.utc).time(),
+                key=f"{key_prefix}_new_time_{match_id}",
+            )
+
+        table_options = [""] + [t["table_name"] for t in table_status]
+        new_table = st.selectbox(
+            "Table (optional)",
+            options=table_options,
+            index=0,
+            key=f"{key_prefix}_new_table_{match_id}",
+        )
+
+        submitted = st.form_submit_button("Save")
+        if submitted:
+            combined_dt = datetime.combine(new_date, new_time_input).replace(tzinfo=timezone.utc)
+            if combined_dt < datetime.now(timezone.utc):
+                st.error("Please select a date/time in the future")
+            else:
+                iso_time = combined_dt.isoformat()
+                callbacks["reschedule"](
+                    match_id, iso_time, new_table if new_table else None
+                )
+                st.session_state[f"show_reschedule_{key_prefix}_{match_id}"] = False
+
+
+def render_now_playing_lane(
+    matches: List[Dict[str, Any]],
+    callbacks: ActionCallbacks,
+    key_prefix: str = "now",
+) -> None:
+    """Render the 'Now Playing' lane: active and called matches."""
+    st.subheader("🎾 Now Playing")
+    if not matches:
+        st.info("No active or called matches right now.")
+        return
+    for match in matches:
+        _render_lane_match_card(match, callbacks, key_prefix=key_prefix)
+
+
+def render_up_next_lane(
+    matches: List[Dict[str, Any]],
+    callbacks: ActionCallbacks,
+    key_prefix: str = "upnext",
+) -> None:
+    """Render the 'Up Next' lane: matches waiting to be called."""
+    st.subheader("⏭️ Up Next")
+    if not matches:
+        st.info("Nothing queued to call yet.")
+        return
+    for match in matches:
+        _render_lane_match_card(match, callbacks, key_prefix=key_prefix)
+
+
+def render_needs_attention_lane(
+    issues: List[Dict[str, Any]],
+    queue: List[Dict[str, Any]],
+    callbacks: ActionCallbacks,
+    key_prefix: str = "attn",
+) -> None:
+    """Render the 'Needs Attention' lane: health issues + conflicted matches."""
+    st.subheader("⚠️ Needs Attention")
+
+    if issues:
+        render_issues_table(issues)
+
+    attention = [m for m in queue if m.get("conflict_flags")]
+    if attention:
+        st.markdown("**Matches with conflicts**")
+        for match in attention:
+            _render_lane_match_card(match, callbacks, key_prefix=key_prefix)
+
+    if not issues and not attention:
+        st.success("Nothing needs attention. 🎉")
+
+
+def render_recent_results_lane(
+    completed: List[Dict[str, Any]],
+    key_prefix: str = "recent",
+) -> None:
+    """Render the 'Recent Results' lane: completed matches with scores/winners."""
+    from tournament_platform.app.design_system import COLORS
+
+    st.subheader("📋 Recent Results")
+    if not completed:
+        st.info("No completed matches yet.")
+        return
+
+    for match in completed[:10]:
+        p1 = match.get("player1") or "TBD"
+        p2 = match.get("player2") or "TBD"
+        score = match.get("score") or "vs"
+        winner = match.get("winner") or "Pending"
+        scheduled = match.get("scheduled_time")
+        time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
+
+        st.markdown(
+            f"""
+            <div style="
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 10px 16px;
+                border-bottom: 1px solid {COLORS['border']};
+            ">
+                <span style="color: {COLORS['text_secondary']}; font-size: 14px;">{time_str}</span>
+                <span style="flex: 1; text-align: center; font-size: 18px;">
+                    <b>{p1}</b> {score} <b>{p2}</b>
+                </span>
+                <span style="color: {COLORS['accent_green']}; font-size: 14px;">🏆 {winner}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        try:
+            from tournament_platform.app.components.ai_insight_card import render_ai_insight_card
+            render_ai_insight_card(match)
+        except Exception:
+            pass

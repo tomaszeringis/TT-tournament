@@ -10,6 +10,7 @@ import pandas as pd
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 import urllib.parse
+import time
 
 from tournament_platform.models import SessionLocal
 from tournament_platform.app.utils import render_database_error
@@ -48,14 +49,52 @@ def is_public_read_mode() -> bool:
     return query_params.get("public_read") == "1"
 
 
-def get_public_url(tournament_id: Optional[int] = None) -> str:
-    """Generate the public URL for the current page, optionally with tournament context."""
-    # Streamlit doesn't have a get_url() method, use a placeholder that can be overridden
-    # In production, this should be set via environment variable or config
-    base_url = "http://localhost:8501/public_board"
+def get_public_url(tournament_id: Optional[int] = None, kiosk: bool = False, public_read: bool = False) -> str:
+    """Generate the public URL for the current page, optionally with tournament context.
+
+    The base URL is sourced from ``settings.PUBLIC_BOARD_BASE_URL`` so it can be
+    overridden per deployment (e.g. a public domain) instead of hardcoding localhost.
+    """
+    from tournament_platform.config import settings
+
+    base_url = settings.PUBLIC_BOARD_BASE_URL.rstrip("/")
+    params = {}
     if tournament_id:
-        return f"{base_url}?tournament={tournament_id}"
+        params["tournament"] = str(tournament_id)
+    if kiosk:
+        params["kiosk"] = "1"
+    if public_read:
+        params["public_read"] = "1"
+    if params:
+        query = urllib.parse.urlencode(params)
+        return f"{base_url}?{query}"
     return base_url
+
+
+def render_freshness_bar(kiosk: bool) -> None:
+    """Render the data-freshness and auto-refresh-state chips.
+
+    Freshness is measured against ``st.session_state['pb_data_ts']`` which is stamped
+    immediately after each data load (NOT at page top), so it reflects real data age.
+    """
+    import time
+    from tournament_platform.config import settings
+    from tournament_platform.app.design_system import render_chip
+
+    stale_seconds = settings.PUBLIC_BOARD_STALE_SECONDS
+    ts = st.session_state.get("pb_data_ts")
+    if ts is None:
+        render_chip("Data: unknown", color="amber")
+    else:
+        age = int(time.time() - ts)
+        if age >= stale_seconds:
+            render_chip(f"⚠ May be stale ({age}s ago)", color="amber")
+        else:
+            render_chip(f"Updated {age}s ago", color="green")
+
+    refresh_color = "green" if kiosk else "blue"
+    refresh_label = "Auto-refresh: ON" if kiosk else "Auto-refresh: OFF"
+    render_chip(refresh_label, color=refresh_color)
 
 
 # ============================================================================
@@ -219,7 +258,7 @@ def render_public_board() -> None:
         unsafe_allow_html=True,
     )
     render_tour("public_board")
-    st.caption(f"Last updated: {now.strftime('%Y-%m-%d %H:%M:%S UTC')}")
+    render_freshness_bar(kiosk)
 
     # Kiosk mode toggle in sidebar (only when not in kiosk mode)
     if not kiosk:
@@ -229,13 +268,20 @@ def render_public_board() -> None:
                 st.session_state["kiosk_mode"] = True
                 st.rerun()
             st.markdown("---")
-            
-            # Copy public link button
-            public_url = get_public_url()
-            st.markdown("**Share this board:**")
+
+            # Share this board: real link + QR code
+            share_url = get_public_url(tournament_id=selected_id, kiosk=True)
+            st.markdown("**Share Live Board**")
+            st.markdown(f"`{share_url}`")
             if st.button("📋 Copy Public Link", key="copy_link_btn"):
-                st.session_state["copied_url"] = public_url
+                st.session_state["copied_url"] = share_url
                 st.toast("Link copied to clipboard!", icon="✅")
+            try:
+                from tournament_platform.app.design_system import render_qr_code
+                render_qr_code(share_url, scale=4)
+                st.caption("Scan to open the live board on a phone/tablet.")
+            except Exception:
+                pass
     
     # Auto-refresh in kiosk mode (every 10 seconds)
     if kiosk:
@@ -263,6 +309,7 @@ def render_public_board() -> None:
     # Load tournaments
     try:
         tournaments = load_tournaments()
+        st.session_state["pb_data_ts"] = time.time()
     except Exception as e:
         render_database_error(e, "tournaments")
         st.stop()
@@ -285,6 +332,7 @@ def render_public_board() -> None:
     # Load match data for selected tournament
     try:
         match_data = load_tournament_matches(selected_id, kiosk=kiosk)
+        st.session_state["pb_data_ts"] = time.time()
     except Exception as e:
         render_database_error(e, "match data")
         st.stop()
@@ -292,6 +340,7 @@ def render_public_board() -> None:
     # Load standings
     try:
         standings_df = load_standings(selected_id)
+        st.session_state["pb_data_ts"] = time.time()
     except Exception as e:
         render_database_error(e, "standings")
         st.stop()
@@ -391,6 +440,8 @@ def render_public_board() -> None:
 
     recent = match_data.get("recent", [])
     if recent:
+        from tournament_platform.app.components.ai_insight_card import render_ai_insight_card
+
         for m in recent:
             p1 = m.get("player1") or "TBD"
             p2 = m.get("player2") or "TBD"
@@ -400,6 +451,7 @@ def render_public_board() -> None:
             time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
 
             render_litit_result_row(p1, p2, score, winner, time_str)
+            render_ai_insight_card(m)
     else:
         st.info("No completed matches yet.")
 
@@ -477,7 +529,13 @@ def render_public_board() -> None:
     # Footer timestamp
     # -------------------------------------------------------------------------
     st.divider()
-    st.caption(f"🕐 Auto-refreshes every 15 seconds | Last check: {datetime.now(timezone.utc).strftime('%H:%M:%S UTC')}")
+    refresh_note = "Auto-refreshes every 10s (kiosk)" if kiosk else "Use Refresh to update manually"
+    st.caption(f"🕐 {refresh_note}")
+
+    # Subtle LITIT branding (does not compete with live match information)
+    from tournament_platform.app.components.brand import render_brand_footer
+
+    render_brand_footer()
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ import streamlit as st
 
 from tournament_platform.models import SessionLocal, Player
 from tournament_platform.app.utils import render_database_connection_error
+from tournament_platform.config import settings
 
 
 def render_player_registration_form():
@@ -124,9 +125,58 @@ def get_all_players():
         return []
 
 
+def render_approval_queue():
+    """Render the organizer approval queue for self-registered (pending) players."""
+    st.subheader("✅ Registration Approval")
+
+    try:
+        db = SessionLocal()
+        pending = db.query(Player).filter(Player.registration_status == "pending").all()
+    except Exception as e:
+        st.error(f"Error loading pending players: {e}")
+        return
+    finally:
+        db.close()
+
+    if not pending:
+        st.info("No pending registrations. Self-registration is off unless enabled.")
+        return
+
+    for p in pending:
+        with st.container(border=True):
+            col_info, col_action = st.columns([3, 1])
+            with col_info:
+                st.markdown(f"**{p.name}** ({p.email})")
+                st.caption(f"Source: {p.import_source or 'unknown'}")
+            with col_action:
+                if st.button("✅ Approve", key=f"approve_{p.id}"):
+                    db = SessionLocal()
+                    try:
+                        player = db.query(Player).filter(Player.id == p.id).first()
+                        if player:
+                            player.registration_status = "approved"
+                            db.commit()
+                            st.toast(f"Approved {player.name}", icon="✅")
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f"Approval failed: {e}")
+                    finally:
+                        db.close()
+
+
 def render_participants_panel():
     """
     Render the complete participants management panel.
     This is the main entry point for embedding participants functionality.
     """
     render_player_registration_section()
+
+    if settings.ENABLE_CSV_BULK_IMPORT:
+        st.divider()
+        with st.expander("📥 CSV Bulk Import", expanded=False):
+            from tournament_platform.app.components.csv_import_panel import render_csv_import_panel
+            render_csv_import_panel()
+
+    if settings.ENABLE_SELF_REGISTRATION:
+        st.divider()
+        render_approval_queue()

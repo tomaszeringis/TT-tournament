@@ -34,6 +34,8 @@ def get_intent_classifier() -> IntentClassifier:
 
 def show():
     """Display the coaching lab page."""
+    from tournament_platform.app.components.brand_assets import render_brand_icon
+    render_brand_icon("coaching_lab")
     st.title("LIT_IT Coaching Lab")
     render_tour("coaching_lab")
     st.markdown("Analyze table tennis sessions and get AI-powered coaching feedback.")

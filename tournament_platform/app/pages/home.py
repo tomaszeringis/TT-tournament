@@ -141,9 +141,9 @@ def render_home():
 
     # Page header
     render_page_header(
-        title="LIT_IT Tournament Platform",
+        title="TT Tournament Platform",
         description="Manage your table tennis tournaments with ease",
-        icon="🏓"
+        icon_name="tt_tournament_platform",
     )
 
     # Getting Started tour
