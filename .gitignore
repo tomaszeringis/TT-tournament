@@ -43,3 +43,9 @@ tt_ai_data/
 *.zip
 *.tar
 *.tar.gz
+
+# Build artifacts
+tournament_platform.egg-info/
+
+# Local planning notes (untracked, machine-local)
+.kilo/plans/
