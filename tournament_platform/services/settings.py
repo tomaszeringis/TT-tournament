@@ -93,3 +93,11 @@ VOICE_ENABLE_CONFIRMATION: bool = _get_env_bool("VOICE_ENABLE_CONFIRMATION", Tru
 VOICE_DATASET_OPT_IN: bool = _get_env_bool("VOICE_DATASET_OPT_IN", False)
 VOICE_ENABLE_WAKE_WORD: bool = _get_env_bool("VOICE_ENABLE_WAKE_WORD", False)
 VOICE_WAKE_WORD: str = _get_env_str("VOICE_WAKE_WORD", "")
+
+# ---------------------------------------------------------------------------
+# Commentary Template System
+# ---------------------------------------------------------------------------
+VOICE_ENABLE_COMMENTARY_TEMPLATES: bool = _get_env_bool("VOICE_ENABLE_COMMENTARY_TEMPLATES", True)
+VOICE_ENABLE_COMMENTARY_OLLAMA_REWRITE: bool = _get_env_bool("VOICE_ENABLE_COMMENTARY_OLLAMA_REWRITE", False)
+VOICE_COMMENTARY_OLLAMA_MODEL: str = _get_env_str("VOICE_COMMENTARY_OLLAMA_MODEL", _app_settings.OLLAMA_MODEL)
+VOICE_COMMENTARY_OLLAMA_TIMEOUT: float = _get_env_float("VOICE_COMMENTARY_OLLAMA_TIMEOUT", 2.0)

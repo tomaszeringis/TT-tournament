@@ -516,9 +516,44 @@ class VoiceCommand(Base):
     match = relationship("Match", back_populates="voice_commands")
 
 
-# Update Match relationships for voice events/commands
+class CommentaryEvent(Base):
+    """Persisted commentary generation/speaking event."""
+    __tablename__ = "commentary_events"
+    id = Column(Integer, primary_key=True, index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    tournament_id = Column(Integer, ForeignKey("tournaments.id"), nullable=True)
+    match_id = Column(Integer, ForeignKey("matches.id"), nullable=True)
+    player_a = Column(String, nullable=True)
+    player_b = Column(String, nullable=True)
+    event_type = Column(String, index=True)
+    source_event_json = Column(Text, nullable=True)
+    score_before_json = Column(Text, nullable=True)
+    score_after_json = Column(Text, nullable=True)
+    style = Column(String, nullable=True)
+    language = Column(String, nullable=True)
+    frequency_mode = Column(String, nullable=True)
+    intensity = Column(String, nullable=True)
+    template_id = Column(String, nullable=True)
+    generated_text = Column(Text, nullable=True)
+    final_text = Column(Text, nullable=True)
+    used_ollama = Column(Boolean, default=False)
+    spoken = Column(Boolean, default=False)
+    tts_mode = Column(String, nullable=True)
+    latency_ms = Column(Float, nullable=True)
+    error = Column(Text, nullable=True)
+    cache_key = Column(String, nullable=True, index=True)
+    ollama_model = Column(String, nullable=True)
+    ollama_cache_hit = Column(Boolean, default=False)
+
+    # Relationships
+    match = relationship("Match", foreign_keys=[match_id])
+    tournament = relationship("Tournament", foreign_keys=[tournament_id])
+
+
+# Update Match relationships for voice events/commands and commentary events
 Match.voice_events = relationship("VoiceEvent", back_populates="match", cascade="all, delete-orphan")
 Match.voice_commands = relationship("VoiceCommand", back_populates="match", cascade="all, delete-orphan")
+Match.commentary_events = relationship("CommentaryEvent", back_populates="match", cascade="all, delete-orphan")
 
 
 def init_db():

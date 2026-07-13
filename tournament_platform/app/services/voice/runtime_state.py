@@ -102,7 +102,7 @@ class VoiceRuntimeState:
     commentary_style: str = "neutral"
     commentary_verbosity: str = "standard"
     commentary_voice: str = "default"
-    commentary_language: str = "en-US"
+    commentary_language: str = "en"
     commentary_muted: bool = False
     pending_commentary: Optional[Dict[str, Any]] = None
     last_commentary_event_id: Optional[str] = None

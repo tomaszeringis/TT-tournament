@@ -5,6 +5,7 @@ Uses the Web Speech API (SpeechSynthesis) via a hidden Streamlit HTML component.
 No network calls. No heavy dependencies. Works offline in modern browsers.
 """
 
+import json
 import streamlit as st
 
 
@@ -35,20 +36,13 @@ def speak_commentary(
 
     import streamlit.components.v1 as components
 
-    # Escape text for safe JS embedding
-    escaped_text = (
-        text.replace("\\", "\\\\")
-        .replace("'", "\\'")
-        .replace('"', '\\"')
-        .replace("\n", "\\n")
-        .replace("\r", "")
-    )
+    escaped_text = json.dumps(text, ensure_ascii=False)
 
     html = f"""
     <div id="speak-{key}" style="display:none;"></div>
     <script>
     (function() {{
-        const text = '{escaped_text}';
+        const text = {escaped_text};
         const lang = '{lang}';
         const voiceName = '{voice}';
         const rate = {rate};
