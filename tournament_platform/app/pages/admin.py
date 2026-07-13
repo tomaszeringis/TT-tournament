@@ -30,6 +30,7 @@ from tournament_platform.app.utils import (
 from tournament_platform.config import settings
 from tournament_platform.app.settings import API_BASE_URL, SHOW_DEBUG_DETAILS
 from tournament_platform.app.design_system import apply_global_styles
+from tournament_platform.app.components.page_header import render_page_header
 from tournament_platform.app.components.tour import render_tour
 
 apply_global_styles()
@@ -73,9 +74,14 @@ def get_cached_tournaments():
         db.close()
 
 
-from tournament_platform.app.components.brand_assets import render_brand_icon
-render_brand_icon("admin_operator")
-st.title("LIT_IT Admin / Operator Console")
+if "active_tournament_id" not in st.session_state:
+    st.session_state["active_tournament_id"] = None
+
+
+render_page_header(
+    title="LIT_IT Admin / Operator Console",
+    icon_name="admin_operator",
+)
 render_tour("admin")
 st.space("medium")
 
@@ -92,6 +98,9 @@ admin_tabs = st.tabs([
     "Schedule Board",
     "System Health",
     "Danger Zone",
+    "Import Wizard",
+    "Merge Workflow",
+    "Audit Dashboard",
 ])
 
 # Tab 1: Database Overview
@@ -212,13 +221,20 @@ with admin_tabs[2]:
         st.info("No tournaments found. Create a tournament first.")
     else:
         op_options = {t["name"]: t["id"] for t in op_tournaments}
+        current_active = st.session_state.get("active_tournament_id")
+        if current_active not in op_options.values():
+            current_active = op_tournaments[0]["id"]
+            st.session_state["active_tournament_id"] = current_active
+        active_name = next((n for n, tid in op_options.items() if tid == current_active), list(op_options.keys())[0])
         op_selected_name = st.selectbox(
             "Select Tournament",
             options=list(op_options.keys()),
-            index=0,
+            index=list(op_options.keys()).index(active_name),
             key="admin_op_tournament_select",
+            on_change=lambda: st.session_state.__setitem__("active_tournament_id", op_options[st.session_state["admin_op_tournament_select"]]),
         )
         op_selected_id = op_options[op_selected_name]
+        st.session_state["active_tournament_id"] = op_selected_id
 
         if st.button("🔄 Refresh", key="admin_op_refresh"):
             st.cache_data.clear()
@@ -549,5 +565,32 @@ with admin_tabs[5]:
                 except Exception as e:
                     status.update(label="Error occurred", state="error", expanded=False)
                     st.error(f"❌ Error: {e}")
+
+    with admin_tabs[6]:
+        st.subheader("📥 Import Wizard")
+        st.caption("Bulk import players, tournaments, matches, or venue tables from Excel/CSV")
+        try:
+            from tournament_platform.app.components.import_wizard import render_import_wizard
+            render_import_wizard()
+        except Exception as e:
+            st.error(f"Import wizard error: {e}")
+
+    with admin_tabs[7]:
+        st.subheader("🔗 Merge Workflow")
+        st.caption("Detect and merge duplicate player records")
+        try:
+            from tournament_platform.app.components.merge_workflow import render_merge_workflow
+            render_merge_workflow()
+        except Exception as e:
+            st.error(f"Merge workflow error: {e}")
+
+    with admin_tabs[8]:
+        st.subheader("📋 Audit Dashboard")
+        st.caption("View and filter audit log entries")
+        try:
+            from tournament_platform.app.components.audit_dashboard import render_audit_dashboard
+            render_audit_dashboard()
+        except Exception as e:
+            st.error(f"Audit dashboard error: {e}")
 
 db.close()

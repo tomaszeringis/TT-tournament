@@ -29,6 +29,7 @@ from tournament_platform.app.components.ai_chat import (
     render_announcement_text_area,
 )
 from tournament_platform.app.design_system import apply_global_styles
+from tournament_platform.app.components.page_header import render_page_header
 from tournament_platform.app.components.tour import render_tour
 from tournament_platform.models import SessionLocal, Match, MatchStatus, Player
 
@@ -52,9 +53,8 @@ if "ai_rules_messages" not in st.session_state:
 if "ai_rules_last_answer" not in st.session_state:
     st.session_state.ai_rules_last_answer = None
 
-# Voice input state
-if "voice_rules_audio_hash" not in st.session_state:
-    st.session_state.voice_rules_audio_hash = None
+if "copilot_mode" not in st.session_state:
+    st.session_state["copilot_mode"] = True
 
 # ---------------------------------------------------------------------------
 # Example questions for Rules Q&A
@@ -69,12 +69,13 @@ EXAMPLE_QUESTIONS = [
 # ---------------------------------------------------------------------------
 # Page UI
 # ---------------------------------------------------------------------------
-from tournament_platform.app.components.brand_assets import render_brand_icon
-render_brand_icon("ai_assistant")
-st.title("LIT_IT AI Assistant")
+render_page_header(
+    title="LIT_IT AI Assistant",
+    description="Ask tournament, rules, ranking, schedule, and operations questions.",
+    icon_name="ai_assistant",
+)
 if get_script_run_ctx() is not None:
     render_tour("ai_assistant")
-st.caption("Ask tournament, rules, ranking, schedule, and operations questions.")
 
 # Show AI status
 render_ai_status_badge()
@@ -101,6 +102,18 @@ with st.sidebar:
         if st.button(q, key=f"example_{hash(q)}", use_container_width=True):
             st.session_state.ai_rules_pending_question = q
             st.rerun()
+
+    st.divider()
+    st.subheader("🛡️ Copilot Mode")
+    st.session_state["copilot_mode"] = st.checkbox(
+        "Read-only copilot mode",
+        value=st.session_state.get("copilot_mode", True),
+        help="When enabled, the assistant only answers questions and never mutates tournament state.",
+    )
+    if st.session_state["copilot_mode"]:
+        st.success("Copilot mode is ON — read-only answers only.")
+    else:
+        st.warning("Copilot mode is OFF — suggestions may include write actions.")
 
     st.divider()
     if st.session_state.ai_assistant_messages:

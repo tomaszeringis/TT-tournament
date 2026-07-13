@@ -321,6 +321,46 @@ class MatchManager:
         self._sync_state()
         return True, "Rematch! First server swapped."
 
+    def reset_current_game(self) -> Tuple[bool, str]:
+        """
+        Reset only the current game score to 0-0, preserving completed games.
+
+        Returns:
+            Tuple of (success, message)
+        """
+        self.engine.score_a = 0
+        self.engine.score_b = 0
+        self.engine.points_played_this_game = 0
+        self.engine.serving_player = self.engine.game_first_server
+        self.engine.match_status = "in_progress"
+        self._sync_state()
+        return True, "Current game reset"
+
+    def undo_last_completed_game(self) -> Tuple[bool, str]:
+        """
+        Undo the most recently completed game by reverting actions until
+        ``round_scores`` shrinks by one.
+
+        Returns:
+            Tuple of (success, message)
+        """
+        if not self.engine.round_scores:
+            return False, "No completed games to undo"
+
+        target_len = len(self.engine.round_scores) - 1
+        while len(self.engine.round_scores) > target_len:
+            result = engine_undo_last_action(self.engine)
+            if not result.ok:
+                return False, result.rejected_reason or "Cannot undo game"
+        self.engine.score_a = 0
+        self.engine.score_b = 0
+        self.engine.points_played_this_game = 0
+        self.engine.serving_player = self.engine.game_first_server
+        self.engine.match_status = "in_progress"
+        self.state.match_history.clear()
+        self._sync_state()
+        return True, "Last game undone"
+
     def set_player_names(self, player_a: str, player_b: str, player_a_id: Optional[int] = None, player_b_id: Optional[int] = None) -> None:
         """Set custom player names and optionally their database IDs."""
         self.state.player_a = player_a

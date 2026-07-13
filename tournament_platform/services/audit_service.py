@@ -97,7 +97,6 @@ def get_audit_logs(
         if entity_id is not None:
             query = query.filter(AuditLog.entity_id == entity_id)
         entries = query.order_by(AuditLog.created_at.desc()).limit(limit).all()
-        # Convert to dictionaries for consistent API
         result = []
         for entry in entries:
             payload = None
@@ -111,7 +110,7 @@ def get_audit_logs(
                 "action": entry.action,
                 "actor": entry.actor,
                 "entity_type": entry.entity_type,
-                "entity_id": entry.entity_id,
+                "entity_id": entity_id if entity_id is not None else entry.entity_id,
                 "payload": payload,
                 "created_at": entry.created_at.isoformat() if entry.created_at else None,
             })
@@ -119,3 +118,39 @@ def get_audit_logs(
     except Exception as e:
         logger.error(f"Failed to retrieve audit logs: {e}", exc_info=True)
         return []
+
+
+def log_structured(
+    db: Session,
+    action: str,
+    entity_type: str,
+    entity_id: Optional[int] = None,
+    actor: str = "system",
+    tournament_id: Optional[int] = None,
+    match_id: Optional[int] = None,
+    before: Optional[Dict[str, Any]] = None,
+    after: Optional[Dict[str, Any]] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[AuditLog]:
+    """
+    Log a structured audit entry with additional context fields.
+
+    Extra fields are packed into the payload under a ``_structured`` key
+    so the existing schema does not change.
+    """
+    structured_payload = {
+        "tournament_id": tournament_id,
+        "match_id": match_id,
+        "before": before,
+        "after": after,
+        "metadata": metadata,
+    }
+    payload = {"_structured": structured_payload}
+    return log_audit(
+        db,
+        action=action,
+        entity_type=entity_type,
+        entity_id=entity_id,
+        actor=actor,
+        payload=payload,
+    )

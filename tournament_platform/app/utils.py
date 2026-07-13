@@ -335,6 +335,15 @@ def api_request(
 
 
 # ---------------------------------------------------------------------------
+# Cache helpers
+# ---------------------------------------------------------------------------
+
+def invalidate_tournament_cache(tournament_id: int) -> None:
+    """Invalidate cached Streamlit data for a tournament after mutations."""
+    st.cache_data.clear()
+
+
+# ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 from typing import Optional as _Optional

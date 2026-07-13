@@ -73,14 +73,27 @@ _CUE_JS = """
 # Public API
 # ---------------------------------------------------------------------------
 
+def _session_sound_enabled() -> Optional[bool]:
+    """Return the per-session sound preference, or None if unset."""
+    try:
+        import streamlit as st
+        return st.session_state.get("sound_cues_enabled", None)
+    except Exception:
+        return None
+
+
 def play_cue(event_type: str, *, enabled: Optional[bool] = None) -> None:
     """Play a sound cue for the given event type.
 
     Args:
         event_type: One of ``point``, ``undo``, ``deuce``, ``game``,
                     ``match``, ``reject``.
-        enabled: Override the feature flag. If None, reads from env.
+        enabled: Override the feature flag. If None, the per-session
+            ``st.session_state["sound_cues_enabled"]`` value is used,
+            falling back to the process env flag for backward compat.
     """
+    if enabled is None:
+        enabled = _session_sound_enabled()
     if enabled is None:
         enabled = _sounds_enabled()
     if not enabled:
@@ -100,17 +113,26 @@ def play_cue(event_type: str, *, enabled: Optional[bool] = None) -> None:
 
 
 def render_sound_toggle() -> None:
-    """Render a small toggle in the Streamlit UI to enable/disable sounds."""
+    """Render a small toggle in the Streamlit UI to enable/disable sounds.
+
+    The preference is stored per-session in ``st.session_state`` (so it
+    follows a single user instead of leaking across all users on the same
+    process), while the env var is still written for backward compatibility.
+    """
     import streamlit as st
     import os
 
-    current = _sounds_enabled()
+    if "sound_cues_enabled" not in st.session_state:
+        st.session_state.sound_cues_enabled = _sounds_enabled()
+
+    current = st.session_state.sound_cues_enabled
     new_val = st.checkbox(
         "🔊 Sound cues",
         value=current,
-        help="Play short browser-side sounds for point, undo, deuce, game, match, and reject events.",
+        help="Plays a short browser sound for point added/removed, game won, match won, and rejected voice commands.",
         key="score_sound_toggle",
     )
     if new_val != current:
+        st.session_state.sound_cues_enabled = new_val
         os.environ["SCORE_ENABLE_SOUNDS"] = "true" if new_val else "false"
         st.rerun()

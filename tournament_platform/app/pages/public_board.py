@@ -17,8 +17,8 @@ from tournament_platform.app.utils import render_database_error
 from tournament_platform.services.tournament_read_models import (
     list_tournaments,
     get_public_schedule,
-    get_public_rankings,
 )
+from tournament_platform.services.standings_service import get_standings
 from tournament_platform.app.components.player_path import render_player_path
 from tournament_platform.app.design_system import (
     COLORS,
@@ -165,25 +165,25 @@ def load_tournament_matches(tournament_id: Optional[int], kiosk: bool = False) -
 def load_standings(tournament_id: Optional[int]) -> pd.DataFrame:
     """
     Compute standings from completed matches.
-    Uses the read model for consistency.
+    Uses the standings service for tie-break aware rankings.
     """
     db = SessionLocal()
     try:
-        rankings = get_public_rankings(db, tournament_id=tournament_id)
+        standings = get_standings(db, tournament_id=tournament_id)
 
-        if not rankings:
+        if not standings:
             return pd.DataFrame(columns=["Rank", "Player", "Rating", "Matches", "Wins", "Losses", "Win Rate"])
 
         rows = []
-        for i, r in enumerate(rankings, 1):
+        for i, s in enumerate(standings, 1):
             rows.append({
                 "Rank": i,
-                "Player": r["name"],
-                "Rating": r["rating"],
-                "Matches": r["matches_played"],
-                "Wins": r["wins"],
-                "Losses": r["losses"],
-                "Win Rate": f"{r['win_rate']:.0f}%",
+                "Player": s["name"],
+                "Rating": s.get("rating") or 0,
+                "Matches": s["matches_played"],
+                "Wins": s["wins"],
+                "Losses": s["losses"],
+                "Win Rate": f"{(s['wins'] / s['matches_played'] * 100):.0f}%" if s["matches_played"] > 0 else "0%",
             })
 
         df = pd.DataFrame(rows)
@@ -224,7 +224,6 @@ def render_delayed_card(match: Dict[str, Any]) -> None:
 
 def render_public_board() -> None:
     """Render the public tournament board page."""
-    # Check for kiosk mode
     kiosk = is_kiosk_mode()
     
     st.set_page_config(
@@ -234,10 +233,8 @@ def render_public_board() -> None:
         initial_sidebar_state="collapsed" if kiosk else "expanded",
     )
 
-    # Inject LitIT brand theme styles
     apply_global_styles()
 
-    # Kiosk mode styling - hide sidebar and footer for clean TV display
     if kiosk:
         st.markdown(
             """
@@ -251,7 +248,6 @@ def render_public_board() -> None:
             unsafe_allow_html=True,
         )
 
-    # Title with timestamp
     now = datetime.now(timezone.utc)
     st.markdown(
         f"<h1 style='text-align: center;'>🏆 {BRAND['name']} Tournament Board</h1>",
@@ -260,7 +256,6 @@ def render_public_board() -> None:
     render_tour("public_board")
     render_freshness_bar(kiosk)
 
-    # Kiosk mode toggle in sidebar (only when not in kiosk mode)
     if not kiosk:
         with st.sidebar:
             st.markdown("---")
@@ -269,7 +264,6 @@ def render_public_board() -> None:
                 st.rerun()
             st.markdown("---")
 
-            # Share this board: real link + QR code
             share_url = get_public_url(tournament_id=selected_id, kiosk=True)
             st.markdown("**Share Live Board**")
             st.markdown(f"`{share_url}`")
@@ -283,20 +277,18 @@ def render_public_board() -> None:
             except Exception:
                 pass
     
-    # Auto-refresh in kiosk mode (every 10 seconds)
     if kiosk:
         st.markdown(
             """
             <script>
             setTimeout(function() {
                 window.location.reload();
-            }, 10000);
+            }, 5000);
             </script>
             """,
             unsafe_allow_html=True,
         )
     
-    # Manual refresh button (only in non-kiosk mode)
     if not kiosk:
         col_refresh, col_spacer = st.columns([1, 5])
         with col_refresh:
@@ -306,7 +298,6 @@ def render_public_board() -> None:
 
     st.divider()
 
-    # Load tournaments
     try:
         tournaments = load_tournaments()
         st.session_state["pb_data_ts"] = time.time()
@@ -318,7 +309,6 @@ def render_public_board() -> None:
         st.info("📭 No tournaments found. Create a tournament to get started.")
         st.stop()
 
-    # Tournament selector
     tournament_options = {t["name"]: t["id"] for t in tournaments}
     selected_name = st.selectbox(
         "Select Tournament",
@@ -329,7 +319,6 @@ def render_public_board() -> None:
     )
     selected_id = tournament_options[selected_name]
 
-    # Load match data for selected tournament
     try:
         match_data = load_tournament_matches(selected_id, kiosk=kiosk)
         st.session_state["pb_data_ts"] = time.time()
@@ -337,7 +326,6 @@ def render_public_board() -> None:
         render_database_error(e, "match data")
         st.stop()
 
-    # Load standings
     try:
         standings_df = load_standings(selected_id)
         st.session_state["pb_data_ts"] = time.time()
@@ -345,129 +333,85 @@ def render_public_board() -> None:
         render_database_error(e, "standings")
         st.stop()
 
-    # -------------------------------------------------------------------------
-    # Now Playing Section
-    # -------------------------------------------------------------------------
-    st.subheader("🎾 Now Playing")
-
     current_matches = match_data.get("current", [])
     called_matches = match_data.get("called", [])
-
-    if current_matches:
-        for m in current_matches:
-            render_match_card(m, label="LIVE")
-    elif called_matches:
-        for m in called_matches:
-            render_match_card(m, label="CALLED")
-    else:
-        st.info("No active matches at the moment.")
-
-    # -------------------------------------------------------------------------
-    # Next Match Countdown
-    # -------------------------------------------------------------------------
     next_match = match_data.get("next")
-    if next_match:
-        scheduled = next_match.get("scheduled_time")
-        if scheduled:
-            try:
-                scheduled_dt = datetime.fromisoformat(scheduled.replace("Z", "+00:00"))
-                now = datetime.now(timezone.utc)
-                diff = scheduled_dt - now
-                if diff.total_seconds() > 0:
-                    mins = int(diff.total_seconds() // 60)
-                    secs = int(diff.total_seconds() % 60)
-                    st.markdown(
-                        f"<div style='text-align: center; font-size: 24px; color: {COLORS['accent_green']}; margin: 10px 0;'>"
-                        f"⏰ Next match in: {mins}m {secs}s"
-                        f"</div>",
-                        unsafe_allow_html=True,
-                    )
-            except Exception:
-                pass
-
-    # -------------------------------------------------------------------------
-    # Coming Up Section
-    # -------------------------------------------------------------------------
-    st.divider()
-    st.subheader("⏭️ Coming Up")
-
     coming_up = match_data.get("coming_up", [])
-    if coming_up:
-        for m in coming_up:
-            render_coming_up_card(m)
-    else:
-        st.info("No upcoming matches scheduled.")
-
-    # -------------------------------------------------------------------------
-    # Delayed Section
-    # -------------------------------------------------------------------------
     delayed = match_data.get("delayed", [])
-    if delayed:
-        st.divider()
-        st.subheader("⏸️ Delayed")
-        for m in delayed:
-            render_delayed_card(m)
-
-    # -------------------------------------------------------------------------
-    # Standings Section
-    # -------------------------------------------------------------------------
-    st.divider()
-    st.subheader("📊 Rankings")
-
-    if not standings_df.empty:
-        st.dataframe(
-            standings_df,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Rank": st.column_config.NumberColumn("Rank", width="small"),
-                "Player": st.column_config.TextColumn("Player", width="medium"),
-                "Rating": st.column_config.NumberColumn("Rating", width="small"),
-                "Matches": st.column_config.NumberColumn("Matches", width="small"),
-                "Wins": st.column_config.NumberColumn("Wins", width="small"),
-                "Losses": st.column_config.NumberColumn("Losses", width="small"),
-                "Win Rate": st.column_config.TextColumn("Win Rate", width="small"),
-            },
-        )
-    else:
-        st.info("No completed matches yet. Standings will appear after matches are played.")
-
-    # -------------------------------------------------------------------------
-    # Recent Results Section
-    # -------------------------------------------------------------------------
-    st.divider()
-    st.subheader("📋 Recent Results")
-
     recent = match_data.get("recent", [])
-    if recent:
-        from tournament_platform.app.components.ai_insight_card import render_ai_insight_card
 
-        for m in recent:
-            p1 = m.get("player1") or "TBD"
-            p2 = m.get("player2") or "TBD"
-            score = m.get("score") or "vs"
-            winner = m.get("winner") or "Pending"
-            scheduled = m.get("scheduled_time")
-            time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
+    tab_now, tab_coming, tab_delayed, tab_recent, tab_rankings = st.tabs([
+        "🎾 Now Playing",
+        "⏭️ Coming Up",
+        "⏸️ Delayed",
+        "📋 Recent Results",
+        "📊 Rankings",
+    ])
 
-            render_litit_result_row(p1, p2, score, winner, time_str)
-            render_ai_insight_card(m)
-    else:
-        st.info("No completed matches yet.")
+    with tab_now:
+        if current_matches:
+            for m in current_matches:
+                render_match_card(m, label="LIVE")
+        elif called_matches:
+            for m in called_matches:
+                render_match_card(m, label="CALLED")
+        else:
+            st.info("No active matches at the moment.")
 
-    # -------------------------------------------------------------------------
-    # Player Lookup Section
-    # -------------------------------------------------------------------------
+    with tab_coming:
+        if coming_up:
+            for m in coming_up:
+                render_coming_up_card(m)
+        else:
+            st.info("No upcoming matches scheduled.")
+
+    with tab_delayed:
+        if delayed:
+            for m in delayed:
+                render_delayed_card(m)
+        else:
+            st.success("No delayed matches.")
+
+    with tab_recent:
+        if recent:
+            for m in recent:
+                p1 = m.get("player1") or "TBD"
+                p2 = m.get("player2") or "TBD"
+                score = m.get("score") or "vs"
+                winner = m.get("winner") or "Pending"
+                scheduled = m.get("scheduled_time")
+                time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
+                render_litit_result_row(p1, p2, score, winner, time_str)
+        else:
+            st.info("No completed matches yet.")
+
+    with tab_rankings:
+        if not standings_df.empty:
+            st.dataframe(
+                standings_df,
+                use_container_width=True,
+                hide_index=True,
+                column_config={
+                    "Rank": st.column_config.NumberColumn("Rank", width="small"),
+                    "Player": st.column_config.TextColumn("Player", width="medium"),
+                    "Rating": st.column_config.NumberColumn("Rating", width="small"),
+                    "Matches": st.column_config.NumberColumn("Matches", width="small"),
+                    "Wins": st.column_config.NumberColumn("Wins", width="small"),
+                    "Losses": st.column_config.NumberColumn("Losses", width="small"),
+                    "Win Rate": st.column_config.TextColumn("Win Rate", width="small"),
+                },
+            )
+        else:
+            st.info("No completed matches yet. Standings will appear after matches are played.")
+
     st.divider()
     st.subheader("🔍 Player Lookup")
-
     player_name = st.text_input(
         "Enter player name to see their path",
         key="player_lookup_input",
         label_visibility="collapsed",
         placeholder="Type player name...",
     )
-
     if player_name:
         db = SessionLocal()
         try:
@@ -479,37 +423,8 @@ def render_public_board() -> None:
         finally:
             db.close()
 
-    # -------------------------------------------------------------------------
-    # Spectator Commentary Section
-    # -------------------------------------------------------------------------
-    st.divider()
-    st.subheader("🔊 Spectator Commentary")
-
-    try:
-        from tournament_platform.app.services.voice.event_log import VoiceEventRepository
-        commentary_events = VoiceEventRepository.get_by_match(
-            match_id=current_matches[0].get("match_id") if current_matches else 0,
-            limit=10,
-        )
-        commentary_texts = [
-            e.raw_transcript for e in commentary_events
-            if e.raw_transcript and e.status == "accepted"
-        ][:3]
-    except Exception:
-        commentary_texts = []
-
-    if commentary_texts:
-        for text in commentary_texts:
-            st.caption(f"🔊 {text}")
-    else:
-        st.caption("No commentary available yet.")
-
-    # -------------------------------------------------------------------------
-    # Announcements Section
-    # -------------------------------------------------------------------------
     st.divider()
     st.subheader("📢 Announcements")
-
     try:
         announcements = load_announcements(limit=5)
     except Exception as e:
@@ -525,16 +440,9 @@ def render_public_board() -> None:
     else:
         st.info("No announcements yet.")
 
-    # -------------------------------------------------------------------------
-    # Footer timestamp
-    # -------------------------------------------------------------------------
     st.divider()
-    refresh_note = "Auto-refreshes every 10s (kiosk)" if kiosk else "Use Refresh to update manually"
+    refresh_note = "Auto-refreshes every 5s (kiosk)" if kiosk else "Use Refresh to update manually"
     st.caption(f"🕐 {refresh_note}")
-
-    # Subtle LITIT branding (does not compete with live match information)
-    from tournament_platform.app.components.brand import render_brand_footer
-
     render_brand_footer()
 
 

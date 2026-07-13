@@ -10,6 +10,7 @@ import streamlit as st
 import streamlit_shadcn_ui as ui
 import pandas as pd
 import math
+from sqlalchemy.orm import selectinload
 
 from tournament_platform.models import SessionLocal, Player, Match, Tournament, MatchStatus, TournamentType, Event, EventType
 from tournament_platform.services.tournament_engine import TournamentFactory, TournamentContext, KnockoutStrategy, RoundRobinStrategy, GroupsKnockoutStrategy, SwissStrategy
@@ -919,53 +920,79 @@ def render_active_tournaments():
     st.subheader("🏆 Active Tournaments")
     
     db = SessionLocal()
-    tournaments = db.query(Tournament).all()
-    
-    if tournaments:
-        for tournament in tournaments:
-            with st.expander(f"📌 {tournament.name}"):
-                st.write(f"**Type:** {tournament.tournament_type.value.title()}")
-                st.write(f"**Description:** {tournament.description or 'No description'}")
-                st.write(f"**Created:** {tournament.created_at.strftime('%Y-%m-%d')}")
-                
-                # Show matches in tournament
-                if tournament.matches:
-                    st.write("**Matches:**")
-                    sorted_matches = sorted(tournament.matches, key=lambda m: (m.round_number or 0, m.bracket_index or 0))
-                    for match in sorted_matches:
-                        cols = st.columns([4, 1])
-                        with cols[0]:
-                            st.write(
-                                f"Round {match.round_number or '?'}: {match.player1} vs {match.player2} | "
-                                f"Winner: {match.winner or 'TBD'}"
-                            )
-                        with cols[1]:
-                            render_status_badge(match.status.value, key=f"status_{match.id}")
-                    
-                    # Bracket Visualization
-                    st.space("medium")
-                    all_players = db.query(Player).all()
-                    render_bracket(tournament, all_players)
-                    
-                    # Show Standings for Round-Robin
-                    if tournament.tournament_type == TournamentType.round_robin:
-                        st.space("medium")
-                        render_standings(tournament)
-                    
-                    # Show Group Standings for Groups → Knockout
-                    if tournament.matches and any(m.stage and m.stage.stage_type == "group" for m in tournament.matches):
-                        st.space("medium")
-                        all_players = db.query(Player).all()
-                        render_group_standings(tournament, all_players)
-                else:
-                    st.write("No matches yet")
-                    st.space("medium")
-                    render_tournament_generation(tournament)
-    else:
+    tournaments = db.query(Tournament).options(
+        selectinload(Tournament.matches).selectinload(Match.stage)
+    ).order_by(Tournament.name.asc()).all()
+    db.close()
+
+    if "active_tournament_id" not in st.session_state:
+        st.session_state["active_tournament_id"] = tournaments[0].id if tournaments else None
+
+    if not tournaments:
         st.info("No tournaments created yet.")
         if st.button("Create Tournament", type="primary"):
             st.session_state['wizard_step'] = 1
             st.switch_page("pages/events_draws.py")
+        return
+
+    tournament_options = {t.name: t.id for t in tournaments}
+    current = st.session_state.get("active_tournament_id")
+    if current not in tournament_options.values():
+        current = tournaments[0].id
+        st.session_state["active_tournament_id"] = current
+
+    active_name = next((n for n, tid in tournament_options.items() if tid == current), tournaments[0].name)
+    selected_name = st.selectbox(
+        "Active tournament",
+        options=list(tournament_options.keys()),
+        index=list(tournament_options.keys()).index(active_name),
+        key="events_active_tournament_select",
+    )
+    st.session_state["active_tournament_id"] = tournament_options[selected_name]
+
+    tournament = next((t for t in tournaments if t.id == tournament_options[selected_name]), None)
+    if tournament is None:
+        st.info("No tournaments created yet.")
+        return
+
+    with st.expander(f"📌 {tournament.name}", expanded=True):
+        st.write(f"**Type:** {tournament.tournament_type.value.title()}")
+        st.write(f"**Description:** {tournament.description or 'No description'}")
+        st.write(f"**Created:** {tournament.created_at.strftime('%Y-%m-%d')}")
+        
+        # Show matches in tournament
+        if tournament.matches:
+            st.write("**Matches:**")
+            sorted_matches = sorted(tournament.matches, key=lambda m: (m.round_number or 0, m.bracket_index or 0))
+            for match in sorted_matches:
+                cols = st.columns([4, 1])
+                with cols[0]:
+                    st.write(
+                        f"Round {match.round_number or '?'}: {match.player1} vs {match.player2} | "
+                        f"Winner: {match.winner or 'TBD'}"
+                    )
+                with cols[1]:
+                    render_status_badge(match.status.value, key=f"status_{match.id}")
+            
+            # Bracket Visualization
+            st.space("medium")
+            all_players = db.query(Player).all()
+            render_bracket(tournament, all_players)
+            
+            # Show Standings for Round-Robin
+            if tournament.tournament_type == TournamentType.round_robin:
+                st.space("medium")
+                render_standings(tournament)
+            
+            # Show Group Standings for Groups → Knockout
+            if tournament.matches and any(m.stage and m.stage.stage_type == "group" for m in tournament.matches):
+                st.space("medium")
+                all_players = db.query(Player).all()
+                render_group_standings(tournament, all_players)
+        else:
+            st.write("No matches yet")
+            st.space("medium")
+            render_tournament_generation(tournament)
     
     db.close()
 
@@ -975,8 +1002,12 @@ def render_events_draws():
     st.set_page_config(page_title="LIT_IT Events & Draws", page_icon="🎫", layout="wide")
     apply_global_styles()
 
-    from tournament_platform.app.components.brand_assets import render_brand_icon
-    render_brand_icon("tournament")
+    from tournament_platform.app.components.page_header import render_page_header
+
+    render_page_header(
+        title="LIT_IT Events & Draws",
+        icon_name="tournament",
+    )
     render_tour("tournament")
 
     tab_create, tab_participants, tab_draws = st.tabs(["Create Tournament", "Participants", "Active Tournaments"])

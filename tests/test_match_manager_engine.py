@@ -260,6 +260,53 @@ class TestMatchManagerEngine:
         assert ok is True
         assert mm.state.score_a == 0
 
+    def test_reset_current_game_preserves_completed_games(self):
+        mm = MatchManager()
+        for _ in range(11):
+            mm._add_point("A")
+        assert mm.engine.games_won_a == 1
+        assert mm.engine.round_scores == [(11, 0)]
+        mm._add_point("A")
+        assert mm.engine.score_a == 1
+        ok, msg = mm.reset_current_game()
+        assert ok is True
+        assert mm.engine.score_a == 0
+        assert mm.engine.score_b == 0
+        assert mm.engine.games_won_a == 1
+        assert mm.engine.round_scores == [(11, 0)]
+
+    def test_undo_last_completed_game(self):
+        mm = MatchManager()
+        for _ in range(11):
+            mm._add_point("A")
+        assert mm.engine.games_won_a == 1
+        assert mm.engine.round_scores == [(11, 0)]
+        mm._add_point("B")
+        ok, msg = mm.undo_last_completed_game()
+        assert ok is True
+        assert mm.engine.games_won_a == 0
+        assert mm.engine.round_scores == []
+        assert mm.engine.score_a == 0
+        assert mm.engine.score_b == 0
+
+    def test_undo_last_completed_game_when_none(self):
+        mm = MatchManager()
+        ok, msg = mm.undo_last_completed_game()
+        assert ok is False
+        assert "No completed games" in msg
+
+    def test_switching_match_does_not_leak_scores(self):
+        mm = MatchManager()
+        mm.set_player_names("Alice", "Bob", 1, 2)
+        mm._add_point("A")
+        assert mm.state.score_a == 1
+        assert mm.state.player_a == "Alice"
+        mm.set_player_names("Charlie", "Diana", 3, 4)
+        mm.reset_match()
+        assert mm.state.score_a == 0
+        assert mm.state.player_a == "Charlie"
+        assert mm.state.player_a_id == 3
+
 
 if __name__ == "__main__":
     import pytest

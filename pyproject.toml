@@ -77,23 +77,18 @@ speech = [
     "torchaudio>=2.0.0",
 ]
 
-[project.scripts]
-tournament-platform = "tournament_platform.app.main:main"
-
-[tool.setuptools.packages.find]
-where = ["."]
-include = ["tournament_platform*"]
-
-[tool.setuptools.package-data]
-tournament_platform = [
-    "*.yaml",
-    "*.json",
-    "*.md",
-    "data/**/*",
-    "app/components/**/*",
-    "tournament_platform/**/*",
+[tool.setuptools]
+packages = [
+    "tournament_ai",
+    "tournament_core",
+    "tournament_platform",
 ]
 
+[project.scripts]
+tournament-platform = "tournament_platform.app.main:main"
+tournament-platform-api = "tournament_platform.api.server:run_api"
+
 [tool.pytest.ini_options]
-testpaths = ["tournament_platform"]
+testpaths = ["tests"]
 pythonpath = ["."]
+asyncio_mode = "auto"

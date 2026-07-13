@@ -170,14 +170,19 @@ def render_page_header(
     title: str,
     description: str = None,
     icon: str = None,
+    icon_name: str = None,
+    actions: list = None,
 ) -> None:
-    """Render a consistent page header."""
-    import streamlit as st
+    """Render a consistent page header (delegates to the shared component)."""
+    from tournament_platform.app.components.page_header import render_page_header as _render_page_header
 
-    # Intentionally do not render emoji icons in the global page header to keep a clean top bar
-    st.title(title)
-    if description:
-        st.caption(description)
+    _render_page_header(
+        title=title,
+        description=description or "",
+        icon=icon or "",
+        icon_name=icon_name,
+        actions=actions,
+    )
 
 
 def render_action_button(

@@ -62,6 +62,7 @@ class Tournament(Base):
     description = Column(String, nullable=True)
     tournament_type = Column(Enum(TournamentType), default=TournamentType.knockout)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
+    tie_break_order = Column(Text, nullable=True)
 
     # Relationship
     matches = relationship("Match", back_populates="tournament")
@@ -99,6 +100,9 @@ class Match(Base):
     player2 = Column(String)
     winner = Column(String, nullable=True)
     score = Column(String, nullable=True)
+    # Game-by-game scores stored as a comma-separated text string, e.g.
+    # "11-1, 11-3, 10-12". TODO: introduce a structured MatchEvent/GameScore
+    # schema if per-game querying/analytics is needed in the future.
     game_scores = Column(Text, nullable=True)
     status = Column(Enum(MatchStatus), default=MatchStatus.pending)
     tournament_id = Column(Integer, ForeignKey("tournaments.id"), nullable=True)

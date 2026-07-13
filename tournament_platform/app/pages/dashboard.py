@@ -1,3 +1,4 @@
+from typing import Optional
 import streamlit as st
 
 st.set_page_config(page_title="LIT_IT Dashboard", layout="wide")
@@ -32,17 +33,20 @@ def get_ai_engine():
 
 
 @st.cache_data(ttl=300, show_spinner="Loading dashboard data...")
-def load_dashboard_data():
+def load_dashboard_data(tournament_id: Optional[int] = None):
     """Load all dashboard data in a single cached database session."""
+    from tournament_platform.services.materialized_read_models import MaterializedReadModels
+
     db = SessionLocal()
     try:
-        total_players = db.query(Player).count()
-        total_matches = db.query(Match).count()
-        active_tournaments = db.query(Tournament).count()
-        completed_matches = db.query(Match).filter(Match.status == MatchStatus.completed).count()
+        read_models = MaterializedReadModels(db)
+        summary = read_models.get_dashboard_summary(tournament_id=tournament_id)
+
+        matches = db.query(Match).filter(
+            Match.tournament_id == tournament_id if tournament_id is not None else Match.id >= 0
+        ).all()
 
         players = db.query(Player).all()
-        matches = db.query(Match).all()
 
         player_df = pd.DataFrame([
             {
@@ -67,7 +71,6 @@ def load_dashboard_data():
             for m in matches
         ])
 
-        # Build a lookup: player_name -> list of matches
         player_matches = {}
         for m in matches:
             for p_name in (m.player1, m.player2):
@@ -77,10 +80,10 @@ def load_dashboard_data():
 
         return {
             "metrics": {
-                "total_players": total_players,
-                "total_matches": total_matches,
-                "active_tournaments": active_tournaments,
-                "completed_matches": completed_matches,
+                "total_players": summary["total_players"],
+                "total_matches": summary["total_matches"],
+                "active_tournaments": summary.get("total_tournaments", 0),
+                "completed_matches": summary["completed_matches"],
             },
             "player_df": player_df,
             "match_df": match_df,
@@ -91,11 +94,14 @@ def load_dashboard_data():
 
 
 @st.cache_data(ttl=60, show_spinner="Loading recent matches...")
-def get_recent_matches(limit: int = 5):
+def get_recent_matches(limit: int = 5, tournament_id: Optional[int] = None):
     """Get the most recent matches ordered by scheduled_time descending."""
     db = SessionLocal()
     try:
-        matches = db.query(Match).order_by(Match.scheduled_time.desc()).limit(limit).all()
+        query = db.query(Match)
+        if tournament_id is not None:
+            query = query.filter(Match.tournament_id == tournament_id)
+        matches = query.order_by(Match.scheduled_time.desc()).limit(limit).all()
         return [
             {
                 "id": m.id,
@@ -371,12 +377,40 @@ def render_upcoming_matches_tab(data):
 
 def render_dashboard():
     """Render the optimized dashboard page with tabs."""
-    from tournament_platform.app.components.brand_assets import render_brand_icon
-    render_brand_icon("dashboard")
-    st.title("📊 LIT_IT Dashboard")
+    from tournament_platform.app.components.page_header import render_page_header
+
+    render_page_header(
+        title="LIT_IT Dashboard",
+        icon_name="dashboard",
+    )
+
+    if "active_tournament_id" not in st.session_state:
+        st.session_state["active_tournament_id"] = None
+
+    db = SessionLocal()
+    tournaments = db.query(Tournament).order_by(Tournament.name.asc()).all()
+    db.close()
+
+    selected_id = st.session_state.get("active_tournament_id")
+    if tournaments:
+        options = {t.name: t.id for t in tournaments}
+        current = selected_id if selected_id in options.values() else tournaments[0].id
+        st.session_state["active_tournament_id"] = current
+        active_name = next((n for n, tid in options.items() if tid == current), tournaments[0].name)
+        selected_name = st.selectbox(
+            "Active tournament",
+            options=list(options.keys()),
+            index=list(options.keys()).index(active_name),
+            key="dashboard_active_tournament_select",
+        )
+        selected_id = options[selected_name]
+        st.session_state["active_tournament_id"] = selected_id
+    else:
+        selected_id = None
+        st.info("No tournaments yet.")
 
     try:
-        data = load_dashboard_data()
+        data = load_dashboard_data(tournament_id=selected_id)
     except Exception as e:
         render_database_error(e, "dashboard data")
         st.stop()

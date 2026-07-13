@@ -12,6 +12,10 @@ from tournament_platform.services.health_service import (
     get_health_thresholds,
     DEFAULT_STALE_ACTIVE_MINUTES,
     DEFAULT_STALE_CALLED_MINUTES,
+    detect_stale_matches,
+    detect_missing_results,
+    get_alert_inbox,
+    acknowledge_issue,
 )
 from tournament_platform.models import Match, MatchStatus, VenueTable, Tournament
 
@@ -290,3 +294,61 @@ def test_get_health_summary_aggregates_issues(mock_db, sample_tournament):
     
     assert result["issue_count"] == 2
     assert result["issue_counts"]["missing_table"] == 2
+
+
+# ============================================================================
+# Stale / Missing Result Detector Tests
+# ============================================================================
+
+def test_detect_stale_matches_returns_old_active(mock_db, sample_tournament):
+    old_time = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_STALE_ACTIVE_MINUTES + 10)
+    match = Match(
+        id=1,
+        player1="Player A",
+        player2="Player B",
+        call_status="active",
+        location="Table 1",
+        started_at=old_time,
+    )
+    mock_db.query.return_value.filter.return_value.all.return_value = [match]
+    stale = detect_stale_matches(mock_db, tournament_id=1)
+    assert len(stale) == 1
+    assert stale[0]["issue_type"] == "stale_active"
+    assert stale[0]["severity"] == "error"
+
+
+def test_detect_missing_results_flags_completed_without_score(mock_db):
+    match = Match(
+        id=1,
+        player1="Player A",
+        player2="Player B",
+        status=MatchStatus.completed,
+        score=None,
+    )
+    mock_db.query.return_value.filter.return_value.filter.return_value.all.return_value = [match]
+    missing = detect_missing_results(mock_db, tournament_id=1)
+    assert any(m["issue_type"] == "completed_without_score" for m in missing)
+
+
+# ============================================================================
+# Alert Inbox Tests
+# ============================================================================
+
+def test_get_alert_inbox_returns_issues(mock_db, sample_tournament):
+    match = Match(
+        id=1,
+        player1="Player A",
+        player2="Player B",
+        call_status="active",
+        location=None,
+        scheduled_time=datetime.now(timezone.utc),
+    )
+    mock_db.query.return_value.filter.return_value.all.return_value = [match]
+    mock_db.query.return_value.filter.return_value.first.return_value = sample_tournament
+    inbox = get_alert_inbox(mock_db, tournament_id=1)
+    assert len(inbox) == 1
+    assert inbox[0]["acknowledged"] is False
+
+
+def test_acknowledge_issue_does_not_raise():
+    acknowledge_issue("1-0", actor="operator")

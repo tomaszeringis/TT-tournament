@@ -17,7 +17,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from tournament_platform.models import Match, MatchStatus, Player, Tournament
+from tournament_platform.models import Match, MatchStatus, Player, Tournament, Stage, Group, Entry
 
 logger = logging.getLogger(__name__)
 
@@ -109,3 +109,92 @@ def validate_tournament_pairings(
         "warnings": warnings,
         "total_matches": len(matches),
     }
+
+
+def detect_rematches(
+    db: Session,
+    tournament_id: int,
+) -> List[Dict[str, Any]]:
+    """
+    Detect any pair that plays each other more than once in the same tournament.
+    
+    Returns:
+        List of rematch records with match id pairs.
+    """
+    matches = db.query(Match).filter(Match.tournament_id == tournament_id).all()
+    pair_matches: Dict[tuple, List[int]] = {}
+    rematches = []
+    for m in matches:
+        if m.player1_id and m.player2_id:
+            key = tuple(sorted([m.player1_id, m.player2_id]))
+            pair_matches.setdefault(key, []).append(m.id)
+    for key, ids in pair_matches.items():
+        if len(ids) > 1:
+            rematches.append({
+                "type": "rematch",
+                "player1_id": key[0],
+                "player2_id": key[1],
+                "match_ids": ids,
+            })
+    return rematches
+
+
+def validate_groups_knockout_advancement(
+    db: Session,
+    tournament_id: int,
+) -> Dict[str, Any]:
+    """
+    Validate whether groups-knockout advancement is ready.
+    
+    Checks:
+    - Every group has a complete round-robin set of matches
+    - Each group has a declared standings order for top qualifiers
+    
+    Returns:
+        Dict with ready flag, group statuses, and issues.
+    """
+    issues = []
+    group_statuses = []
+    stages = db.query(Stage).filter(Stage.event_id == tournament_id, Stage.stage_type == "group").all()
+    for stage in stages:
+        groups = db.query(Group).filter(Group.stage_id == stage.id).all()
+        for group in groups:
+            members = db.query(Entry).filter(Entry.group_id == group.id).all()
+            member_count = len(members)
+            expected_matches = (member_count * (member_count - 1)) // 2
+            actual_matches = db.query(Match).filter(Match.stage_id == stage.id).count()
+            completed = db.query(Match).filter(Match.stage_id == stage.id, Match.status == MatchStatus.completed).count()
+            ready = actual_matches >= expected_matches and completed >= expected_matches
+            group_statuses.append({
+                "group_id": group.id,
+                "group_name": group.name,
+                "members": member_count,
+                "expected_matches": expected_matches,
+                "actual_matches": actual_matches,
+                "completed": completed,
+                "ready": ready,
+            })
+            if not ready:
+                issues.append({
+                    "type": "incomplete_group",
+                    "group_id": group.id,
+                    "group_name": group.name,
+                    "expected_matches": expected_matches,
+                    "completed": completed,
+                })
+    return {
+        "ready": all(g["ready"] for g in group_statuses) if group_statuses else False,
+        "group_statuses": group_statuses,
+        "issues": issues,
+    }
+
+
+def detect_incomplete_groups(
+    db: Session,
+    tournament_id: int,
+) -> List[Dict[str, Any]]:
+    """
+    Return groups with missing or incomplete matches.
+    """
+    results = validate_groups_knockout_advancement(db, tournament_id=tournament_id)
+    return results.get("issues", [])

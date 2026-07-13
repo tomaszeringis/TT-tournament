@@ -181,9 +181,14 @@ def render_schedule_board() -> None:
 
     apply_global_styles()
 
-    st.title("📅 LIT_IT Schedule Board")
+    from tournament_platform.app.components.page_header import render_page_header
+
+    render_page_header(
+        title="LIT_IT Schedule Board",
+        description="View and plan tournament matches by date/time",
+        icon="📅",
+    )
     render_tour("schedule_board")
-    st.caption("View and plan tournament matches by date/time")
 
     # Load tournaments
     try:

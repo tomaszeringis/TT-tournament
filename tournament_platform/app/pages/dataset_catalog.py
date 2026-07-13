@@ -25,11 +25,14 @@ def get_registry() -> DatasetRegistry:
 
 def show():
     """Display the dataset catalog page."""
-    from tournament_platform.app.components.brand_assets import render_brand_icon
-    render_brand_icon("dataset_catalog")
-    st.title("LIT_IT Dataset Catalog")
+    from tournament_platform.app.components.page_header import render_page_header
+
+    render_page_header(
+        title="LIT_IT Dataset Catalog",
+        description="Browse and manage datasets for the Multimodal AI system.",
+        icon_name="dataset_catalog",
+    )
     render_tour("dataset_catalog")
-    st.markdown("Browse and manage datasets for the Multimodal AI system.")
     
     registry = get_registry()
     

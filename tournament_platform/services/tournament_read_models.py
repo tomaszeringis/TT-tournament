@@ -140,16 +140,19 @@ def get_public_rankings(
 ) -> List[Dict[str, Any]]:
     """
     Return players sorted by rating descending.
-    
+
     If tournament_id is provided, compute wins/losses from that tournament's matches.
-    
-    Args:
-        db: Database session
-        tournament_id: Optional filter for specific tournament
-        
-    Returns:
-        List of player dicts with ranking stats
+
+    .. deprecated::
+        Use :func:`tournament_platform.services.standings_service.get_standings`
+        for tie-break aware rankings.
     """
+    import warnings
+    warnings.warn(
+        "get_public_rankings is deprecated. Use get_standings from standings_service instead.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     # Get all players
     players = db.query(Player).order_by(Player.rating.desc()).all()
     

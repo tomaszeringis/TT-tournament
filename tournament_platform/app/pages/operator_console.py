@@ -52,10 +52,23 @@ from tournament_platform.app.components.operator_components import (
     render_recent_results_lane,
 )
 from tournament_platform.app.components.manual_score_panel import render_manual_score_panel
+from tournament_platform.app.components.confirmation_dialog import ConfirmationDialog
+from tournament_platform.app.components.issue_inbox import render_issue_inbox
+from tournament_platform.app.utils import invalidate_tournament_cache
+from tournament_platform.services.authorization import check_permission
 
 # Import the centralized API client
 from tournament_platform.app.api_client import api_client
 from tournament_platform.app.design_system import apply_global_styles
+
+
+def _get_user_role() -> str:
+    return st.session_state.get("user_role", "user")
+
+
+def _require_permission(permission: str) -> bool:
+    role = _get_user_role()
+    return check_permission(role, permission)
 
 
 # ============================================================================
@@ -163,10 +176,10 @@ def reset_call_match(match_id: int) -> Dict[str, Any]:
 
 
 def _dispatch(fn, match_id: int, verb: str) -> None:
-    """Run an operator action then clear cache and rerun (mirrors prior behavior)."""
+    """Run an operator action then clear cache and rerun."""
     try:
         fn(match_id)
-        st.cache_data.clear()
+        invalidate_tournament_cache(match_id)
         st.rerun()
     except Exception as e:
         st.error(f"Failed to {verb} match: {e}")
@@ -228,7 +241,7 @@ def render_table_status_tab(selected_id: int) -> None:
                 for warning in result["warnings"]:
                     st.warning(warning)
             st.success(f"Set {result['resulting_active_tables']} tables as active")
-            st.cache_data.clear()
+            invalidate_tournament_cache(selected_id)
             st.rerun()
         except Exception as e:
             st.error(f"Error setting max available tables: {e}")
@@ -245,7 +258,7 @@ def render_table_status_tab(selected_id: int) -> None:
             )
             if create_result.get("created_tables", 0) > 0:
                 st.success(f"Created {create_result['created_tables']} tables")
-                st.cache_data.clear()
+                invalidate_tournament_cache(selected_id)
                 st.rerun()
             else:
                 st.info("No tables needed to be created")
@@ -306,10 +319,13 @@ def render_operator_console() -> None:
 
     apply_global_styles()
 
-    from tournament_platform.app.components.brand_assets import render_brand_icon
-    render_brand_icon("admin_operator")
-    st.title("🎛️ LIT_IT Match Center")
-    st.caption("Manage match flow and table assignments")
+    from tournament_platform.app.components.page_header import render_page_header
+
+    render_page_header(
+        title="LIT_IT Match Center",
+        description="Manage match flow and table assignments",
+        icon_name="admin_operator",
+    )
 
     # Load tournaments
     try:
@@ -322,19 +338,23 @@ def render_operator_console() -> None:
         st.info("No tournaments found. Create a tournament first.")
         st.stop()
 
-    # Tournament selector
+    if "active_tournament_id" not in st.session_state:
+        st.session_state["active_tournament_id"] = tournaments[0]["id"]
+
     tournament_options = {t["name"]: t["id"] for t in tournaments}
     selected_name = st.selectbox(
         "Select Tournament",
         options=list(tournament_options.keys()),
-        index=0,
+        index=next((i for i, n in enumerate(tournament_options.keys()) if tournament_options[n] == st.session_state.get("active_tournament_id")), 0),
         key="operator_tournament_select",
+        on_change=lambda: st.session_state.__setitem__("active_tournament_id", tournament_options[st.session_state["operator_tournament_select"]]),
     )
     selected_id = tournament_options[selected_name]
+    st.session_state["active_tournament_id"] = selected_id
 
     # Manual refresh
     if st.button("🔄 Refresh", key="operator_refresh"):
-        st.cache_data.clear()
+        invalidate_tournament_cache(selected_id)
         st.rerun()
 
     st.divider()
@@ -466,10 +486,10 @@ def render_operator_console() -> None:
     st.divider()
 
     # -------------------------------------------------------------------------
-    # Tournament Health KPIs (compact, always visible)
+    # Tournament Health Alert Inbox
     # -------------------------------------------------------------------------
-    st.subheader("📊 Tournament Health")
-    render_health_kpi(health)
+    st.subheader("📋 Health Alerts")
+    render_issue_inbox(selected_id)
 
     st.divider()
 
@@ -540,27 +560,30 @@ def render_operator_console() -> None:
                         for warning in preview.get("warnings", []):
                             st.warning(warning)
 
-                        if st.button("✅ Confirm Merge", key=f"confirm_merge_{i}"):
-                            db = SessionLocal()
-                            try:
-                                from tournament_platform.services.duplicate_players import merge_players
-                                result = merge_players(
-                                    db,
-                                    target_player_id=candidate['player1_id'],
-                                    source_player_id=candidate['player2_id'],
-                                    actor="operator",
-                                )
-                                if result.get("success"):
-                                    st.success(f"Merged! Transferred {result['matches_transferred']} matches")
-                                    del st.session_state[f"merge_preview_{i}"]
-                                    st.cache_data.clear()
-                                    st.rerun()
-                                else:
-                                    st.error(result.get("error", "Merge failed"))
-                            except Exception as e:
-                                st.error(f"Merge error: {e}")
-                            finally:
-                                db.close()
+                        if _require_permission("player.merge"):
+                            if st.button("✅ Confirm Merge", key=f"confirm_merge_{i}"):
+                                db = SessionLocal()
+                                try:
+                                    from tournament_platform.services.duplicate_players import merge_players
+                                    result = merge_players(
+                                        db,
+                                        target_player_id=candidate['player1_id'],
+                                        source_player_id=candidate['player2_id'],
+                                        actor="operator",
+                                    )
+                                    if result.get("success"):
+                                        st.success(f"Merged! Transferred {result['matches_transferred']} matches")
+                                        del st.session_state[f"merge_preview_{i}"]
+                                        invalidate_tournament_cache(selected_id)
+                                        st.rerun()
+                                    else:
+                                        st.error(result.get("error", "Merge failed"))
+                                except Exception as e:
+                                    st.error(f"Merge error: {e}")
+                                finally:
+                                    db.close()
+                        else:
+                            st.warning("You do not have permission to merge players.")
     else:
         st.info("No duplicate candidates found. Click 'Scan for Duplicates' to check.")
 
@@ -615,7 +638,9 @@ def _apply_command(command_text: str, tournament_id: int) -> None:
     st.info(f"Intent: **{parsed.intent.value}** | Confidence: {parsed.confidence:.0%}")
     st.markdown(f"**Preview:** {parsed.preview}")
 
-    if not parsed.requires_confirmation:
+    dialog = ConfirmationDialog(key_prefix=f"cmd_{tournament_id}")
+
+    def execute_command():
         db = SessionLocal()
         try:
             result = apply_operator_command(
@@ -626,34 +651,23 @@ def _apply_command(command_text: str, tournament_id: int) -> None:
             )
             if result.get("status") == "success":
                 st.success(result.get("message", "Command executed"))
-                if result.get("data"):
-                    st.json(result.get("data"))
+                invalidate_tournament_cache(tournament_id)
+                st.rerun()
             else:
                 st.error(result.get("message", "Command failed"))
         except Exception as e:
             st.error(f"Error executing command: {e}")
         finally:
             db.close()
+
+    if not parsed.requires_confirmation:
+        execute_command()
     else:
-        if st.button("✅ Confirm Action", key="confirm_command"):
-            db = SessionLocal()
-            try:
-                result = apply_operator_command(
-                    db,
-                    parsed,
-                    confirmed=True,
-                    tournament_id=tournament_id,
-                )
-                if result.get("status") == "success":
-                    st.success(result.get("message", "Command executed"))
-                    st.cache_data.clear()
-                    st.rerun()
-                else:
-                    st.error(result.get("message", "Command failed"))
-            except Exception as e:
-                st.error(f"Error executing command: {e}")
-            finally:
-                db.close()
+        dialog.confirm(
+            action_label="Confirm command",
+            description=parsed.preview,
+            on_confirm=execute_command,
+        )
 
 
 if __name__ == "__main__":

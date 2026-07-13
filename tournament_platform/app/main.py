@@ -7,6 +7,7 @@ from tournament_platform.config import settings
 from tournament_platform.app.design_system import GLOBAL_STYLES, BRAND
 from tournament_platform.app.components.brand import render_sidebar_logo, icon_path, PAGE_ICONS
 from tournament_platform.app.components.tour import render_tour_dialog
+from tournament_platform.app.components.active_context_bar import render_active_context_bar
 
 st.set_page_config(
     page_title="TT Tournament Platform",
@@ -15,6 +16,9 @@ st.set_page_config(
 )
 
 render_sidebar_logo()
+
+if "active_tournament_id" not in st.session_state:
+    st.session_state["active_tournament_id"] = None
 
 # Apply global design system styles
 st.markdown(GLOBAL_STYLES, unsafe_allow_html=True)
@@ -54,6 +58,15 @@ if authentication_status:
     if username and username in config.get('credentials', {}).get('usernames', {}):
         user_role = config['credentials']['usernames'][username].get('role', 'user')
     
+    # Also check Streamlit secrets for role
+    try:
+        if hasattr(st, 'secrets') and 'credentials' in st.secrets:
+            if username in st.secrets['credentials'].get('usernames', {}):
+                user_role = st.secrets['credentials']['usernames'][username].get('role', 'user')
+    except Exception:
+        pass
+    
+    st.session_state["user_role"] = user_role
     # Also check Streamlit secrets for role
     try:
         if hasattr(st, 'secrets') and 'credentials' in st.secrets:
@@ -120,6 +133,8 @@ if authentication_status:
 
     # Show user info and logout button in sidebar
     with st.sidebar:
+        render_active_context_bar()
+        st.divider()
         st.markdown(
             f"""
             <div style="padding: 0.25rem 0.25rem 0.5rem; margin-bottom: 0.5rem;">

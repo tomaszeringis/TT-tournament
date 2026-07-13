@@ -2,6 +2,9 @@
 Tests for the voice TTS confirmation adapter (Phase 4).
 """
 
+import sys
+from unittest.mock import MagicMock
+
 import pytest
 
 from tournament_platform.app.services.voice_tts import TTSConfirmationAdapter, TTSMode
@@ -71,3 +74,54 @@ class TestTTSConfirmationAdapter:
         assert len(adapter._speak_queue) == 2
         adapter.flush_queue()
         assert len(adapter._speak_queue) == 0
+
+    def test_speak_default_path_does_not_use_pyttsx3(self, monkeypatch):
+        """On the default (browser) path, speak() must not import pyttsx3."""
+        adapter = TTSConfirmationAdapter(enabled=True, mode=TTSMode.AUDIO_EVERY_SCORE.value)
+        imported = []
+        real_import = __import__
+
+        def _tracking_import(name, *args, **kwargs):
+            if name == "pyttsx3" or name.startswith("pyttsx3."):
+                imported.append(name)
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.__import__", _tracking_import)
+        adapter.speak("score is five to three")
+        assert imported == []
+
+    def test_speak_opt_in_server_tts_uses_pyttsx3(self, monkeypatch):
+        """Server-side pyttsx3 fallback only triggers when explicitly enabled."""
+        adapter = TTSConfirmationAdapter(
+            enabled=True, mode=TTSMode.AUDIO_EVERY_SCORE.value, use_server_tts=True
+        )
+
+        fake_engine = MagicMock()
+
+        class FakePyttsx3:
+            def init(self):
+                return fake_engine
+
+            def say(self, text):
+                pass
+
+            def runAndWait(self):
+                pass
+
+            def setProperty(self, *args, **kwargs):
+                pass
+
+        fake_module = MagicMock()
+        fake_module.init.return_value = fake_engine
+        monkeypatch.setitem(sys.modules, "pyttsx3", fake_module)
+
+        real_import = __import__
+
+        def _tracking_import(name, *args, **kwargs):
+            if name == "pyttsx3":
+                return fake_module
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr("builtins.__import__", _tracking_import)
+        adapter.speak("score is five to three")
+        assert fake_module.init.called

@@ -10,8 +10,11 @@ Modes:
 - audio_on_uncertainty: speak only when confidence is low or confirmation is required
 
 The adapter is feature-flagged via VOICE_ENABLE_TTS_CONFIRMATION and
-VOICE_TTS_MODE. It never blocks scoring; TTS runs in a background thread
-and its output is never routed back to the ASR.
+VOICE_TTS_MODE. It never blocks scoring; by default it does NOT synthesize
+audio on the server. Audible output is routed to the browser via the UI
+(``spoken_commentary`` SpeechSynthesis) so the operator hears confirmations.
+Server-side ``pyttsx3`` is an opt-in fallback (``use_server_tts``) and is
+otherwise never imported. Output is never routed back to the ASR.
 """
 
 from __future__ import annotations
@@ -52,10 +55,15 @@ class TTSConfirmationAdapter:
         mode: str = TTSMode.VISUAL_ONLY.value,
         provider: str = TTSProvider.OFFLINE.value,
         enabled: bool = False,
+        use_server_tts: bool = False,
     ):
         self.mode = TTSMode(mode) if mode else TTSMode.OFF
         self.provider = TTSProvider(provider) if provider else TTSProvider.OFFLINE
         self.enabled = enabled
+        # Server-side pyttsx3 is opt-in only. By default, audio is routed to
+        # the browser via the UI (spoken_commentary SpeechSynthesis) so the
+        # operator — not the server — hears the confirmation.
+        self.use_server_tts = use_server_tts
         self._speak_queue: list[str] = []
         self._lock = threading.Lock()
 
@@ -87,6 +95,11 @@ class TTSConfirmationAdapter:
         """
         Speak the given text.
 
+        By default audio is NOT synthesized server-side: the operator's browser
+        is the intended speaker (routed by the UI via ``spoken_commentary``).
+        Server-side ``pyttsx3`` remains an opt-in fallback, used only when
+        ``use_server_tts`` is explicitly enabled.
+
         Args:
             text: The text to speak.
             blocking: If True, block until speech completes (not recommended in Streamlit).
@@ -94,6 +107,10 @@ class TTSConfirmationAdapter:
         if not self.enabled or self.mode == TTSMode.OFF or self.mode == TTSMode.VISUAL_ONLY:
             return
         if not text:
+            return
+
+        if not self.use_server_tts:
+            # Browser-native TTS is handled by the UI layer. No server engine.
             return
 
         if blocking:

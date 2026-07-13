@@ -34,11 +34,14 @@ def get_intent_classifier() -> IntentClassifier:
 
 def show():
     """Display the coaching lab page."""
-    from tournament_platform.app.components.brand_assets import render_brand_icon
-    render_brand_icon("coaching_lab")
-    st.title("LIT_IT Coaching Lab")
+    from tournament_platform.app.components.page_header import render_page_header
+
+    render_page_header(
+        title="LIT_IT Coaching Lab",
+        description="Analyze table tennis sessions and get AI-powered coaching feedback.",
+        icon_name="coaching_lab",
+    )
     render_tour("coaching_lab")
-    st.markdown("Analyze table tennis sessions and get AI-powered coaching feedback.")
     
     # Tabs for different views
     tab1, tab2, tab3 = st.tabs(["Session Analysis", "Intent Classification", "Recommendations"])

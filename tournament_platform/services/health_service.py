@@ -263,3 +263,142 @@ def get_health_summary(db: Session, tournament_id: Optional[int] = None) -> Dict
         "issue_counts": issue_counts,
         "issues": health["issues"],
     }
+
+
+def detect_stale_matches(
+    db: Session,
+    tournament_id: Optional[int] = None,
+    stale_active_minutes: Optional[int] = None,
+    stale_called_minutes: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Return matches that have been active or called longer than allowed.
+    
+    Args:
+        db: Database session
+        tournament_id: Optional tournament filter
+        stale_active_minutes: Override for active stale threshold
+        stale_called_minutes: Override for called stale threshold
+        
+    Returns:
+        List of stale match dicts
+    """
+    thresholds = get_health_thresholds()
+    now = datetime.now(timezone.utc)
+    
+    if stale_active_minutes is not None:
+        thresholds["stale_active_minutes"] = stale_active_minutes
+    if stale_called_minutes is not None:
+        thresholds["stale_called_minutes"] = stale_called_minutes
+    
+    query = db.query(Match)
+    if tournament_id is not None:
+        query = query.filter(Match.tournament_id == tournament_id)
+    
+    stale = []
+    for m in query.all():
+        if m.call_status == "active" and m.started_at:
+            age = (now - m.started_at).total_seconds() / 60
+            if age > thresholds["stale_active_minutes"]:
+                stale.append({
+                    "match_id": m.id,
+                    "issue_type": "stale_active",
+                    "severity": "error",
+                    "age_minutes": int(age),
+                    "threshold_minutes": thresholds["stale_active_minutes"],
+                    "player1": m.player1,
+                    "player2": m.player2,
+                    "location": m.location,
+                })
+        elif m.call_status == "called" and m.called_at:
+            age = (now - m.called_at).total_seconds() / 60
+            if age > thresholds["stale_called_minutes"]:
+                stale.append({
+                    "match_id": m.id,
+                    "issue_type": "stale_called",
+                    "severity": "warning",
+                    "age_minutes": int(age),
+                    "threshold_minutes": thresholds["stale_called_minutes"],
+                    "player1": m.player1,
+                    "player2": m.player2,
+                })
+    return stale
+
+
+def detect_missing_results(
+    db: Session,
+    tournament_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Return completed matches that are missing a score or winner.
+    
+    Args:
+        db: Database session
+        tournament_id: Optional tournament filter
+        
+    Returns:
+        List of missing-result match dicts
+    """
+    query = db.query(Match).filter(Match.status == MatchStatus.completed)
+    if tournament_id is not None:
+        query = query.filter(Match.tournament_id == tournament_id)
+    
+    missing = []
+    for m in query.all():
+        if not m.score:
+            missing.append({
+                "match_id": m.id,
+                "issue_type": "completed_without_score",
+                "severity": "error",
+                "player1": m.player1,
+                "player2": m.player2,
+            })
+        elif not m.winner:
+            missing.append({
+                "match_id": m.id,
+                "issue_type": "completed_without_winner",
+                "severity": "error",
+                "player1": m.player1,
+                "player2": m.player2,
+                "score": m.score,
+            })
+    return missing
+
+
+def get_alert_inbox(
+    db: Session,
+    tournament_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Return all unresolved issues as an alert inbox.
+    
+    Each item includes an ``issue_id`` for acknowledgement.
+    """
+    health = get_tournament_health(db, tournament_id=tournament_id)
+    issues = health.get("issues", [])
+    inbox = []
+    for idx, issue in enumerate(issues):
+        inbox.append({
+            "issue_id": f"{tournament_id or 0}-{idx}",
+            "issue_type": issue.get("issue_type"),
+            "match_id": issue.get("match_id"),
+            "severity": issue.get("severity"),
+            "message": issue.get("message"),
+            "details": issue.get("details"),
+            "acknowledged": False,
+        })
+    return inbox
+
+
+def acknowledge_issue(
+    issue_id: str,
+    actor: str = "operator",
+) -> None:
+    """
+    Mark an issue as acknowledged (no-op persistence in MVP).
+    
+    Args:
+        issue_id: The id of the issue to acknowledge
+        actor: Who acknowledged the issue
+    """
+    logger.info("Issue acknowledged: issue_id=%s actor=%s", issue_id, actor)

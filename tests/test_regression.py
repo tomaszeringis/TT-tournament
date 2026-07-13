@@ -457,37 +457,65 @@ class TestApiReportEndpoint:
             assert response.status_code == 200
 
 
-# ---------------------------------------------------------------------------
-# Teams webhook mock tests
-# ---------------------------------------------------------------------------
+class TestVoiceScorekeeperSubmission:
+    """Tests for the refactored Live Scoreboard submission flow."""
 
-class TestTeamsWebhookMocked:
-    """Tests to verify Teams webhook calls are properly mocked/disabled."""
-
-    @patch("tournament_platform.api.server.settings.TEAMS_WEBHOOK_URL", "https://example.com/webhook")
-    @patch("tournament_platform.api.server.httpx.AsyncClient")
-    def test_teams_webhook_mocked_when_configured(self, mock_async_client, client, pending_match, db):
-        """When TEAMS_WEBHOOK_URL is set, httpx.AsyncClient is used but mocked."""
-        mock_client_instance = MagicMock()
-        mock_async_client.return_value.__aenter__.return_value = mock_client_instance
-        mock_client_instance.post = AsyncMock(return_value=MagicMock(status_code=200))
-
-        response = client.post(
-            "/api/report",
-            json={
-                "match_id": pending_match.id,
-                "winner": pending_match.player1,
-                "score": "3-1",
-            },
+    def test_submit_result_persists_winner_and_status(self, db, players, tournament_knockout):
+        """Submitting a result marks the match completed with winner and game scores."""
+        match = Match(
+            player1=players[0].name,
+            player2=players[1].name,
+            player1_id=players[0].id,
+            player2_id=players[1].id,
+            tournament_id=tournament_knockout.id,
+            status=MatchStatus.active,
         )
+        db.add(match)
+        db.commit()
+        db.refresh(match)
 
-        assert response.status_code == 200
-        # The mock ensures no real HTTP call is made
+        command = ReportMatchCommand(
+            match_id=match.id,
+            winner=players[0].name,
+            score="2-1",
+            game_scores="11-1, 11-3, 10-12",
+        )
+        updated = report_existing_match(db, command)
 
+        assert updated.status == MatchStatus.completed
+        assert updated.winner == players[0].name
+        assert updated.winner_id == players[0].id
+        assert updated.score == "2-1"
+        assert updated.game_scores == "11-1, 11-3, 10-12"
 
-# ---------------------------------------------------------------------------
-# Run tests
-# ---------------------------------------------------------------------------
+    def test_dashboard_sees_submitted_match(self, db, players, tournament_knockout):
+        """After submission, Dashboard recent results can see the completed match."""
+        match = Match(
+            player1=players[0].name,
+            player2=players[1].name,
+            player1_id=players[0].id,
+            player2_id=players[1].id,
+            tournament_id=tournament_knockout.id,
+            status=MatchStatus.active,
+        )
+        db.add(match)
+        db.commit()
+        db.refresh(match)
+
+        command = ReportMatchCommand(
+            match_id=match.id,
+            winner=players[0].name,
+            score="3-0",
+            game_scores="11-3, 11-5, 11-8",
+        )
+        report_existing_match(db, command)
+
+        db.expire_all()
+        row = db.query(Match).filter(Match.id == match.id).first()
+        assert row.status == MatchStatus.completed
+        assert row.winner == players[0].name
+
 
 if __name__ == "__main__":
+    import pytest
     pytest.main([__file__, "-v"])

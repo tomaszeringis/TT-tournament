@@ -20,9 +20,9 @@ from tournament_platform.services.tournament_read_models import (
     get_operator_queue,
     get_table_status,
     get_next_available_table,
-    get_public_rankings,
     get_player_path,
 )
+from tournament_platform.services.standings_service import get_standings
 from tournament_platform.services.audit_service import log_audit
 
 
@@ -174,7 +174,7 @@ class GetPublicRankingsTool:
     
     def execute(self, db: Session, tournament_id: Optional[int] = None, **kwargs) -> ToolResult:
         try:
-            data = get_public_rankings(db, tournament_id=tournament_id)
+            data = get_standings(db, tournament_id=tournament_id)
             return ToolResult(
                 tool_name=self.name,
                 success=True,

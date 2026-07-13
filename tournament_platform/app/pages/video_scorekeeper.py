@@ -316,12 +316,15 @@ def render_current_score() -> None:
 # Page UI
 # ============================================================================
 
-from tournament_platform.app.components.brand_assets import render_brand_icon
-render_brand_icon("video_scorekeeper")
-st.title("LIT_IT Video Scorekeeper")
+from tournament_platform.app.components.page_header import render_page_header
+
+render_page_header(
+    title="LIT_IT Video Scorekeeper",
+    description="AI-assisted point suggestions with human confirmation. Upload a video to get started.",
+    icon_name="video_scorekeeper",
+)
 if get_script_run_ctx() is not None:
     render_tour("video_scorekeeper")
-st.caption("AI-assisted point suggestions with human confirmation. Upload a video to get started.")
 
 # Active Tournament Match Selector
 render_active_match_selector()

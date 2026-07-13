@@ -16,8 +16,6 @@ from streamlit.runtime.scriptrunner import get_script_run_ctx
 if get_script_run_ctx() is not None:
     st.set_page_config(page_title="LIT_IT Voice Scorekeeper", layout="wide")
 
-import asyncio
-import os
 import copy
 import uuid
 import threading
@@ -60,12 +58,6 @@ from tournament_platform.services.settings import (
     VOICE_ASR_COMPUTE_TYPE,
 )
 from tournament_platform.services.schemas import ActiveMatchResponse
-# Import game-by-game scoring utilities
-from tournament_platform.app.services.match_score import (
-    parse_game_score,
-    validate_game_score,
-    summarize_match,
-)
 from tournament_platform.app.services.score_engine import is_deuce, get_serving_player
 from tournament_platform.app.services.ui_feedback import play_cue, render_sound_toggle
 from tournament_platform.app.services.voice_speaker import SpeakerTagger, DEFAULT_SPEAKERS
@@ -215,6 +207,25 @@ if 'voice_tts_adapter' not in st.session_state:
         enabled=VOICE_ENABLE_TTS_CONFIRMATION,
     )
 
+
+# ---------------------------------------------------------------------------
+# Audio helpers (Sound cues + browser-native TTS routing)
+# ---------------------------------------------------------------------------
+# The audio-control wiring (TTS label mapping, mode->enabled selection, and
+# browser speech routing) lives in audio_cues.py so it is unit-testable
+# without importing this full page module.
+from tournament_platform.app.services.audio_cues import (
+    TTS_FRIENDLY_LABELS,
+    apply_tts_selection,
+    build_test_tts_message,
+    maybe_speak_tts,
+    tts_mode_options,
+)
+
+# Backwards-compatible aliases used by the scoring handlers below.
+_maybe_speak_tts = maybe_speak_tts
+
+
 # Voice scorekeeper match selector state
 if 'voice_selected_tournament_id' not in st.session_state:
     st.session_state.voice_selected_tournament_id = None
@@ -234,6 +245,20 @@ if 'voice_parsed_result' not in st.session_state:
     st.session_state.voice_parsed_result = None
 if 'voice_score_input' not in st.session_state:
     st.session_state.voice_score_input = "0-0"
+
+# Live Scoreboard result-review / submission state.
+# ``completed_games`` is DERIVED from ``engine.round_scores`` on every render
+# (the engine remains the single source of truth during play). The flags below
+# gate the pending-review -> Submit Result -> saved lifecycle so the DB is only
+# written when the operator explicitly clicks Submit Result.
+if 'completed_games' not in st.session_state:
+    st.session_state.completed_games = []
+if 'match_complete' not in st.session_state:
+    st.session_state.match_complete = False
+if 'pending_result_submission' not in st.session_state:
+    st.session_state.pending_result_submission = False
+if 'result_submitted' not in st.session_state:
+    st.session_state.result_submitted = False
 
 # Duplicate-command cooldown (Phase 4 / PingScore port).
 # Ignore identical (type, player, score_a, score_b) events within COOLDOWN_MS.
@@ -402,9 +427,7 @@ def _process_voice_transcript(
                 play_cue("game")
             elif _e2.match_status == "match_won":
                 play_cue("match")
-        _tts_adapter = st.session_state.get("voice_tts_adapter")
-        if _tts_adapter and _tts_adapter.enabled:
-            _tts_adapter.speak(msg)
+        _maybe_speak_tts(msg, event.type, confidence=getattr(event, "confidence", 1.0))
         _request_voice_rerun(source)
     else:
         st.session_state.last_voice_feedback = msg
@@ -868,6 +891,50 @@ def finalize_voice_match(match_id: int, engine) -> None:
         db.close()
 
 
+def compute_completed_games(engine) -> List[Dict[str, Any]]:
+    """Return a normalized list of completed games derived from the engine.
+
+    The engine's ``round_scores`` is the single source of truth: it holds every
+    finished game (including the final one that decided the match). This helper
+    projects those ``(score_a, score_b)`` tuples into UI-friendly dicts and never
+    mutates the engine.
+    """
+    games: List[Dict[str, Any]] = []
+    for i, (a, b) in enumerate(engine.round_scores):
+        games.append(
+            {
+                "game": i + 1,
+                "player_a_score": a,
+                "player_b_score": b,
+                "winner": "A" if a > b else "B",
+            }
+        )
+    return games
+
+
+def compute_match_score(completed_games: List[Dict[str, Any]]) -> Tuple[int, int]:
+    """Return ``(games_won_a, games_won_b)`` derived from completed games only.
+
+    This intentionally does NOT read ``engine.games_won_*`` so the displayed
+    match score can never claim more games than are actually recorded.
+    """
+    games_a = sum(1 for g in completed_games if g["winner"] == "A")
+    games_b = sum(1 for g in completed_games if g["winner"] == "B")
+    return games_a, games_b
+
+
+def clear_result_review_state() -> None:
+    """Reset the Live Scoreboard result-review / submission session state.
+
+    Called on match switch, reset, and rematch so a prior match's completed
+    games and submission flags never leak into a new match.
+    """
+    st.session_state.completed_games = []
+    st.session_state.match_complete = False
+    st.session_state.pending_result_submission = False
+    st.session_state.result_submitted = False
+
+
 def _audio_input_to_pcm(audio_file: Any) -> bytes:
     """Convert st.audio_input bytes (WebM/Opus) to mono PCM 16kHz int16."""
     try:
@@ -1203,17 +1270,7 @@ def _apply_pending(idx: int) -> None:
                 play_cue("game")
             elif _e2.match_status == "match_won":
                 play_cue("match")
-        _tts_adapter = st.session_state.get("voice_tts_adapter")
-        if _tts_adapter and _tts_adapter.enabled:
-            _tts_adapter.speak(msg)
-        _voice_match_id = st.session_state.get("voice_selected_match_id")
-        if _voice_match_id:
-            try:
-                if st.session_state.match_manager.engine.match_status == "match_won":
-                    finalize_voice_match(_voice_match_id, st.session_state.match_manager.engine)
-                persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
-            except Exception as exc:
-                logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
+        _maybe_speak_tts(msg, event.type, confidence=getattr(event, "confidence", 1.0))
         _request_voice_rerun("confirmed")
     else:
         st.warning(f"🎤 Voice: {msg}")
@@ -1456,23 +1513,16 @@ def _process_voice_events() -> None:
                         play_cue("game")
                     elif _e2.match_status == "match_won":
                         play_cue("match")
-                # TTS confirmation (Phase 4)
-                _tts_adapter = st.session_state.get("voice_tts_adapter")
-                if _tts_adapter and _tts_adapter.enabled:
-                    _tts_adapter.speak(msg)
+                # TTS confirmation (Phase 4) — routed to the browser.
+                _maybe_speak_tts(
+                    msg,
+                    _score_event.type,
+                    confidence=getattr(_score_event, "confidence", 1.0),
+                )
                 _any_success = True
                 # Update cooldown tracking on successful apply
                 st.session_state.voice_last_applied_event_key = _event_key
                 st.session_state.voice_last_applied_event_ts = time.time()
-                # Persist match state to DB when a tournament match is selected
-                _voice_match_id = st.session_state.get("voice_selected_match_id")
-                if _voice_match_id:
-                    try:
-                        if st.session_state.match_manager.engine.match_status == "match_won":
-                            finalize_voice_match(_voice_match_id, st.session_state.match_manager.engine)
-                        persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
-                    except Exception as exc:
-                        logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
                 _request_voice_rerun("applied")
             else:
                 st.warning(f"🎤 Voice: {msg}")
@@ -1758,6 +1808,48 @@ def render_commentary_settings() -> None:
                     )
                     st.rerun()
 
+        # --- Audio controls (moved from Live Scoreboard, Phase 6 / TTS Phase 4) ---
+        st.divider()
+        st.markdown("**Audio & spoken announcements**")
+
+        # Sound cues toggle (writes the per-session preference).
+        render_sound_toggle()
+
+        # TTS mode selector — friendly labels, internal enum value stored.
+        _tts = st.session_state.voice_tts_adapter
+        _tts_mode_values, _tts_options = tts_mode_options()
+        _tts_idx = _tts_mode_values.index(_tts.mode.value) if _tts.mode.value in _tts_mode_values else 0
+        _new_tts_label = st.selectbox(
+            "🔊 TTS mode",
+            options=_tts_options,
+            index=_tts_idx,
+            key="tts_mode_select",
+            help="Spoken score announcements (e.g. 'Tomas Z leads 5 to 3'). Choose how often the scoreboard speaks.",
+        )
+        _new_tts_mode = _tts_mode_values[_tts_options.index(_new_tts_label)]
+        if _new_tts_mode != _tts.mode.value:
+            apply_tts_selection(_tts, _new_tts_mode)
+            st.rerun()
+
+        st.divider()
+
+        # Test sound — must NOT mutate match state or the DB.
+        if st.button("🔊 Test sound", key="audio_test_sound", use_container_width=True):
+            if st.session_state.get("sound_cues_enabled", False):
+                play_cue("point")
+            if _tts.enabled and _tts.mode not in (TTSMode.OFF, TTSMode.VISUAL_ONLY):
+                _maybe_speak_tts(build_test_tts_message(st.session_state.match_manager), "increment")
+
+        # Activation hint: browsers may block audio until first interaction.
+        st.caption(
+            "If nothing plays, click once or interact with the scoreboard — "
+            "browsers may block audio until your first click. Ensure the tab isn't muted."
+        )
+
+        # Informative note when all audio is off.
+        if not st.session_state.get("sound_cues_enabled", False) and not _tts.enabled:
+            st.info("Audio is off. Scores still update as text.")
+
 
 def render_pending_commentary() -> None:
     """Render the pending commentary line (speech + text preview) and clear it."""
@@ -1886,6 +1978,8 @@ def apply_selected_match_to_session(match: Dict) -> None:
             match.get("player1_id"),
             match.get("player2_id"),
         )
+        st.session_state.match_manager.reset_match()
+        clear_result_review_state()
 
 
 def clear_selected_match() -> None:
@@ -1898,6 +1992,7 @@ def clear_selected_match() -> None:
     st.session_state.voice_match_options = []
     st.session_state.voice_parsed_result = None
     st.session_state.voice_score_input = "0-0"
+    clear_result_review_state()
 
 
 def render_active_match_selector() -> None:
@@ -2009,9 +2104,12 @@ def render_selected_match_summary() -> None:
 # Page UI
 # ============================================================================
 
-from tournament_platform.app.components.brand_assets import render_brand_icon
-render_brand_icon("voice_scorekeeper")
-st.title("Voice Scorekeeper")
+from tournament_platform.app.components.page_header import render_page_header
+
+render_page_header(
+    title="Voice Scorekeeper",
+    icon_name="voice_scorekeeper",
+)
 if get_script_run_ctx() is not None:
     render_tour("voice_scorekeeper")
 apply_global_styles()
@@ -2165,13 +2263,8 @@ with score_col1:
             st.session_state.last_feedback = msg
             st.toast(msg, icon="✅")
             play_cue("point")
+            _maybe_speak_tts(msg, "increment")
             _build_and_store_commentary("point_a", st.session_state.match_manager.state, prev_state)
-            _voice_match_id = st.session_state.get("voice_selected_match_id")
-            if _voice_match_id:
-                try:
-                    persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
-                except Exception as exc:
-                    logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
             st.rerun()
     with _b2:
         if st.button("➖ A", key="sub_point_a", use_container_width=True):
@@ -2183,13 +2276,8 @@ with score_col1:
                     st.session_state.match_manager.undo_last_point()
                     st.session_state.last_feedback = f"Point removed from {st.session_state.match_manager.state.player_a}"
                     st.toast(st.session_state.last_feedback, icon="↩️")
+                    _maybe_speak_tts(st.session_state.last_feedback, "undo")
                     _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
-            _voice_match_id = st.session_state.get("voice_selected_match_id")
-            if _voice_match_id:
-                try:
-                    persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
-                except Exception as exc:
-                    logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
             st.rerun()
 
 with score_colc:
@@ -2201,44 +2289,60 @@ with score_colc:
     # Deuce badge
     if is_deuce(st.session_state.match_manager.engine):
         st.markdown("<div style='text-align:center; color:red;'><b>⚡ DEUCE</b></div>", unsafe_allow_html=True)
-    # Format + games won
+    # Format + games won (games score derived from actual completed games,
+    # never from the raw engine counter, so it can't show phantom games).
     _e = st.session_state.match_manager.engine
+    _center_games = compute_completed_games(_e)
+    _center_games_a, _center_games_b = compute_match_score(_center_games)
     st.markdown(f"<div style='text-align:center; font-size:13px;'>First to {_e.points_to_win} · Best of {_e.best_of}</div>", unsafe_allow_html=True)
-    st.markdown(f"<div style='text-align:center; font-size:13px;'>Games: {_e.games_won_a} – {_e.games_won_b}</div>", unsafe_allow_html=True)
-    # Undo + Reset
-    if st.button("↩️ Undo", key="undo", use_container_width=True):
-        prev_state = copy.deepcopy(st.session_state.match_manager.state)
-        success, msg = st.session_state.match_manager.undo_last_point()
-        st.session_state.last_feedback = msg
-        st.toast(msg, icon="↩️")
-        play_cue("undo")
-        _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
-        _voice_match_id = st.session_state.get("voice_selected_match_id")
-        if _voice_match_id:
-            try:
-                persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
-            except Exception as exc:
-                logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
-        st.rerun()
-    if st.button("🔄 Reset", key="reset", use_container_width=True):
-        prev_state = copy.deepcopy(st.session_state.match_manager.state)
-        success, msg = st.session_state.match_manager.reset_match()
-        st.session_state.last_feedback = msg
-        st.toast(msg, icon="🔄")
-        play_cue("undo")
-        _build_and_store_commentary("reset", st.session_state.match_manager.state, prev_state)
-        _voice_match_id = st.session_state.get("voice_selected_match_id")
-        if _voice_match_id:
-            try:
-                persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
-            except Exception as exc:
-                logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
-        st.rerun()
+    st.markdown(f"<div style='text-align:center; font-size:13px;'>Games: {_center_games_a} – {_center_games_b}</div>", unsafe_allow_html=True)
+    # Correction controls
+    st.markdown("**Corrections**")
+    _cor1, _cor2 = st.columns(2)
+    with _cor1:
+        if st.button("↩️ Undo Point", key="undo_point_center", use_container_width=True):
+            prev_state = copy.deepcopy(st.session_state.match_manager.state)
+            success, msg = st.session_state.match_manager.undo_last_point()
+            st.session_state.last_feedback = msg
+            st.toast(msg, icon="↩️")
+            play_cue("undo")
+            _maybe_speak_tts(msg, "undo")
+            _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
+            st.rerun()
+    with _cor2:
+        if st.button("↩️ Undo Game", key="undo_game_center", use_container_width=True):
+            if st.session_state.match_manager.engine.round_scores:
+                success, msg = st.session_state.match_manager.undo_last_completed_game()
+                st.session_state.last_feedback = msg
+                st.toast(msg, icon="↩️")
+                play_cue("undo")
+                st.rerun()
+            else:
+                st.warning("No completed games to undo")
+
+    _rst1, _rst2 = st.columns(2)
+    with _rst1:
+        if st.button("🔄 Reset Game", key="reset_game_center", use_container_width=True):
+            prev_state = copy.deepcopy(st.session_state.match_manager.state)
+            success, msg = st.session_state.match_manager.reset_current_game()
+            st.session_state.last_feedback = msg
+            st.toast(msg, icon="🔄")
+            play_cue("undo")
+            _build_and_store_commentary("reset", st.session_state.match_manager.state, prev_state)
+            st.rerun()
+    with _rst2:
+        if st.button("🗑️ Reset Match", key="reset_match_center", use_container_width=True):
+            prev_state = copy.deepcopy(st.session_state.match_manager.state)
+            success, msg = st.session_state.match_manager.reset_match()
+            clear_result_review_state()
+            st.session_state.last_feedback = msg
+            st.toast(msg, icon="🔄")
+            play_cue("undo")
+            _build_and_store_commentary("reset", st.session_state.match_manager.state, prev_state)
+            st.rerun()
     # Voice status
     if st.session_state.get("last_voice_feedback"):
         st.caption(f"🎙️ {st.session_state.last_voice_feedback}")
-    # Sound toggle (Phase 6)
-    render_sound_toggle()
     # Speaker selection (Phase 2)
     _tagger = st.session_state.voice_speaker_tagger
     if _tagger.mode != "off":
@@ -2256,20 +2360,15 @@ with score_colc:
             st.session_state.voice_current_speaker = _new_speaker if _new_speaker else None
             _tagger.set_current_speaker(_new_speaker if _new_speaker else None)
             st.rerun()
-    # TTS mode selector (Phase 4)
-    _tts = st.session_state.voice_tts_adapter
-    _tts_mode_options = [m.value for m in TTSMode]
-    _tts_idx = _tts_mode_options.index(_tts.mode.value) if _tts.mode.value in _tts_mode_options else 0
-    _new_tts_mode = st.selectbox(
-        "🔊 TTS mode",
-        options=_tts_mode_options,
-        index=_tts_idx,
-        key="tts_mode_select",
-        help="Spoken confirmation mode (offline-first, never blocks scoring).",
-    )
-    if _new_tts_mode != _tts.mode.value:
-        _tts.mode = TTSMode(_new_tts_mode)
-        st.rerun()
+    # Audio status indicator (Audio controls moved to Spoken Commentary section).
+    _tts_status = ""
+    if st.session_state.get("sound_cues_enabled"):
+        _tts_status = "🔊 Sound on"
+    _tts_adapter = st.session_state.get("voice_tts_adapter")
+    if _tts_adapter and _tts_adapter.enabled and _tts_adapter.mode != TTSMode.OFF:
+        _tts_status += (" · " if _tts_status else "") + f"TTS: {TTS_FRIENDLY_LABELS.get(_tts_adapter.mode.value, _tts_adapter.mode.value)}"
+    if _tts_status:
+        st.caption(_tts_status)
 
 with score_col2:
     st.markdown(f"<div style='text-align:center;'><h3>{st.session_state.match_manager.state.player_b}</h3></div>", unsafe_allow_html=True)
@@ -2282,13 +2381,8 @@ with score_col2:
             st.session_state.last_feedback = msg
             st.toast(msg, icon="✅")
             play_cue("point")
+            _maybe_speak_tts(msg, "increment")
             _build_and_store_commentary("point_b", st.session_state.match_manager.state, prev_state)
-            _voice_match_id = st.session_state.get("voice_selected_match_id")
-            if _voice_match_id:
-                try:
-                    persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
-                except Exception as exc:
-                    logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
             st.rerun()
     with _b2:
         if st.button("➖ B", key="sub_point_b", use_container_width=True):
@@ -2300,6 +2394,7 @@ with score_col2:
                     st.session_state.match_manager.undo_last_point()
                     st.session_state.last_feedback = f"Point removed from {st.session_state.match_manager.state.player_b}"
                     st.toast(st.session_state.last_feedback, icon="↩️")
+                    _maybe_speak_tts(st.session_state.last_feedback, "undo")
                     _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
             st.rerun()
 
@@ -2310,13 +2405,33 @@ with score_col2:
 _e = st.session_state.match_manager.engine
 _mm = st.session_state.match_manager
 
+# Derive completed games + match score from the engine (single source of truth)
+# and mirror them into session state for the review / submission flow. The
+# engine is never mutated here.
+_completed_games = compute_completed_games(_e)
+st.session_state.completed_games = _completed_games
+_derived_games_a, _derived_games_b = compute_match_score(_completed_games)
+st.session_state.match_complete = _e.match_status == "match_won"
+
+# Completed games review list — always visible once any game is finished so the
+# operator can review the real game-by-game scores (never a silent 0-0).
+if _completed_games:
+    st.divider()
+    st.markdown("**📋 Completed games**")
+    for _g in _completed_games:
+        _gw_name = _mm.state.player_a if _g["winner"] == "A" else _mm.state.player_b
+        st.caption(
+            f"Game {_g['game']}: {_g['player_a_score']}-{_g['player_b_score']} "
+            f"({_gw_name})"
+        )
+    st.caption(f"Match score: {_derived_games_a} – {_derived_games_b}")
+
 if _e.match_status == "game_won":
     # Determine who won the just-completed game
     last_game = _e.round_scores[-1] if _e.round_scores else (0, 0)
     game_winner_name = _mm.state.player_a if last_game[0] > last_game[1] else _mm.state.player_b
-    st.divider()
-    st.success(f"🏆 **Game {len(_e.round_scores)}** — {game_winner_name} wins {last_game[0]}-{last_game[1]}!")
-    st.caption(f"Games: {_e.games_won_a} – {_e.games_won_b}  |  Next game starting…")
+    st.success(f"🏆 **Game {len(_completed_games)}** — {game_winner_name} wins {last_game[0]}-{last_game[1]}!")
+    st.caption(f"Games: {_derived_games_a} – {_derived_games_b}  |  Next game starting…")
     play_cue("game")
     if st.button("▶️ Next Game", key="next_game_btn", use_container_width=True, type="primary"):
         # The engine is already reset for the next game; just clear the game_won status
@@ -2324,157 +2439,109 @@ if _e.match_status == "game_won":
         _e.match_status = "in_progress"
         st.rerun()
 
-if _e.match_status == "match_won":
-    match_winner_name = _mm.state.player_a if _e.games_won_a > _e.games_won_b else _mm.state.player_b
+if st.session_state.match_complete:
     st.divider()
-    st.balloons()
-    st.success(f"🏅 **Match Complete!** {match_winner_name} wins {_e.games_won_a}-{_e.games_won_b}!")
-    st.caption(f"Format: first to {_e.points_to_win}, best of {_e.best_of}")
-    play_cue("match")
+    match_winner_name = _mm.state.player_a if _derived_games_a > _derived_games_b else _mm.state.player_b
+    _selected_match_id = st.session_state.get("voice_selected_match_id")
+
+    if not _completed_games:
+        # Defensive: a legacy/manual path marked the match complete without any
+        # recorded games. Never silently persist a 0-0 result.
+        st.warning(
+            "⚠️ Match is marked complete but no completed games were recorded — "
+            "result cannot be submitted."
+        )
+        st.session_state.pending_result_submission = False
+    elif st.session_state.result_submitted:
+        st.success(
+            f"✅ **Result saved!** {match_winner_name} won "
+            f"{_derived_games_a}-{_derived_games_b}."
+        )
+        st.session_state.pending_result_submission = False
+    else:
+        st.balloons()
+        st.success(
+            f"🏅 **Match Complete!** {match_winner_name} wins "
+            f"{_derived_games_a}-{_derived_games_b}!"
+        )
+        st.caption(f"Format: first to {_e.points_to_win}, best of {_e.best_of}")
+        st.info("⏳ Pending submission — review the result above before saving.")
+        st.session_state.pending_result_submission = True
+        play_cue("match")
+
+    # Submit Result — the DB is written ONLY here, and only when a match is
+    # complete, has recorded games, is linked to a tournament match, and has
+    # not already been submitted.
+    if _completed_games and not st.session_state.result_submitted:
+        if _selected_match_id:
+            _can_submit = bool(match_winner_name)
+            if st.button(
+                "💾 Submit Result",
+                key="submit_result_btn",
+                type="primary",
+                use_container_width=True,
+                disabled=not _can_submit,
+            ):
+                finalize_voice_match(_selected_match_id, _e)
+                st.session_state.result_submitted = True
+                st.session_state.pending_result_submission = False
+                st.toast("Result submitted!", icon="✅")
+                # Refresh dashboard / recent-results caches so the completed
+                # match becomes visible immediately.
+                st.cache_data.clear()
+                st.rerun()
+        else:
+            # Free-play (no linked DB match): show a disabled button with an
+            # explanation instead of silently hiding the action.
+            st.button(
+                "💾 Submit Result",
+                key="submit_result_btn",
+                type="primary",
+                use_container_width=True,
+                disabled=True,
+                help="No linked tournament match — result cannot be saved.",
+            )
+            st.caption(
+                "ℹ️ No linked tournament match — result cannot be saved. "
+                "Select an active match to enable submission."
+            )
+else:
+    # Match not complete: there is nothing pending to submit.
+    st.session_state.pending_result_submission = False
+
+# Rematch / New Match:
+#  - after submission (or when there is nothing to save): shown as normal
+#    next actions,
+#  - before submission of a linked, completed match: shown as secondary
+#    controls behind an explicit "result not saved" warning so they never
+#    mask the Submit Result action.
+_pre_submit_unsaved = (
+    st.session_state.match_complete
+    and not st.session_state.result_submitted
+    and bool(_completed_games)
+    and bool(st.session_state.get("voice_selected_match_id"))
+)
+if _pre_submit_unsaved:
+    st.caption("⚠️ Result not saved yet — Rematch / New Match will discard it.")
 
 _rem1, _rem2, _rem3 = st.columns(3)
 with _rem1:
-    if st.button("🔄 Rematch", key="rematch_btn", use_container_width=True, type="primary"):
+    if st.button(
+        "🔄 Rematch",
+        key="rematch_btn",
+        use_container_width=True,
+        type="secondary" if _pre_submit_unsaved else "primary",
+    ):
         _mm.rematch()
+        clear_result_review_state()
         st.toast("Rematch! First server swapped.", icon="🔄")
-        _voice_match_id = st.session_state.get("voice_selected_match_id")
-        if _voice_match_id:
-            try:
-                persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
-            except Exception as exc:
-                logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
         st.rerun()
 with _rem2:
     if st.button("🆕 New Match", key="new_match_btn", use_container_width=True):
         _mm.reset_match()
+        clear_result_review_state()
         st.toast("New match ready.", icon="🆕")
-        _voice_match_id = st.session_state.get("voice_selected_match_id")
-        if _voice_match_id:
-            try:
-                persist_voice_match_to_db(_voice_match_id, st.session_state.match_manager.engine)
-            except Exception as exc:
-                logger.warning("Failed to persist voice match %s: %s", _voice_match_id, exc)
         st.rerun()
-with _rem3:
-    if st.button("📤 Submit Result", key="submit_from_scoreboard_btn", use_container_width=True):
-        # Reuse the existing game-by-game submission flow by pre-filling
-        # the in-progress games from the engine's round_scores.
-        match_id = st.session_state.get("voice_selected_match_id")
-        if match_id:
-            if "in_progress_game_scores" not in st.session_state:
-                st.session_state.in_progress_game_scores = {}
-            st.session_state.in_progress_game_scores[match_id] = list(_e.round_scores)
-            st.toast("Scores loaded into submission form — scroll down to submit.", icon="📤")
-            st.rerun()
-        else:
-            st.warning("Select a tournament match first to enable submission.")
-
-# ============================================================================
-# Game-by-Game Scoring Section
-# ============================================================================
-
-# Initialize in-progress game scores in session state (keyed by match_id)
-if 'in_progress_game_scores' not in st.session_state:
-    st.session_state.in_progress_game_scores = {}
-
-def get_in_progress_games(match_id: int) -> List[Tuple[int, int]]:
-    """Get the list of in-progress game scores for a match."""
-    return st.session_state.in_progress_game_scores.get(match_id, [])
-
-def add_game_score(match_id: int, score1: int, score2: int) -> None:
-    """Add a game score to the in-progress list for a match."""
-    if match_id not in st.session_state.in_progress_game_scores:
-        st.session_state.in_progress_game_scores[match_id] = []
-    st.session_state.in_progress_game_scores[match_id].append((score1, score2))
-
-def clear_in_progress_games(match_id: int) -> None:
-    """Clear in-progress game scores for a match."""
-    st.session_state.in_progress_game_scores.pop(match_id, None)
-
-# Game-by-game scoring UI (only show if a match is selected)
-if st.session_state.voice_selected_match_id:
-    st.divider()
-    st.subheader("🎮 Game-by-Game Scoring")
-    st.caption("Enter each game score as it's completed. The system will track games and determine the match winner.")
-    
-    match_id = st.session_state.voice_selected_match_id
-    p1_name = st.session_state.voice_selected_player1_name or "Player A"
-    p2_name = st.session_state.voice_selected_player2_name or "Player B"
-    
-    # Display current game scores
-    in_progress_games = get_in_progress_games(match_id)
-    if in_progress_games:
-        st.markdown("**Games played:**")
-        for i, (s1, s2) in enumerate(in_progress_games, 1):
-            winner = "P1" if s1 > s2 else "P2"
-            st.markdown(f"  Game {i}: {s1}-{s2} ({winner} wins)")
-        
-        # Show match summary
-        _e_local = st.session_state.match_manager.engine
-        summary = summarize_match(in_progress_games, best_of=_e_local.best_of)
-        if summary["is_complete"]:
-            winner_name = p1_name if summary["winner_side"] == 1 else p2_name
-            st.success(f"🏆 Match complete! {winner_name} wins {summary['player1_games']}-{summary['player2_games']}")
-    
-    # Game entry form
-    with st.form("game_score_form"):
-        st.markdown("**Enter completed game score:**")
-        col_g1, col_g2 = st.columns(2)
-        with col_g1:
-            game_score1 = st.number_input(
-                f"{p1_name} score",
-                min_value=0,
-                max_value=21,
-                value=11,
-                key="game_score1_input"
-            )
-        with col_g2:
-            game_score2 = st.number_input(
-                f"{p2_name} score",
-                min_value=0,
-                max_value=21,
-                value=0,
-                key="game_score2_input"
-            )
-        
-        add_game_btn = st.form_submit_button("➕ Add Game", use_container_width=True)
-        
-        if add_game_btn:
-            # Validate the game score
-            if not validate_game_score(game_score1, game_score2):
-                st.error("❌ Invalid game score. Winner must have ≥11 points and a 2-point lead.")
-            else:
-                add_game_score(match_id, game_score1, game_score2)
-                st.toast(f"Game added: {game_score1}-{game_score2}", icon="✅")
-                st.rerun()
-    
-    # Clear games button
-    if in_progress_games:
-        if st.button("🗑️ Clear All Games", key="clear_games_btn", use_container_width=True):
-            clear_in_progress_games(match_id)
-            st.toast("All games cleared", icon="↩️")
-            st.rerun()
-    
-    # Submit match result button (only if match is complete)
-    if in_progress_games:
-        _e_local = st.session_state.match_manager.engine
-        summary = summarize_match(in_progress_games, best_of=_e_local.best_of)
-        if summary["is_complete"]:
-            if st.button("📤 Submit Match Result", key="submit_match_btn", use_container_width=True, type="primary"):
-                _e_sub = st.session_state.match_manager.engine
-                _winner_name = p1_name if _e_sub.games_won_a > _e_sub.games_won_b else p2_name
-                
-                with st.status("Finalizing match result...", expanded=False) as status:
-                    try:
-                        finalize_voice_match(match_id, _e_sub)
-                        clear_in_progress_games(match_id)
-                        clear_selected_match()
-                        status.update(label="Match result finalized!", state="complete", expanded=False)
-                        st.success(f"✅ Match result finalized! {_winner_name} wins {_e_sub.games_won_a}-{_e_sub.games_won_b}")
-                        st.rerun()
-                    except Exception as exc:
-                        status.update(label="Finalization failed", state="error", expanded=False)
-                        st.error(f"❌ Failed to finalize match result: {exc}")
 
 # ============================================================================
 # Voice Scoring Section (WebRTC + Local ASR)
@@ -2844,311 +2911,6 @@ with st.expander("⚙️ Legacy Audio Controls", expanded=False):
 
 if VOICE_DATASET_OPT_IN:
     _render_dataset_panel()
-
-# ============================================================================
-# Match Reporting UI
-# ============================================================================
-
-st.divider()
-st.subheader("📤 Report Match Result")
-
-# Initialize session state for match reporting
-if 'report_transcript' not in st.session_state:
-    st.session_state.report_transcript = ""
-if 'report_parsed' not in st.session_state:
-    st.session_state.report_parsed = None
-if 'report_status' not in st.session_state:
-    st.session_state.report_status = None
-
-# Show selected match context if available
-selected_match_id = st.session_state.voice_selected_match_id
-selected_match_p1 = st.session_state.voice_selected_player1_name
-selected_match_p2 = st.session_state.voice_selected_player2_name
-
-if selected_match_id and selected_match_p1 and selected_match_p2:
-    st.info(f"**Scoring for selected match:** {selected_match_p1} vs {selected_match_p2} (Match ID: {selected_match_id})")
-    st.caption("Players are prefilled from the selected match. You can still edit names or swap the winner before submitting.")
-
-# Step 1: Input transcript
-st.markdown("**Step 1: Enter or record match result**")
-col_report_input, col_report_text = st.columns([1, 2])
-
-with col_report_input:
-    if st.button("🎙️ Record Result", key="record_result_btn", use_container_width=True):
-        st.session_state.report_transcript = ""
-        st.session_state.report_parsed = None
-        st.session_state.report_status = None
-        with st.status("Recording...", expanded=True) as status:
-            try:
-                audio_path = asyncio.run(record_audio())
-                status.update(label="Recording complete", state="complete", expanded=False)
-                with st.status("Transcribing...", expanded=True) as trans_status:
-                    reporter = get_speech_reporter()
-                    transcript = reporter.transcribe_audio(audio_path)
-                    st.session_state.report_transcript = transcript
-                    trans_status.update(label="Transcription complete", state="complete", expanded=False)
-                # Cleanup temp file unless configured to keep for debugging
-                if not KEEP_AUDIO_FILES and os.path.exists(audio_path):
-                    os.remove(audio_path)
-                elif KEEP_AUDIO_FILES and os.path.exists(audio_path):
-                    st.caption(f"🔧 Debug: audio saved to `{audio_path}` (KEEP_AUDIO_FILES=true)")
-            except Exception as e:
-                st.session_state.report_status = f"Error: {e}"
-                status.update(label="Error occurred", state="error", expanded=True)
-
-with col_report_text:
-    report_text = st.text_area(
-        "Or type match result (e.g., 'Alice beat Bob 3-1')",
-        value=st.session_state.report_transcript,
-        key="report_text_input",
-        height=80,
-        help="Describe the match result in natural language"
-    )
-
-    if st.button("🔍 Parse Result", key="parse_result_btn", use_container_width=True):
-        if report_text.strip():
-            st.session_state.report_transcript = report_text.strip()
-            st.session_state.report_parsed = None
-            st.session_state.report_status = None
-            with st.spinner("Parsing match result..."):
-                try:
-                    parse_payload = {"text": st.session_state.report_transcript}
-                    # Include match context if a match is selected
-                    if selected_match_id:
-                        parse_payload["match_id"] = selected_match_id
-                        parse_payload["tournament_id"] = st.session_state.voice_selected_tournament_id
-                    response = api_request(
-                        "post",
-                        "/api/match/parse",
-                        json=parse_payload,
-                        error_context="match result parsing",
-                        parse_json=True,
-                    )
-                    if response:
-                        st.session_state.report_parsed = response
-                        st.session_state.report_status = response.get("status", "unknown")
-                        # Check for name mismatch with selected match
-                        if selected_match_p1 and selected_match_p2:
-                            parsed_p1 = response.get("player1")
-                            parsed_p2 = response.get("player2")
-                            if parsed_p1 and parsed_p2:
-                                if (parsed_p1.lower() != selected_match_p1.lower() or
-                                    parsed_p2.lower() != selected_match_p2.lower()):
-                                    st.warning(
-                                        f"⚠️ Transcript names do not match the selected match. "
-                                        f"Selected: {selected_match_p1} vs {selected_match_p2}. "
-                                        f"Parsed: {parsed_p1} vs {parsed_p2}. Please review before submitting."
-                                    )
-                except Exception as e:
-                    st.session_state.report_status = f"Error: {e}"
-        else:
-            st.warning("Please enter a match result first.")
-
-# Step 2: Review parsed result
-if st.session_state.report_parsed is not None:
-    if isinstance(st.session_state.report_parsed, dict):
-        parsed = st.session_state.report_parsed
-    elif hasattr(st.session_state.report_parsed, "json"):
-        try:
-            parsed = st.session_state.report_parsed.json()
-            st.session_state.report_parsed = parsed
-        except Exception:
-            parsed = None
-            st.session_state.report_parsed = None
-    else:
-        parsed = None
-        st.session_state.report_parsed = None
-
-    if parsed and isinstance(parsed, dict):
-        st.divider()
-        st.markdown("**Step 2: Review Parsed Result**")
-        parsed = st.session_state.report_parsed
-
-        # Status badge
-        status_color = {
-            "success": "🟢",
-            "needs_review": "🟡",
-            "error": "🔴"
-        }.get(st.session_state.report_status, "⚪")
-        st.markdown(f"**Status:** {status_color} {st.session_state.report_status}")
-
-        # Show warnings if any
-        if parsed.get("warnings"):
-            for warning in parsed["warnings"]:
-                st.warning(f"⚠️ {warning}")
-
-    # Review card - show selected match context prominently
-    with st.container(border=True):
-        if selected_match_id:
-            st.markdown(f"**Match ID:** {selected_match_id}")
-        col_p1, col_p2 = st.columns(2)
-        with col_p1:
-            display_p1 = parsed.get('player1') or selected_match_p1 or 'Not detected'
-            st.markdown(f"**Player 1:** {display_p1}")
-        with col_p2:
-            display_p2 = parsed.get('player2') or selected_match_p2 or 'Not detected'
-            st.markdown(f"**Player 2:** {display_p2}")
-        st.markdown(f"**Score:** {parsed.get('score') or 'Not detected'}")
-        st.markdown(f"**Winner:** {parsed.get('winner') or 'Not detected'}")
-        st.caption(f"Confidence: {parsed.get('confidence', 0):.0%}")
-
-    # Step 3: Confirm and submit
-    st.markdown("**Step 3: Confirm and Submit**")
-    st.caption("Verify the details below and submit to record the match result.")
-
-    with st.form("voice_match_report_form"):
-        # Prefill from selected match or parsed result
-        default_p1 = selected_match_p1 or parsed.get("player1") or ""
-        default_p2 = selected_match_p2 or parsed.get("player2") or ""
-
-        # Swap winner buttons (outside form logic, using session state)
-        if selected_match_p1 and selected_match_p2:
-            swap_col1, swap_col2, swap_col3 = st.columns([1, 1, 2])
-            with swap_col1:
-                if st.button("🔄 Swap → P1 Wins", key="swap_winner_p1", use_container_width=True):
-                    st.session_state.voice_swap_winner = selected_match_p1
-                    st.rerun()
-            with swap_col2:
-                if st.button("🔄 Swap → P2 Wins", key="swap_winner_p2", use_container_width=True):
-                    st.session_state.voice_swap_winner = selected_match_p2
-                    st.rerun()
-            with swap_col3:
-                if st.button("↩️ Reset Swap", key="reset_swap", use_container_width=True):
-                    if "voice_swap_winner" in st.session_state:
-                        del st.session_state.voice_swap_winner
-                    st.rerun()
-
-        # Determine winner from swap if set
-        swap_winner = st.session_state.get("voice_swap_winner")
-
-        col_p1, col_p2 = st.columns(2)
-        with col_p1:
-            p1 = st.text_input("Player 1", value=default_p1)
-        with col_p2:
-            p2 = st.text_input("Player 2", value=default_p2)
-
-        # Parse score for number inputs
-        score_val = parsed.get("score") or "0-0"
-        try:
-            s1_str, s2_str = score_val.split("-")
-            s1 = int(s1_str)
-            s2 = int(s2_str)
-        except Exception:
-            s1, s2 = 0, 0
-
-        col_s1, col_s2 = st.columns(2)
-        with col_s1:
-            s1 = st.number_input("Player 1 Score", min_value=0, max_value=10, value=s1)
-        with col_s2:
-            s2 = st.number_input("Player 2 Score", min_value=0, max_value=10, value=s2)
-
-        # Winner selection - prefer selected match players and swap
-        if p1 and p2:
-            winner_options = ["Select winner", p1, p2]
-            winner_index = 0
-            # Prioritize swap winner if set
-            if swap_winner and swap_winner in winner_options:
-                winner_index = winner_options.index(swap_winner)
-            else:
-                parsed_winner = parsed.get("winner")
-                if parsed_winner in winner_options:
-                    winner_index = winner_options.index(parsed_winner)
-            winner = st.selectbox("Winner", winner_options, index=winner_index)
-        else:
-            winner = "Select winner"
-            st.warning("Enter both player names to select a winner.")
-
-        score = f"{s1}-{s2}"
-
-        # Tournament selection - prefill from selected match tournament if available
-        db = SessionLocal()
-        try:
-            tournaments = db.query(Tournament).all()
-            tournament_options = {t.name: t.id for t in tournaments}
-            default_tournament_idx = 0
-            if st.session_state.voice_selected_tournament_id:
-                for i, (name, tid) in enumerate(tournament_options.items()):
-                    if tid == st.session_state.voice_selected_tournament_id:
-                        default_tournament_idx = i + 1  # +1 for "None" option
-                        break
-            selected_tournament = st.selectbox(
-                "Tournament (optional)",
-                options=["None"] + list(tournament_options.keys()),
-                index=default_tournament_idx,
-            )
-        finally:
-            db.close()
-
-        # Validation
-        if p1 and p2 and winner != "Select winner":
-            if winner != p1 and winner != p2:
-                st.warning("⚠️ Winner must be one of the players")
-
-        # Check if selected match is already completed
-        match_completed = False
-        if selected_match_id:
-            db_check = SessionLocal()
-            try:
-                match_check = db_check.query(Match).filter(Match.id == selected_match_id).first()
-                if match_check and match_check.status == MatchStatus.completed:
-                    match_completed = True
-            finally:
-                db_check.close()
-
-        if match_completed:
-            st.error("❌ This match has already been completed. Please refresh the match list and select an active match.")
-            submitted = st.form_submit_button("📤 Submit Result", use_container_width=True, disabled=True)
-        else:
-            submitted = st.form_submit_button("📤 Submit Result", use_container_width=True)
-
-        if submitted:
-            if not p1 or not p2:
-                st.error("Please provide both player names")
-            elif winner == "Select winner":
-                st.error("Please select a winner")
-            elif winner != p1 and winner != p2:
-                st.error("Winner must be one of the players")
-            elif match_completed:
-                st.error("Cannot submit: match is already completed")
-            else:
-                try:
-                    payload = {
-                        "score": score,
-                        "winner": winner,
-                    }
-                    # Include match_id when available (preferred)
-                    if selected_match_id:
-                        payload["match_id"] = selected_match_id
-                    else:
-                        # Fallback to player names for backward compatibility
-                        payload["player1"] = p1
-                        payload["player2"] = p2
-                    # Include tournament_id if selected
-                    tournament_id_val = tournament_options.get(selected_tournament) if selected_tournament != "None" else None
-                    if tournament_id_val:
-                        payload["tournament_id"] = tournament_id_val
-
-                    with st.status("Submitting result...", expanded=False) as status:
-                        response = api_request(
-                            "post",
-                            "/api/report",
-                            json=payload,
-                            error_context="match result submission",
-                            parse_json=True,
-                        )
-                        if response is not None:
-                            st.session_state.report_transcript = ""
-                            st.session_state.report_parsed = None
-                            st.session_state.report_status = None
-                            # Clear selected match after successful submission
-                            if selected_match_id:
-                                clear_selected_match()
-                            status.update(label="Result submitted!", state="complete", expanded=False)
-                            st.success("✅ Match result submitted successfully!")
-                            _build_and_store_commentary("match_submitted", st.session_state.match_manager.state)
-                            st.rerun()
-                except Exception as e:
-                    st.error(f"Connection error: {e}")
 
 # Display last feedback
 if st.session_state.last_feedback:

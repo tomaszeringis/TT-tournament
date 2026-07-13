@@ -41,12 +41,11 @@ from tournament_platform.services.rating_intelligence import (
 from tournament_platform.services.tournament_read_models import (
     list_tournaments,
     get_public_schedule,
-    get_public_rankings,
     get_operator_queue,
     get_table_status,
     get_next_available_table,
-    get_player_path,
 )
+from tournament_platform.services.standings_service import get_standings
 from tournament_platform.services.audit_service import log_audit, get_audit_logs
 from tournament_platform.services.operator_commands import (
     parse_operator_command,
@@ -493,7 +492,7 @@ async def api_get_public_rankings(tournament_id: int, db: Session = Depends(get_
         tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
         if not tournament:
             raise HTTPException(status_code=404, detail=f"Tournament {tournament_id} not found")
-        return get_public_rankings(db, tournament_id=tournament_id)
+        return get_standings(db, tournament_id=tournament_id)
     except HTTPException:
         raise
     except Exception as e:
@@ -2157,5 +2156,44 @@ async def api_voice_dataset_samples(request: Request, db: Session = Depends(get_
         raise HTTPException(status_code=500, detail="Failed to record dataset sample")
 
 
+@app.get("/api/health/liveness")
+async def api_health_liveness():
+    """Liveness probe - returns 200 if the application is alive."""
+    from tournament_platform.services.health_check_service import check_liveness
+    return check_liveness(None)
+
+
+@app.get("/api/health/readiness")
+async def api_health_readiness(db: Session = Depends(get_db)):
+    """Readiness probe - returns 200 if the application is ready to serve traffic."""
+    from tournament_platform.services.health_check_service import check_readiness
+    status = check_readiness(db)
+    if status["status"] == "unhealthy":
+        raise HTTPException(status_code=503, detail=status)
+    return status
+
+
+@app.get("/api/health/metrics")
+async def api_health_metrics(tournament_id: Optional[int] = None, db: Session = Depends(get_db)):
+    """Get application metrics."""
+    from tournament_platform.services.observability_service import ObservabilityService
+    service = ObservabilityService(db)
+    return service.get_metrics(tournament_id=tournament_id)
+
+
+@app.get("/api/health/audit")
+async def api_health_audit(limit: int = 100, db: Session = Depends(get_db)):
+    """Get recent audit log entries."""
+    from tournament_platform.services.audit_service import get_audit_logs
+    return get_audit_logs(db, limit=limit)
+
+
 if __name__ == "__main__":
+    uvicorn.run(app, host=settings.API_HOST, port=settings.API_PORT)
+
+
+def run_api():
+    """Entry point for running the API server."""
+    import uvicorn
+    from tournament_platform.config import settings
     uvicorn.run(app, host=settings.API_HOST, port=settings.API_PORT)
