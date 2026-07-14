@@ -12,6 +12,11 @@ import time
 from enum import Enum
 from typing import Any, Dict, Literal, Optional
 
+# Auto-confirm threshold: when parser confidence >= this value, scoring commands
+# (SCORE_POINT, SET_SCORE) are accepted without manual confirmation.
+# Set to 1.0 to disable auto-confirm entirely (require manual for everything).
+AUTO_CONFIRM_CONFIDENCE_THRESHOLD = 0.70
+
 from tournament_platform.app.services.voice.commands import VoiceIntent
 from tournament_platform.app.services.voice.parse_result import VoiceParseResult
 from tournament_platform.services.settings import (
@@ -158,7 +163,6 @@ class ConfirmationPolicy:
         enable_confirm = bool(context.get("enable_confirmation", True))
 
         if intent in (
-            VoiceIntent.SET_SCORE,
             VoiceIntent.START_MATCH,
             VoiceIntent.PAUSE_MATCH,
             VoiceIntent.RESUME_MATCH,
@@ -170,7 +174,17 @@ class ConfirmationPolicy:
         ):
             return "confirm"
 
+        # Auto-confirm scoring commands when confidence >= threshold.
+        # This lets high-confidence voice commands update the scoreboard
+        # immediately without manual confirmation.
+        if intent == VoiceIntent.SET_SCORE:
+            if result.confidence >= AUTO_CONFIRM_CONFIDENCE_THRESHOLD:
+                return "apply"
+            return "confirm"
+
         if intent == VoiceIntent.SCORE_POINT:
+            if result.confidence >= AUTO_CONFIRM_CONFIDENCE_THRESHOLD:
+                return "apply"
             if strict or enable_confirm or result.confidence < 0.85:
                 return "confirm"
             return "apply"

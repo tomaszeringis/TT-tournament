@@ -15,10 +15,12 @@ from tournament_platform.app.services.score_engine import (
     MatchState,
     ScoreResult,
     add_point,
+    best_of_to_games_to_win,
     check_game_winner,
     check_match_winner,
     complete_game,
     create_match,
+    games_to_win_to_best_of,
     get_serving_player,
     is_deuce,
     reset_match,
@@ -143,6 +145,59 @@ class TestServeSwitching:
 # ---------------------------------------------------------------------------
 # Best-of match completion
 # ---------------------------------------------------------------------------
+
+class TestGamesToWinMapping:
+    def test_best_of_3_maps_to_2_games(self):
+        assert best_of_to_games_to_win(3) == 2
+
+    def test_best_of_5_maps_to_3_games(self):
+        assert best_of_to_games_to_win(5) == 3
+
+    def test_legacy_best_of_1_falls_back_to_2(self):
+        assert best_of_to_games_to_win(1) == 2
+
+    def test_unknown_best_of_falls_back_to_2(self):
+        assert best_of_to_games_to_win(99) == 2
+
+    def test_2_games_maps_to_best_of_3(self):
+        assert games_to_win_to_best_of(2) == 3
+
+    def test_3_games_maps_to_best_of_5(self):
+        assert games_to_win_to_best_of(3) == 5
+
+    def test_unknown_games_to_win_falls_back_to_3(self):
+        assert games_to_win_to_best_of(99) == 3
+
+    def test_round_trip_2(self):
+        assert games_to_win_to_best_of(best_of_to_games_to_win(3)) == 3
+
+    def test_round_trip_3(self):
+        assert games_to_win_to_best_of(best_of_to_games_to_win(5)) == 5
+
+
+class TestBestOfCompletionViaGamesToWin:
+    def test_2_games_to_win_completes_after_2(self):
+        s = create_match(best_of=games_to_win_to_best_of(2))
+        set_score(s, 11, 0)
+        assert s.match_status == "game_won"
+        set_score(s, 11, 0)
+        assert s.match_status == "match_won"
+        assert s.games_won_a == 2
+
+    def test_3_games_to_win_completes_after_3(self):
+        s = create_match(best_of=games_to_win_to_best_of(3))
+        for _ in range(3):
+            set_score(s, 11, 0)
+        assert s.match_status == "match_won"
+        assert s.games_won_a == 3
+
+    def test_not_won_before_majority_3_games(self):
+        s = create_match(best_of=games_to_win_to_best_of(3))
+        set_score(s, 11, 0)
+        set_score(s, 11, 0)
+        assert s.match_status != "match_won"
+        assert check_match_winner(s) is None
+
 
 class TestBestOfCompletion:
     def test_best_of_1(self):

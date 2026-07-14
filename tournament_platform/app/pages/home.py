@@ -16,6 +16,7 @@ from tournament_platform.models import SessionLocal, Tournament, Match, MatchSta
 from tournament_platform.app.components.page_header import render_page_header
 from tournament_platform.app.components.empty_state import render_empty_state
 from tournament_platform.app.components.tour import render_tour
+from tournament_platform.app.components.loading_animation import render_loading_animation
 from tournament_platform.app.design_system import apply_global_styles
 
 
@@ -148,6 +149,10 @@ def render_home():
 
     # Getting Started tour
     render_tour("home")
+
+    if not st.session_state.get("home_splash_shown"):
+        st.session_state["home_splash_shown"] = True
+        render_loading_animation("Loading tournament data...", size=160)
 
     # Load data
     try:

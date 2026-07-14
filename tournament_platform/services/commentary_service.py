@@ -18,6 +18,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+from tournament_platform.services import commentary_templates as _ct_module
+
 
 # ============================================================================
 # Enums
@@ -47,6 +49,7 @@ class ScoreMoment(str, Enum):
 
 class CommentaryStyle(str, Enum):
     NEUTRAL = "neutral"
+    PROFESSIONAL = "professional"
     COACH = "coach"
     ANNOUNCER = "announcer"
     MINIMAL = "minimal"
@@ -165,6 +168,10 @@ class CommentarySettings:
     ollama_rewrite_enabled: bool = False
     ollama_model: str = ""
     ollama_timeout: float = 2.0
+    voice_profile_id: str = "browser_default"
+    rate: float = 1.0
+    pitch: float = 1.0
+    volume: float = 1.0
 
 
 @dataclass
@@ -975,6 +982,8 @@ class CommentaryService:
     def __init__(self, rewriter: Optional[CommentaryRewriter] = None):
         self.rewriter = rewriter or CommentaryRewriter()
         self.template_selector = TemplateSelector()
+        # Recent template keys per (language, style, category) for deduplication.
+        self._recent_template_keys: Dict[Tuple[str, str, str], List[str]] = {}
         self._commentary_cache: Dict[str, Tuple[str, str, str, str, str]] = {}
         self._cache_lock = threading.Lock()
 
@@ -1337,180 +1346,29 @@ class CommentaryService:
                 event_id_str=event_id_str,
             )
 
-        if language == "en":
-            templates = self.get_commentary_templates(settings.style, moment, settings.verbosity)
-            template_text = self.choose_commentary_template(templates)
-            if not template_text:
-                return CommentaryLine(
-                    text="",
-                    event_type=event_type,
-                    priority=1,
-                    should_speak=False,
-                    dedupe_key=f"{event_type}:{event_id}",
-                    event_id=event_id,
-                )
-            generated_text = template_text.format(
-                player_a=state.player_a,
-                player_b=state.player_b,
-                score=self.format_score_spoken(state),
-                sets_a=state.sets_a,
-                sets_b=state.sets_b,
-            )
-            final_text = generated_text
-            base_tmpl = template_text
-            used_fallback = False
-            fallback_reason = None
-            tpl_lang = "en"
-            tpl_style = style_str
-        else:
-            template_texts, used_fallback, fallback_reason = self._select_base_template(event_id_str, language, style_str)
-            template_text = self.choose_commentary_template(template_texts)
-            base_tmpl = template_text
-
-            format_vars = {
-                "player_a": state.player_a,
-                "player_b": state.player_b,
-                "score_a": state.score_a,
-                "score_b": state.score_b,
-                "sets_a": state.sets_a,
-                "sets_b": state.sets_b,
-            }
-
-            if moment in (
-                ScoreMoment.POINT_A, ScoreMoment.GAME_WON_A, ScoreMoment.MATCH_WON_A,
-                ScoreMoment.ADVANTAGE_A, ScoreMoment.GAME_POINT_A, ScoreMoment.STREAK_A,
-                ScoreMoment.COMEBACK_A,
-            ):
-                format_vars["player"] = state.player_a
-            elif moment in (
-                ScoreMoment.POINT_B, ScoreMoment.GAME_WON_B, ScoreMoment.MATCH_WON_B,
-                ScoreMoment.ADVANTAGE_B, ScoreMoment.GAME_POINT_B, ScoreMoment.STREAK_B,
-                ScoreMoment.COMEBACK_B,
-            ):
-                format_vars["player"] = state.player_b
-            elif event_type == "serve":
-                format_vars["player"] = getattr(state, "serving_player", None) or state.player_a
-            else:
-                format_vars["player"] = state.player_a
-
-            if moment in (ScoreMoment.MATCH_WON_A,):
-                format_vars["winner"] = state.player_a
-                format_vars["loser"] = state.player_b
-            elif moment in (ScoreMoment.MATCH_WON_B,):
-                format_vars["winner"] = state.player_b
-                format_vars["loser"] = state.player_a
-            elif moment in (ScoreMoment.GAME_WON_A,):
-                format_vars["winner"] = state.player_a
-                format_vars["loser"] = state.player_b
-            elif moment in (ScoreMoment.GAME_WON_B,):
-                format_vars["winner"] = state.player_b
-                format_vars["loser"] = state.player_a
-            elif event_id_str == "result_submitted":
-                if state.score_a > state.score_b:
-                    format_vars["winner"] = state.player_a
-                    format_vars["loser"] = state.player_b
-                elif state.score_b > state.score_a:
-                    format_vars["winner"] = state.player_b
-                    format_vars["loser"] = state.player_a
-                else:
-                    format_vars["winner"] = state.player_a
-                    format_vars["loser"] = state.player_b
-            else:
-                format_vars["winner"] = format_vars["player"]
-                format_vars["loser"] = format_vars["player_a"] if format_vars["player"] == state.player_b else state.player_b
-
-            format_vars["set"] = state.current_set
-
-            if moment in (ScoreMoment.STREAK_A, ScoreMoment.STREAK_B):
-                recent = state.match_history[-3:]
-                players = [e.get("player") for e in recent if e.get("action") == "point_added"]
-                if len(players) >= 3 and len(set(players)) == 1:
-                    format_vars["count"] = len(players)
-                else:
-                    format_vars["count"] = 3
-            else:
-                format_vars["count"] = 1
-
-            if event_id_str in ("set_win", "match_win", "result_submitted"):
-                format_vars["score"] = self._format_sets(state.sets_a, state.sets_b, language)
-            else:
-                format_vars["score"] = self._format_score(state, language)
-
-            try:
-                generated_text = template_text.format(**format_vars)
-            except KeyError:
-                generated_text = ""
-            final_text = generated_text
-            tpl_lang = language
-            tpl_style = style_str if not used_fallback else ("neutral" if fallback_reason == "neutral_fallback" else style_str)
-
-        winner = state.player_a
-        loser = state.player_b
-        if moment in (ScoreMoment.MATCH_WON_A, ScoreMoment.GAME_WON_A):
-            winner = state.player_a
-            loser = state.player_b
-        elif moment in (ScoreMoment.MATCH_WON_B, ScoreMoment.GAME_WON_B):
-            winner = state.player_b
-            loser = state.player_a
-        facts = {
-            "player_a": state.player_a,
-            "player_b": state.player_b,
-            "score_a": state.score_a,
-            "score_b": state.score_b,
-            "winner": winner,
-            "loser": loser,
-        }
-
-        if language != "en" and settings.ollama_rewrite_enabled and generated_text:
-            rewritten, used_ollama = self.rewriter.rewrite(generated_text, facts, style_str, language, event_id_str)
-            if used_ollama:
-                final_text = rewritten
-            else:
-                final_text = generated_text
-        else:
-            used_ollama = False
-
-        mixed_language_detected = False
-        if language == "lt" and final_text:
-            if contains_english_commentary(final_text, language, (state.player_a, state.player_b)):
-                logger.warning("Rejected mixed-language commentary for lt; regenerated Lithuanian fallback.")
-                final_text = self._regenerate_lt_neutral(event_id_str, format_vars)
-                mixed_language_detected = True
-
-        priority = 3 if moment in (
-            ScoreMoment.GAME_WON_A, ScoreMoment.GAME_WON_B,
-            ScoreMoment.MATCH_WON_A, ScoreMoment.MATCH_WON_B,
-            ScoreMoment.DEUCE, ScoreMoment.ADVANTAGE_A, ScoreMoment.ADVANTAGE_B,
-            ScoreMoment.GAME_POINT_A, ScoreMoment.GAME_POINT_B,
-        ) else 2
-
-        line = CommentaryLine(
-            text=final_text,
+        from tournament_platform.app.services.commentary.generator import CommentaryTextGenerator
+        generator = CommentaryTextGenerator(rewriter=self.rewriter)
+        line = generator.generate(
             event_type=event_type,
-            priority=priority,
-            should_speak=True,
-            dedupe_key=f"{event_type}:{event_id}",
-            event_id=event_id,
-            ssml_text=final_text,
-            generated_text=generated_text,
-            final_text=final_text,
-            template_language=tpl_lang,
-            template_style=tpl_style,
-            base_template=base_tmpl,
-            used_fallback=used_fallback,
-            fallback_reason=fallback_reason,
-            mixed_language_detected=mixed_language_detected,
-            used_ollama=used_ollama,
-            tts_language_code=None,
-            cache_key=cache_key,
-            cache_hit=False,
-            selected_language=settings.language,
-            normalized_language=language,
+            moment=moment,
+            state=state,
+            settings=settings,
             event_id_str=event_id_str,
+            event_id=event_id,
+            previous_state=previous_state,
+            recent_store=self._recent_template_keys,
         )
+        line.cache_key = cache_key
+        line.cache_hit = False
 
         with self._cache_lock:
-            self._commentary_cache[cache_key] = (generated_text, final_text, tpl_lang, tpl_style, base_tmpl)
+            self._commentary_cache[cache_key] = (
+                line.generated_text or "",
+                line.final_text or "",
+                line.template_language or "",
+                line.template_style or "",
+                line.base_template or "",
+            )
 
         return line
 
@@ -1546,27 +1404,45 @@ class CommentaryService:
         style = game_event.get("style", settings.style.value)
         match_id = game_event.get("match_id", "none")
 
-        templates = self.get_templates("set_win", language, style)
-        if not templates:
-            templates = self.get_templates("set_win", language, "neutral")
-
-        format_vars = {
+        # Prefer the dedicated phrase-bank module; fall back to the legacy
+        # TEMPLATE_LIBRARY lookup if it yields nothing.
+        set_variables = {
             "winner": winner,
             "loser": loser,
             "game_number": game_number if language == "en" else self._lt_game_ordinal(game_number),
             "game_score": game_score,
             "match_score": match_score,
+            "player_a": game_event.get("player_a", winner),
+            "player_b": game_event.get("player_b", loser),
+            "score": game_score,
+            "set": game_number,
+            "streak_count": 1,
+            "server": game_event.get("player_a", winner),
+            "receiver": game_event.get("player_b", loser),
+            "leader": winner,
+            "trailer": loser,
+            "lead": 0,
+            "stage": f"game {game_number}",
         }
+        _chosen, generated_text, _ = _ct_module.select_event_template(
+            "set_win", language, style, settings.verbosity, set_variables,
+            recent_store=self._recent_template_keys,
+        )
+        base_template = _chosen or ""
 
-        generated_text = ""
-        base_template = ""
-        for tmpl in templates:
-            try:
-                generated_text = tmpl["text"].format(**format_vars)
-                base_template = tmpl["text"]
-                break
-            except KeyError:
-                continue
+        if not generated_text:
+            templates = self.get_templates("set_win", language, style)
+            if not templates:
+                templates = self.get_templates("set_win", language, "neutral")
+            generated_text = ""
+            base_template = ""
+            for tmpl in templates:
+                try:
+                    generated_text = tmpl["text"].format(**set_variables)
+                    base_template = tmpl["text"]
+                    break
+                except KeyError:
+                    continue
 
         if not generated_text:
             generated_text = SAFE_MESSAGE.get(language, SAFE_MESSAGE["en"])

@@ -18,6 +18,7 @@ from tournament_platform.services.bracket_manager import TournamentState
 from tournament_platform.app.components.interactive_bracket import interactive_bracket
 from tournament_platform.app.components.participants_panel import render_participants_panel, get_all_players
 from tournament_platform.app.components.empty_state import render_empty_state
+from tournament_platform.app.components.loading_animation import render_loading_animation
 from tournament_platform.app.utils import render_status_badge
 from tournament_platform.app.design_system import apply_global_styles
 from tournament_platform.app.components.tour import render_tour
@@ -336,9 +337,10 @@ def render_tournament_creation_wizard():
                             selected_strategy = strategies[st.session_state['tournament_format']]
                         
                         context = TournamentContext(selected_strategy)
-                        context.run_generation(st.session_state['tournament_participants'], new_tournament.id, db)
-                        
-                        db.commit()
+                        with st.status("Building bracket...", expanded=False):
+                            render_loading_animation("Building bracket...", size=120)
+                            context.run_generation(st.session_state['tournament_participants'], new_tournament.id, db)
+                            db.commit()
                         st.toast(f"✅ Tournament '{st.session_state['tournament_name']}' created!", icon="🏆")
                         
                         # Reset wizard

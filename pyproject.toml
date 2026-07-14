@@ -76,6 +76,9 @@ speech = [
     "torch>=2.0.0",
     "torchaudio>=2.0.0",
 ]
+tts = [
+    "piper-tts>=1.4,<2",
+]
 
 [tool.setuptools]
 packages = [

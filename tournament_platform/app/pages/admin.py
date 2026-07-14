@@ -32,6 +32,7 @@ from tournament_platform.app.settings import API_BASE_URL, SHOW_DEBUG_DETAILS
 from tournament_platform.app.design_system import apply_global_styles
 from tournament_platform.app.components.page_header import render_page_header
 from tournament_platform.app.components.tour import render_tour
+from tournament_platform.app.components.loading_animation import render_loading_animation
 
 apply_global_styles()
 
@@ -536,6 +537,7 @@ with admin_tabs[5]:
     with col1:
         if st.button("🔌 Test AI Connection", key="test_ai_connection"):
             with st.status("Testing AI connection...", expanded=False) as status:
+                render_loading_animation("Testing AI connection...", size=120)
                 try:
                     from tournament_platform.services.ai_facade import get_ai_health
                     health = get_ai_health()
@@ -557,6 +559,7 @@ with admin_tabs[5]:
         )
         if st.button("❓ Ask Test Question", key="ask_test_question") and test_question:
             with st.status("Getting AI response...", expanded=False) as status:
+                render_loading_animation("Getting AI response...", size=120)
                 try:
                     from tournament_platform.services.ai_facade import answer_rules_question
                     result = answer_rules_question(test_question)

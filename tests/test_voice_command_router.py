@@ -101,23 +101,23 @@ class TestRouteCommand:
                 r = route_command(result, ctx)
                 assert r.decision == RouteDecision.APPLY
 
-    def test_score_point_confirms_when_strict_mode(self):
+    def test_score_point_auto_applies_when_high_confidence(self):
         result = _make_result(VoiceIntent.SCORE_POINT, confidence=0.9)
         ctx = RouteContext(strict_mode=True, enable_confirmation=True)
         r = route_command(result, ctx)
-        assert r.decision == RouteDecision.CONFIRM
+        assert r.decision == RouteDecision.APPLY
 
-    def test_score_point_confirms_when_low_confidence(self):
+    def test_score_point_auto_applies_at_confirm_threshold(self):
         result = _make_result(VoiceIntent.SCORE_POINT, confidence=0.7)
         ctx = RouteContext(strict_mode=False, enable_confirmation=True)
         r = route_command(result, ctx)
-        assert r.decision == RouteDecision.CONFIRM
+        assert r.decision == RouteDecision.APPLY
 
-    def test_set_score_always_confirms(self):
+    def test_set_score_auto_applies_when_high_confidence(self):
         result = _make_result(VoiceIntent.SET_SCORE, confidence=0.95)
         ctx = RouteContext()
         r = route_command(result, ctx)
-        assert r.decision == RouteDecision.CONFIRM
+        assert r.decision == RouteDecision.APPLY
 
     def test_undo_auto_applies(self):
         result = _make_result(VoiceIntent.UNDO, confidence=0.9)

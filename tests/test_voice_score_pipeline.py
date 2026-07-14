@@ -91,35 +91,64 @@ _streamlit.runtime = MagicMock()
 _streamlit.runtime.metrics_util = MagicMock()
 _streamlit.runtime.metrics_util.gather_metrics = MagicMock(return_value=lambda f: f)
 
-# ---------------------------------------------------------------------------
-# Third-party imports that pull on streamlit submodules.
-# We stub them out so importing voice_scorekeeper doesn't explode.
-# ---------------------------------------------------------------------------
-for mod_name in [
-    "streamlit_shadcn_ui",
-    "streamlit_shadcn_ui.py_components",
-    "streamlit_shadcn_ui.py_components.select",
-    "streamlit_extras",
-    "streamlit_extras.stylable_container",
-    "streamlit.runtime",
-    "streamlit.runtime.metrics_util",
-    "streamlit.components",
-    "streamlit.components.v1",
-]:
-    if mod_name not in sys.modules:
-        sys.modules[mod_name] = MagicMock()
-
-sys.modules["streamlit"] = _streamlit
-
 # Force reload of anything already imported
 for mod_name in list(sys.modules.keys()):
     if "voice_scorekeeper" in mod_name:
         del sys.modules[mod_name]
 
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+def _import_voice_scorekeeper():
+    """Import voice_scorekeeper safely, mocking top-level DB calls."""
+    _original_modules = {}
+    _mocked_modules = [
+        "streamlit",
+        "streamlit_shadcn_ui",
+        "streamlit_shadcn_ui.py_components",
+        "streamlit_shadcn_ui.py_components.select",
+        "streamlit_extras",
+        "streamlit_extras.stylable_container",
+        "streamlit.runtime",
+        "streamlit.runtime.metrics_util",
+        "streamlit.runtime.scriptrunner",
+        "streamlit.components",
+        "streamlit.components.v1",
+    ]
+    for mod_name in _mocked_modules:
+        _original_modules[mod_name] = sys.modules.get(mod_name)
+
+    try:
+        sys.modules["streamlit"] = _streamlit
+        for mod_name in _mocked_modules[1:]:
+            if mod_name not in sys.modules:
+                sys.modules[mod_name] = MagicMock()
+        _scriptrunner_mock = MagicMock()
+        _scriptrunner_mock.get_script_run_ctx = MagicMock(return_value=None)
+        sys.modules["streamlit.runtime.scriptrunner"] = _scriptrunner_mock
+
+        for mod_name in list(sys.modules.keys()):
+            if "voice_scorekeeper" in mod_name:
+                del sys.modules[mod_name]
+        with patch(
+            "tournament_platform.app.pages.voice_scorekeeper.fetch_active_tournaments",
+            return_value=[],
+        ):
+            with patch(
+                "tournament_platform.app.pages.voice_scorekeeper.render_active_match_selector",
+                MagicMock(),
+            ):
+                with patch(
+                    "tournament_platform.app.pages.voice_scorekeeper.render_commentary_settings",
+                    MagicMock(),
+                ):
+                    from tournament_platform.app.pages import voice_scorekeeper as vs
+                    return vs
+    finally:
+        for mod_name, original in _original_modules.items():
+            if original is not None:
+                sys.modules[mod_name] = original
+            else:
+                sys.modules.pop(mod_name, None)
+
 
 def _make_fake_session_state() -> dict:
     """Return a dict-like session state pre-seeded with defaults."""
@@ -127,7 +156,7 @@ def _make_fake_session_state() -> dict:
     from tournament_platform.app.services.voice.confirmation import VoiceConfirmationStateMachine
     from tournament_platform.app.services.voice_audit import EventLogger
 
-    return {
+    return _SessionStateProxy({
         "match_manager": MatchManager(),
         "voice_scoring_enabled": True,
         "voice_listening": False,
@@ -151,25 +180,7 @@ def _make_fake_session_state() -> dict:
         "voice_tts_adapter": MagicMock(enabled=False),
         "_voice_debug_last_result": None,
         "_voice_p2p_cache": {},
-    }
-
-
-def _import_voice_scorekeeper():
-    """Import voice_scorekeeper safely, mocking top-level DB calls."""
-    with patch(
-        "tournament_platform.app.pages.voice_scorekeeper.fetch_active_tournaments",
-        return_value=[],
-    ):
-        with patch(
-            "tournament_platform.app.pages.voice_scorekeeper.render_active_match_selector",
-            MagicMock(),
-        ):
-            with patch(
-                "tournament_platform.app.pages.voice_scorekeeper.render_commentary_settings",
-                MagicMock(),
-            ):
-                from tournament_platform.app.pages import voice_scorekeeper as vs
-                return vs
+    })
 
 
 @pytest.fixture()

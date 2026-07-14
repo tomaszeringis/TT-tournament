@@ -42,6 +42,29 @@ streamlit run tournament_platform/app/main.py
 ```
 ✅ Streamlit running at `http://localhost:8501`
 
+### 7. (Optional) Initialize the RAG Service
+The RAG (Retrieval-Augmented Generation) service powers the AI rules assistant by storing tournament rules in a local ChromaDB vector store and retrieving the most relevant ones at query time.
+
+**Prerequisites:** Ollama must be running and the embedding model pulled:
+```bash
+ollama serve
+ollama pull nomic-embed-text
+```
+
+**Initialize with built-in sample rules** (one-time, run from repo root):
+```bash
+python initialize_rag.py
+```
+This loads sample table-tennis rules into the `tournament_rules` ChromaDB collection and runs a quick retrieval test.
+
+**Or ingest your own rulebook PDF:**
+```bash
+python -m tournament_platform.services.rules_ingestion data/rules.pdf
+```
+This chunks the PDF (1000 chars / 200 overlap), generates embeddings with `nomic-embed-text`, and stores them in `data/chroma_db`. The script is idempotent — it resets the collection before re-indexing.
+
+The knowledge base is enabled via `ENABLE_RULES_ASSISTANT=True` in `.env` (default on) and used by `tournament_platform/services/ai_engine.py` (`retrieve_rules_context`, `batch_initialize_rules`).
+
 **Notes:**
 - `PYTHONPATH` must include the repository root so absolute imports like `tournament_platform.config` resolve correctly.
 - If you get `ImportError: Failed to load GTTSEngine`, install the missing TTS dependency:
@@ -111,8 +134,8 @@ tournament_platform/                    # Repository root
 ├── pyproject.toml                      # Package config & dependencies
 ├── README.md                           # This file
 ├── QUICKSTART.md                       # This quick start guide
+├── initialize_rag.py                    # One-time RAG knowledge base seeding
 ├── tournament_platform/                # Main Python package
-│   ├── __init__.py
 │   ├── models.py                       # SQLAlchemy database models
 │   ├── config/__init__.py              # Settings (pydantic-settings)
 │   ├── .env.example                    # Environment variable template
@@ -221,6 +244,7 @@ ollama pull llama3:latest
 | **Database** | SQLAlchemy + Alembic | `models.py`, `alembic/` |
 | **ORM Models** | Pydantic | `models.py` + `services/` |
 | **AI Engine** | Ollama + ChromaDB | `services/ai_engine.py` |
+| **RAG Service** | ChromaDB + Ollama embeddings | `services/rules_ingestion.py`, `services/rules_retrieval.py` |
 | **Frontend** | Streamlit + AG-Grid | `app/pages/` |
 | **API** | FastAPI (Async) | `api/server.py` |
 | **Logging** | Python logging | `logs/app.log` |
@@ -241,5 +265,5 @@ ollama pull llama3:latest
 
 **Questions?** Check the [full documentation](SETUP_GUIDE.md)
 
-**Last Updated:** July 8, 2026
+**Last Updated:** July 14, 2026
 

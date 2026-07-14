@@ -26,6 +26,19 @@ from typing import Dict, List, Optional, Tuple
 VALID_POINTS_TO_WIN = (11, 15, 21)
 VALID_BEST_OF = (1, 3, 5)
 
+BEST_OF_TO_GAMES_TO_WIN = {3: 2, 5: 3}
+GAMES_TO_WIN_TO_BEST_OF = {2: 3, 3: 5}
+
+
+def best_of_to_games_to_win(best_of: int) -> int:
+    """Convert a best-of-N value to the games needed to win the match."""
+    return BEST_OF_TO_GAMES_TO_WIN.get(best_of, 2)
+
+
+def games_to_win_to_best_of(games_to_win: int) -> int:
+    """Convert a games-to-win value back to best-of-N."""
+    return GAMES_TO_WIN_TO_BEST_OF.get(games_to_win, 3)
+
 
 def _other(player: str) -> str:
     """Return the opponent of the given player label ('A' or 'B')."""

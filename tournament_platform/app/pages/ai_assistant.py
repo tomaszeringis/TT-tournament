@@ -31,6 +31,7 @@ from tournament_platform.app.components.ai_chat import (
 from tournament_platform.app.design_system import apply_global_styles
 from tournament_platform.app.components.page_header import render_page_header
 from tournament_platform.app.components.tour import render_tour
+from tournament_platform.app.components.loading_animation import render_loading_animation
 from tournament_platform.models import SessionLocal, Match, MatchStatus, Player
 
 # Apply design system styles
@@ -155,6 +156,7 @@ with tabs[0]:
         # Get AI response with status indicator
         with st.chat_message("assistant"):
             with st.status("Thinking...", expanded=False) as status:
+                render_loading_animation("Generating AI response...", size=120)
                 try:
                     ai_answer: AIAnswer = answer_rules_question(prompt)
                     response = ai_answer.answer
@@ -224,6 +226,7 @@ with tabs[1]:
 
         with st.chat_message("assistant"):
             with st.status("Thinking...", expanded=False) as status:
+                render_loading_animation("Generating AI response...", size=120)
                 try:
                     response_data = api_request(
                         "post",

@@ -47,7 +47,7 @@ def forecast_match_start_times(
         - bottlenecks: List of potential bottlenecks
         - assumptions: What assumptions were made
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     
     # Get matches
     match_query = db.query(Match)

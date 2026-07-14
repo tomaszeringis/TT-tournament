@@ -91,7 +91,7 @@ def test_get_tournament_health_detects_missing_table(mock_db, sample_tournament)
         player2="Player B",
         call_status="active",
         location=None,
-        scheduled_time=datetime.now(timezone.utc),  # Add scheduled time to avoid that issue
+        scheduled_time=datetime.now(timezone.utc).replace(tzinfo=None),  # Add scheduled time to avoid that issue
     )
     
     mock_db.query.return_value.filter.return_value.all.return_value = [match]
@@ -127,7 +127,7 @@ def test_get_tournament_health_detects_missing_scheduled_time(mock_db, sample_to
 
 def test_get_tournament_health_detects_stale_active_match(mock_db, sample_tournament):
     """Test that active matches older than threshold are flagged as stale."""
-    old_time = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_STALE_ACTIVE_MINUTES + 10)
+    old_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=DEFAULT_STALE_ACTIVE_MINUTES + 10)
     
     match = Match(
         id=1,
@@ -150,7 +150,7 @@ def test_get_tournament_health_detects_stale_active_match(mock_db, sample_tourna
 
 def test_get_tournament_health_detects_stale_called_match(mock_db, sample_tournament):
     """Test that called matches older than threshold are flagged as stale."""
-    old_time = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_STALE_CALLED_MINUTES + 10)
+    old_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=DEFAULT_STALE_CALLED_MINUTES + 10)
     
     match = Match(
         id=1,
@@ -276,7 +276,7 @@ def test_get_health_summary_aggregates_issues(mock_db, sample_tournament):
         player2="Player B",
         call_status="active",
         location=None,
-        scheduled_time=datetime.now(timezone.utc),  # Add scheduled time to avoid that issue
+        scheduled_time=datetime.now(timezone.utc).replace(tzinfo=None),  # Add scheduled time to avoid that issue
     )
     match2 = Match(
         id=2,
@@ -284,7 +284,7 @@ def test_get_health_summary_aggregates_issues(mock_db, sample_tournament):
         player2="Player D",
         call_status="active",
         location=None,
-        scheduled_time=datetime.now(timezone.utc),  # Add scheduled time to avoid that issue
+        scheduled_time=datetime.now(timezone.utc).replace(tzinfo=None),  # Add scheduled time to avoid that issue
     )
     
     mock_db.query.return_value.filter.return_value.all.return_value = [match1, match2]
@@ -301,7 +301,7 @@ def test_get_health_summary_aggregates_issues(mock_db, sample_tournament):
 # ============================================================================
 
 def test_detect_stale_matches_returns_old_active(mock_db, sample_tournament):
-    old_time = datetime.now(timezone.utc) - timedelta(minutes=DEFAULT_STALE_ACTIVE_MINUTES + 10)
+    old_time = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=DEFAULT_STALE_ACTIVE_MINUTES + 10)
     match = Match(
         id=1,
         player1="Player A",
@@ -341,7 +341,7 @@ def test_get_alert_inbox_returns_issues(mock_db, sample_tournament):
         player2="Player B",
         call_status="active",
         location=None,
-        scheduled_time=datetime.now(timezone.utc),
+        scheduled_time=datetime.now(timezone.utc).replace(tzinfo=None),
     )
     mock_db.query.return_value.filter.return_value.all.return_value = [match]
     mock_db.query.return_value.filter.return_value.first.return_value = sample_tournament

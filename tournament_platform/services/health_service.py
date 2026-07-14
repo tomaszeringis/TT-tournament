@@ -59,7 +59,7 @@ def get_tournament_health(
         - computed_at: ISO timestamp
     """
     thresholds = get_health_thresholds()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     
     # Build match query
     match_query = db.query(Match)
@@ -284,7 +284,7 @@ def detect_stale_matches(
         List of stale match dicts
     """
     thresholds = get_health_thresholds()
-    now = datetime.now(timezone.utc)
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
     
     if stale_active_minutes is not None:
         thresholds["stale_active_minutes"] = stale_active_minutes

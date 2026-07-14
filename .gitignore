@@ -49,3 +49,8 @@ tournament_platform.egg-info/
 
 # Local planning notes (untracked, machine-local)
 .kilo/plans/
+
+# Piper local TTS models and generated audio
+tournament_platform/assets/tts/piper/voices/**/*.onnx
+tournament_platform/assets/tts/piper/voices/**/*.onnx.json
+tournament_platform/data/tts_cache/
