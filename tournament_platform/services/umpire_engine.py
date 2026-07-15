@@ -15,9 +15,21 @@ from typing import Optional, AsyncGenerator, Callable, List, Dict, Any
 from dataclasses import dataclass, field
 
 import ollama
-import pyaudio
 from faster_whisper import WhisperModel
-from RealtimeTTS import TextToAudioStream, GTTSEngine
+
+# pyaudio (and RealtimeTTS) are only needed for live microphone capture, which
+# requires system libraries (portaudio) and is unavailable on Streamlit Cloud.
+# Import them defensively so the module still imports where they are absent.
+try:
+    import pyaudio
+except ImportError:
+    pyaudio = None
+
+try:
+    from RealtimeTTS import TextToAudioStream, GTTSEngine
+except ImportError:
+    TextToAudioStream = None
+    GTTSEngine = None
 from tournament_platform.services.rules_retrieval import RulesRetriever
 from tournament_platform.config import settings
 
@@ -80,8 +92,8 @@ class UmpireEngine:
         
         # State management
         self._running = False
-        self._audio_stream: Optional[pyaudio.Stream] = None
-        self._pyaudio: Optional[pyaudio.PyAudio] = None
+        self._audio_stream: "Optional[pyaudio.Stream]" = None
+        self._pyaudio: "Optional[pyaudio.PyAudio]" = None
         self._tts_buffer: str = ""
         self._current_commentary_task: Optional[asyncio.Task] = None
         self._transcript_queue: asyncio.Queue = asyncio.Queue()

@@ -11,6 +11,13 @@ python -m venv .venv
 pip install -e .
 ```
 
+For real-time voice / microphone features (which need `pyaudio` and PortAudio),
+install the optional `[live]` extra:
+
+```powershell
+pip install -e ".[live]"
+```
+
 ### 2. Configure environment
 ```powershell
 cd tournament_platform
@@ -54,6 +61,10 @@ Recommended deployment Python version: **3.11**.
 - Dependencies are installed from the repo-root `pyproject.toml` (`[project]` table).
   That file is the source of truth; `tournament_platform/requirements.txt` is only a
   legacy local snapshot and is not used by Streamlit Cloud.
+- `pyaudio` (real-time microphone capture, needs the system PortAudio library) is an
+  **optional** dependency (`[live]` extra) and is intentionally NOT installed on
+  Streamlit Cloud, where microphone input and PortAudio are unavailable. These live
+  voice features are therefore not available in the cloud deployment.
 - Entry point: `tournament_platform/app/main.py`
   (run `streamlit run tournament_platform/app/main.py`).
 - If the app was previously deployed with Python 3.9, **delete the app and redeploy it
