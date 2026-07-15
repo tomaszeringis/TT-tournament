@@ -41,6 +41,27 @@ For a guided walkthrough of the AI quick-win features, see [QUICK_WINS.md](QUICK
 
 ---
 
+## ☁️ Streamlit Cloud deployment
+
+**Use Python 3.11 in the Streamlit Cloud "Advanced settings" when deploying.**
+
+This app requires **Python >=3.11** (see `requires-python` in `pyproject.toml`) because
+recent Streamlit releases (`streamlit>=1.58.0`) require Python 3.10+, and we pin the
+supported range to `>=3.11,<3.13` to avoid accidental breakage on future Python versions.
+
+Recommended deployment Python version: **3.11**.
+
+- Dependencies are installed from the repo-root `pyproject.toml` (`[project]` table).
+  That file is the source of truth; `tournament_platform/requirements.txt` is only a
+  legacy local snapshot and is not used by Streamlit Cloud.
+- Entry point: `tournament_platform/app/main.py`
+  (run `streamlit run tournament_platform/app/main.py`).
+- If the app was previously deployed with Python 3.9, **delete the app and redeploy it
+  with Python 3.11 selected in Advanced settings** — Streamlit Cloud keeps the Python
+  version from the original deploy and won't pick up the new requirement otherwise.
+
+---
+
 ## 🆘 Common Issues
 
 **"ModuleNotFoundError: No module named 'tournament_platform'"**
