@@ -560,7 +560,38 @@ def init_db():
     Base.metadata.create_all(bind=engine)
 
 
+def ensure_schema():
+    """Create the database schema at app startup.
+
+    The canonical schema is defined by the Alembic migrations, so we prefer
+    `alembic upgrade head`. This is required on platforms like Streamlit Cloud,
+    where the manual `alembic upgrade head` step is not run. `create_all` is only
+    a fallback when Alembic is unavailable (or under pytest, which manages its
+    own schema via init_db()).
+    """
+    import os
+    import sys
+
+    if os.environ.get("PYTEST_CURRENT_TEST") or "pytest" in sys.modules:
+        init_db()
+        return
+
+    try:
+        from alembic.config import Config
+        from alembic import command
+
+        ini_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "alembic.ini")
+        if os.path.exists(ini_path):
+            cfg = Config(ini_path)
+            command.upgrade(cfg, "head")
+            return
+    except Exception as e:
+        print(f"WARNING: alembic upgrade head failed ({e}); falling back to create_all")
+
+    init_db()
+
+
 # Ensure all tables exist when the app starts. On platforms like Streamlit Cloud
-# there is no manual `alembic upgrade head` step, so create the schema from the
-# models at import time. This runs once per process and is a no-op if tables exist.
-init_db()
+# there is no manual `alembic upgrade head` step, so build the schema here. This
+# runs once per process and is a no-op if the schema is already present.
+ensure_schema()
