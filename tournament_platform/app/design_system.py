@@ -357,7 +357,7 @@ def render_litit_delayed_card(match: dict) -> None:
             </div>
             <div style="font-size: 16px;"><b>{p1}</b> vs <b>{p2}</b></div>
             <div style="color: {COLORS['text_secondary']}; font-size: 12px;">Table: {location} | Scheduled: {time_str}</div>
-            {f'<div style="color: {COLORS['text_muted']}; font-size: 12px; margin-top: 4px;">Note: {operator_note}</div>' if operator_note else ''}
+            {f'<div style="color: {COLORS["text_muted"]}; font-size: 12px; margin-top: 4px;">Note: {operator_note}</div>' if operator_note else ''}
         </div>
         """,
         unsafe_allow_html=True,

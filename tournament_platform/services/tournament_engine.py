@@ -2,7 +2,11 @@ import os
 import math
 import random
 from abc import ABC, abstractmethod
-from typing import override
+try:
+    from typing import override
+except ImportError:  # Python < 3.12
+    def override(func):
+        return func
 from sqlalchemy.orm import Session
 from bracketool.single_elimination import SingleEliminationGen
 from bracketool.domain import Competitor
