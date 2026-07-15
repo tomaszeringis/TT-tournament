@@ -6,13 +6,63 @@ with centralized error handling and user-friendly error messages.
 """
 
 import logging
+import os
+import socket
+import threading
+import time
 from typing import Any, Optional, Dict
+from urllib.parse import urlparse
 
 import requests
 
 from tournament_platform.app.settings import API_BASE_URL, API_TIMEOUT_SECONDS, SHOW_DEBUG_DETAILS
 
 logger = logging.getLogger(__name__)
+
+_api_server_started = False
+_api_server_lock = threading.Lock()
+
+
+def ensure_api_server():
+    """Start the FastAPI backend in a background thread (once) so the frontend's
+    HTTP calls to API_BASE_URL succeed on a single-process deployment such as
+    Streamlit Cloud, where only the Streamlit app is launched and the separate
+    ``run_api`` process is not started. Skipped when API_BASE_URL points to an
+    external service, or when running under pytest.
+    """
+    global _api_server_started
+    if _api_server_started:
+        return
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    parsed = urlparse(API_BASE_URL)
+    if parsed.hostname not in ("localhost", "127.0.0.1"):
+        return
+    port = parsed.port or 8000
+    with _api_server_lock:
+        if _api_server_started:
+            return
+        _api_server_started = True
+        try:
+            import uvicorn
+            from tournament_platform.api import server as _api_server
+
+            def _run():
+                config = uvicorn.Config(
+                    _api_server.app, host="127.0.0.1", port=port, log_level="warning"
+                )
+                uvicorn.Server(config).run()
+
+            threading.Thread(target=_run, daemon=True).start()
+            # Wait briefly for the server to start accepting connections.
+            for _ in range(50):
+                try:
+                    with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                        break
+                except OSError:
+                    time.sleep(0.1)
+        except Exception as e:
+            logger.warning(f"Could not start local API server: {e}")
 
 
 class ApiClient:
@@ -33,6 +83,7 @@ class ApiClient:
         """
         self.base_url = base_url or API_BASE_URL
         self.timeout = timeout or API_TIMEOUT_SECONDS
+        ensure_api_server()
     
     def _build_url(self, endpoint: str) -> str:
         """Build a full URL from an endpoint path."""

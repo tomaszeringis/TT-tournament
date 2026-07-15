@@ -73,6 +73,11 @@ Recommended deployment Python version: **3.11**.
   data is not persisted — use persistent storage or an external database for production data.
 - Entry point: `tournament_platform/app/main.py`
   (run `streamlit run tournament_platform/app/main.py`).
+- The FastAPI backend is started automatically in a background thread at app
+  startup (`ensure_api_server()` in `tournament_platform/app/api_client.py`) so the
+  frontend's `http://localhost:8000` calls work on a single Streamlit Cloud app,
+  where only the Streamlit process is launched. Set `API_BASE_URL` to an external
+  service if you deploy the API separately.
 - If the app was previously deployed with Python 3.9, **delete the app and redeploy it
   with Python 3.11 selected in Advanced settings** — Streamlit Cloud keeps the Python
   version from the original deploy and won't pick up the new requirement otherwise.
