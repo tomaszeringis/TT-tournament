@@ -64,7 +64,13 @@ Recommended deployment Python version: **3.11**.
 - `pyaudio` (real-time microphone capture, needs the system PortAudio library) is an
   **optional** dependency (`[live]` extra) and is intentionally NOT installed on
   Streamlit Cloud, where microphone input and PortAudio are unavailable. These live
-  voice features are therefore not available in the cloud deployment.
+   voice features are therefore not available in the cloud deployment.
+- The database schema is created automatically at app startup (`init_db()` in
+  `tournament_platform/models.py`), so no manual `alembic upgrade head` step is
+  required on Streamlit Cloud. Note: Streamlit Cloud's filesystem is ephemeral, so the
+  SQLite database (`tournament_platform/data/tournament.db`) is recreated on each
+  deploy/restart and data is not persisted — use persistent storage or an external
+  database for production data.
 - Entry point: `tournament_platform/app/main.py`
   (run `streamlit run tournament_platform/app/main.py`).
 - If the app was previously deployed with Python 3.9, **delete the app and redeploy it

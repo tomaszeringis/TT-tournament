@@ -558,3 +558,9 @@ Match.commentary_events = relationship("CommentaryEvent", back_populates="match"
 
 def init_db():
     Base.metadata.create_all(bind=engine)
+
+
+# Ensure all tables exist when the app starts. On platforms like Streamlit Cloud
+# there is no manual `alembic upgrade head` step, so create the schema from the
+# models at import time. This runs once per process and is a no-op if tables exist.
+init_db()
