@@ -228,59 +228,11 @@ def render_overview_tab(data):
         if selected_player_name:
             create_radar_chart(selected_player_name, player_matches)
 
-    # AI Match Insights Section
+    # Match Analytics Section
     st.space("medium")
-    st.subheader("🤖 AI Match Insights")
-    st.caption("Analyze completed matches with AI-powered insights. Review before using for decisions.")
-
-    # Show AI status
-    render_ai_status_badge()
-
-    # Get completed matches for AI analysis
-    if not match_df.empty:
-        completed_matches = match_df[match_df['Status'] == 'completed']
-    else:
-        completed_matches = pd.DataFrame()
-
-    if not completed_matches.empty:
-        selected_match_id = st.selectbox(
-            "Select a completed match for AI analysis:",
-            options=[""] + completed_matches['ID'].astype(str).tolist(),
-            format_func=lambda x: f"Match #{x}" if x else "Select a match..."
-        )
-
-        if selected_match_id:
-            match_row = completed_matches[completed_matches['ID'] == int(selected_match_id)].iloc[0]
-            match_data = {
-                "player1": match_row['Player 1'],
-                "player2": match_row['Player 2'],
-                "winner": match_row['Winner'],
-                "score": match_row['Score']
-            }
-
-            if st.button("🔍 Analyze Match", key="analyze_match_btn"):
-                with st.status("Generating AI insights...", expanded=False) as status:
-                    try:
-                        ai_engine = get_ai_engine()
-                        report = ai_engine.generate_report(match_data)
-                        status.update(label="Analysis complete", state="complete", expanded=False)
-
-                        st.write("**Summary:**")
-                        if report.summary:
-                            st.write(report.summary)
-
-                        st.write("**Key Play:**")
-                        if report.key_play:
-                            st.write(report.key_play)
-
-                        st.write("**Predicted Winner:**")
-                        if report.predicted_winner:
-                            st.write(report.predicted_winner)
-                    except Exception as e:
-                        status.update(label="Error occurred", state="error", expanded=False)
-                        st.error(f"Error generating insights: {e}")
-    else:
-        st.info("No completed matches to analyze. Complete some matches first!")
+    st.subheader("📊 Match Analytics")
+    st.caption("Full match analytics with game-by-game breakdowns, momentum, and key moments are available in the Voice Scorekeeper during scoring.")
+    st.info("Open the Voice Scorekeeper to view detailed match analytics for your active matches.")
 
     # Quick Questions Section
     st.space("medium")

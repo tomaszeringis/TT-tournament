@@ -979,6 +979,16 @@ class CommentaryService:
     MINIMAL_TEMPLATES = LEGACY_MINIMAL_TEMPLATES
     KIDS_TEMPLATES = LEGACY_KIDS_TEMPLATES
 
+    @staticmethod
+    def normalize_style(style: Any) -> str:
+        """Return a supported commentary style string (never raises)."""
+        return _ct_module.normalize_commentary_style(style)
+
+    @staticmethod
+    def get_supported_styles() -> Dict[str, str]:
+        """Return the dict of renderable styles the UI may expose."""
+        return dict(_ct_module.SUPPORTED_COMMENTARY_STYLES)
+
     def __init__(self, rewriter: Optional[CommentaryRewriter] = None):
         self.rewriter = rewriter or CommentaryRewriter()
         self.template_selector = TemplateSelector()
@@ -1182,6 +1192,8 @@ class CommentaryService:
         return f"{sets_a} to {sets_b}"
 
     def _select_base_template(self, event_id: str, language: str, style: str) -> Tuple[List[str], bool, Optional[str]]:
+        if self.normalize_style(style) == "silent":
+            return [], True, "silent"
         t = self.get_templates(event_id, language, style)
         if t:
             return [x["text"] for x in t], False, None

@@ -241,7 +241,7 @@ class TestEmitSetWinCommentary:
         assert session["pending_commentary"] is not None
         assert session["pending_commentary"].event_type == "set_win"
         assert session["pending_commentary"].should_speak is True
-        assert len(session["commentary_emitted_game_keys"]) == 3
+        assert len(session["commentary_emitted_game_keys"]) == 4
 
     def test_ollama_invalid_rewrite_falls_back(self, monkeypatch):
         from tournament_platform.app.pages import voice_scorekeeper as vsk

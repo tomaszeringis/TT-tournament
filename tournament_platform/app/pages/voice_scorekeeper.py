@@ -100,10 +100,27 @@ from tournament_platform.services.commentary_service import (
     ScoreMoment,
     log_commentary_event,
 )
+from tournament_platform.app.services.match_analytics import MatchAnalyticsService
 from tournament_platform.app.components.spoken_commentary import (
     speak_commentary,
     play_local_audio,
     speak_commentary_audio_file,
+)
+from tournament_platform.services.commentary_templates import (
+    normalize_commentary_style,
+    SUPPORTED_COMMENTARY_STYLES,
+)
+
+# Renderable voice styles exposed in the "Voice style" dropdown. ``silent`` is
+# a verbosity/mode, not a renderable style, so it is excluded.
+COMMENTARY_STYLE_OPTIONS = list(SUPPORTED_COMMENTARY_STYLES.keys())
+from tournament_platform.app.services.commentary import (
+    CommentaryEngine,
+    CommentaryEventData,
+    MatchContext,
+    MatchContextBuilder,
+    TTEventType,
+    generate_match_summary,
 )
 from tournament_platform.app.services.commentary_voice.piper_voice import get_piper_engine, PiperTTSEngine, PiperTTSError
 from tournament_platform.app.services.commentary_voice.piper_runtime import find_piper_voices, PiperVoice, is_piper_available
@@ -662,6 +679,9 @@ def apply_score_event_and_refresh_ui(
                 confidence=getattr(_score_event, "confidence", 1.0),
             )
 
+            if st.session_state.get("commentary_engine") == "local":
+                _build_local_commentary("voice_score_confirmed", state, None, settings, str(uuid.uuid4()))
+
             # Immediately re-derive UI state so it's available on next render.
             # This ensures completed_games and match_complete are never stale.
             st.session_state.completed_games = compute_completed_games(mm.engine)
@@ -674,6 +694,8 @@ def apply_score_event_and_refresh_ui(
             st.session_state.last_voice_feedback = msg
             st.warning(f"🎤 Voice: {msg}")
             play_cue("reject")
+            if st.session_state.get("commentary_engine") == "local":
+                _build_local_commentary("voice_score_rejected", state, None, settings, str(uuid.uuid4()))
     else:
         success = False
         msg = "Unknown command"
@@ -781,7 +803,11 @@ def _process_voice_transcript(
 if 'commentary_enabled' not in st.session_state:
     st.session_state.commentary_enabled = False
 if 'commentary_style' not in st.session_state:
-    st.session_state.commentary_style = CommentaryStyle.NEUTRAL.value
+    st.session_state.commentary_style = normalize_commentary_style(CommentaryStyle.NEUTRAL.value)
+# Normalize any legacy/typo style value (e.g. "couch") stored in the session so
+# later CommentaryStyle(...) construction never raises.
+elif st.session_state.commentary_style not in COMMENTARY_STYLE_OPTIONS:
+    st.session_state.commentary_style = normalize_commentary_style(st.session_state.commentary_style)
 if 'commentary_verbosity' not in st.session_state:
     st.session_state.commentary_verbosity = CommentaryVerbosity.STANDARD.value
 if 'commentary_voice' not in st.session_state:
@@ -816,6 +842,10 @@ if 'commentary_pitch' not in st.session_state:
     st.session_state.commentary_pitch = 1.0
 if 'commentary_volume' not in st.session_state:
     st.session_state.commentary_volume = 1.0
+if 'commentary_engine' not in st.session_state:
+    st.session_state.commentary_engine = "legacy"
+if 'commentary_detail' not in st.session_state:
+    st.session_state.commentary_detail = "standard"
 if 'commentary_browser_voice_name' not in st.session_state:
     st.session_state.commentary_browser_voice_name = None
 if 'commentary_emitted_game_keys' not in st.session_state:
@@ -1782,9 +1812,14 @@ _commentary_service = CommentaryService()
 
 def _get_commentary_settings() -> CommentarySettings:
     """Build CommentarySettings from current session state."""
+    # Normalize the style so legacy/typo values ("couch", "commentator") never
+    # raise ValueError when constructing the CommentaryStyle enum.
+    style_value = normalize_commentary_style(
+        st.session_state.get("commentary_style", CommentaryStyle.NEUTRAL.value)
+    )
     return CommentarySettings(
         enabled=st.session_state.get("commentary_enabled", False),
-        style=CommentaryStyle(st.session_state.get("commentary_style", CommentaryStyle.NEUTRAL.value)),
+        style=CommentaryStyle(style_value),
         verbosity=CommentaryVerbosity(st.session_state.get("commentary_verbosity", CommentaryVerbosity.STANDARD.value)),
         voice=st.session_state.get("commentary_voice", "default"),
         language=st.session_state.get("commentary_language", "en"),
@@ -1954,6 +1989,112 @@ def play_commentary(
         st.session_state.last_commentary_audio_path = None
 
 
+def _event_type_to_tt(event_type: str, state: Any) -> TTEventType:
+    if event_type in ("point_a", "point_b", "point_scored"):
+        return TTEventType.POINT_WON
+    if event_type == "undo":
+        return TTEventType.POINT_LOST
+    if event_type == "serve":
+        return TTEventType.SERVE_POINT
+    if event_type == "deuce":
+        return TTEventType.DEUCE
+    if event_type == "advantage":
+        return TTEventType.ADVANTAGE
+    if event_type == "game_point":
+        return TTEventType.GAME_POINT
+    if event_type == "match_point":
+        return TTEventType.MATCH_POINT
+    if event_type == "set_win":
+        return TTEventType.GAME_WON
+    if event_type == "match_win":
+        return TTEventType.MATCH_WON
+    if event_type == "manual_score_change":
+        return TTEventType.MANUAL_SCORE_CHANGE
+    if event_type == "voice_score_confirmed":
+        return TTEventType.VOICE_SCORE_CONFIRMED
+    if event_type == "voice_score_rejected":
+        return TTEventType.VOICE_SCORE_REJECTED
+    return TTEventType.POINT_WON
+
+
+def _build_local_commentary(
+    event_type: str,
+    state: Any,
+    previous_state: Optional[Any],
+    settings: Any,
+    event_id: str,
+) -> CommentaryLine:
+    """Generate commentary using the local template engine and wrap it in a CommentaryLine."""
+    tt_evt = _event_type_to_tt(event_type, state)
+    player_a = getattr(state, "player_a", "Player A")
+    player_b = getattr(state, "player_b", "Player B")
+    player = player_a
+    opponent = player_b
+    if event_type in ("point_b",):
+        player = player_b
+        opponent = player_a
+
+    serving_player = getattr(state, "serving_player", "") or player_a
+
+    evt_data = CommentaryEventData(
+        event_type=tt_evt,
+        player=player,
+        opponent=opponent,
+        serving_player=serving_player,
+        language=str(settings.language or "en"),
+        style=normalize_commentary_style(getattr(settings, "style", CommentaryStyle.NEUTRAL.value)),
+        score=f"{getattr(state, 'score_a', 0)} to {getattr(state, 'score_b', 0)}",
+        game_score=f"{getattr(state, 'score_a', 0)}–{getattr(state, 'score_b', 0)}",
+        match_score=f"{getattr(state, 'sets_a', 0)} to {getattr(state, 'sets_b', 0)}",
+    )
+
+    ctx = MatchContextBuilder.from_spoken_score_state(state)
+    detail = st.session_state.get("commentary_detail", "standard")
+    fast_score_change = False  # could be set externally when rapid scoring is detected
+
+    engine = CommentaryEngine()
+    generated = engine.generate_commentary(
+        evt_data,
+        ctx,
+        spoken_enabled=bool(getattr(settings, "enabled", False)),
+        fast_score_change=fast_score_change,
+        detail=detail,
+    )
+
+    text = generated.final_text or generated.text or ""
+    should_speak = generated.should_speak
+    priority = 2
+    if tt_evt in (TTEventType.GAME_WON, TTEventType.MATCH_WON, TTEventType.DEUCE, TTEventType.ADVANTAGE, TTEventType.GAME_POINT, TTEventType.MATCH_POINT):
+        priority = 3
+
+    line = CommentaryLine(
+        text=text,
+        event_type=event_type,
+        priority=priority,
+        should_speak=should_speak,
+        dedupe_key=f"{event_type}:{event_id}",
+        event_id=event_id,
+        generated_text=generated.generated_text,
+        final_text=generated.final_text,
+        template_language=generated.language,
+        template_style=generated.style,
+        base_template=generated.base_template,
+        used_fallback=generated.used_fallback,
+        fallback_reason=None,
+        mixed_language_detected=generated.mixed_language_detected,
+        used_ollama=False,
+        ollama_rejected_reason=None,
+        tts_language_code=generated.tts_language_code,
+        cache_key=None,
+        cache_hit=False,
+        selected_language=evt_data.language,
+        normalized_language=generated.language,
+        event_id_str=tt_evt.value,
+    )
+    line._local_commentary = generated
+    return line
+
+
 def _build_and_store_commentary(
     event_type: str,
     state: Any,
@@ -1969,49 +2110,68 @@ def _build_and_store_commentary(
     spoken_state = SpokenScoreState.from_match_state(state)
     prev_spoken = SpokenScoreState.from_match_state(previous_state) if previous_state else None
 
-    moment = _commentary_service.classify_score_moment(spoken_state, prev_spoken)
-    settings = _apply_critical_cooldown(settings, moment)
+    engine_choice = st.session_state.get("commentary_engine", "legacy")
 
-    line = _commentary_service.build_score_commentary(
-        event_type=event_type,
-        state=spoken_state,
-        settings=settings,
-        event_id=event_id,
-        previous_state=prev_spoken,
-    )
+    if engine_choice == "local":
+        line = _build_local_commentary(
+            event_type=event_type,
+            state=state,
+            previous_state=previous_state,
+            settings=settings,
+            event_id=event_id,
+        )
+    else:
+        moment = _commentary_service.classify_score_moment(spoken_state, prev_spoken)
+        settings = _apply_critical_cooldown(settings, moment)
+
+        line = _commentary_service.build_score_commentary(
+            event_type=event_type,
+            state=spoken_state,
+            settings=settings,
+            event_id=event_id,
+            previous_state=prev_spoken,
+        )
 
     if line.final_text and settings.language != "en":
         tts_lang = "lt-LT" if settings.language == "lt" else "en-US"
         line.tts_language_code = tts_lang
 
-    if _commentary_service.should_speak_commentary(
+    should_speak = _commentary_service.should_speak_commentary(
         last_event_id=st.session_state.get("last_commentary_event_id"),
         current_event_id=event_id,
         settings=settings,
-    ):
+    )
+    if not should_speak and engine_choice == "local":
+        # Local engine already encodes speak intent in GeneratedCommentary.should_speak,
+        # but we still gate with the legacy dedupe/disabled checks.
+        local_line = getattr(line, "_local_commentary", None)
+        if local_line is not None:
+            should_speak = local_line.should_speak
+
+    if should_speak:
         st.session_state.pending_commentary = line
         st.session_state.last_commentary_event_id = event_id
         st.session_state.last_commentary_text = line.text
         st.session_state.pending_local_audio = None
         st.session_state.last_commentary_debug = {
-            "selected_language": line.selected_language,
-            "normalized_language": line.normalized_language,
-            "event_id": line.event_id,
-            "event_id_str": line.event_id_str,
-            "template_language": line.template_language,
-            "template_style": line.template_style,
-            "base_template": line.base_template,
-            "generated_text": line.generated_text,
-            "final_text": line.final_text,
-            "used_fallback": line.used_fallback,
-            "fallback_reason": line.fallback_reason,
-            "mixed_language_detected": line.mixed_language_detected,
-            "used_ollama": line.used_ollama,
-            "ollama_rejected_reason": line.ollama_rejected_reason,
-            "spoken": line.should_speak,
-            "tts_language_code": line.tts_language_code,
-            "cache_key": line.cache_key,
-            "cache_hit": line.cache_hit,
+            "selected_language": getattr(line, "selected_language", settings.language),
+            "normalized_language": getattr(line, "normalized_language", settings.language),
+            "event_id": getattr(line, "event_id", event_id),
+            "event_id_str": getattr(line, "event_id_str", event_type),
+            "template_language": getattr(line, "template_language", ""),
+            "template_style": getattr(line, "template_style", ""),
+            "base_template": getattr(line, "base_template", ""),
+            "generated_text": getattr(line, "generated_text", ""),
+            "final_text": getattr(line, "final_text", ""),
+            "used_fallback": getattr(line, "used_fallback", False),
+            "fallback_reason": getattr(line, "fallback_reason", None),
+            "mixed_language_detected": getattr(line, "mixed_language_detected", False),
+            "used_ollama": getattr(line, "used_ollama", False),
+            "ollama_rejected_reason": getattr(line, "ollama_rejected_reason", None),
+            "spoken": getattr(line, "should_speak", True),
+            "tts_language_code": getattr(line, "tts_language_code", "en-US"),
+            "cache_key": getattr(line, "cache_key", None),
+            "cache_hit": getattr(line, "cache_hit", False),
         }
     else:
         st.session_state.pending_commentary = None
@@ -2037,17 +2197,83 @@ def _emit_set_win_commentary(game_event: dict, *, speak: bool) -> bool:
     if not settings.enabled or settings.muted:
         return False
 
-    should_gen = _commentary_service.should_generate(
-        "set_win",
-        ImportanceLevel.CRITICAL,
-        settings.mode,
-        settings.intensity,
-    )
-    if not should_gen:
-        return False
+    engine_choice = st.session_state.get("commentary_engine", "legacy")
 
-    line = _commentary_service.build_set_win_commentary(game_event, settings)
-    line.should_speak = speak and settings.mode not in (CommentaryMode.OFF, CommentaryMode.VISUAL_ONLY)
+    if engine_choice == "local":
+        from tournament_platform.app.services.commentary.event_schema import CommentaryEventData, TTEventType
+        from tournament_platform.app.services.commentary.match_context import MatchContextBuilder
+
+        player_a = game_event.get("player_a", winner)
+        player_b = game_event.get("loser", player_a)
+        serving_player = player_a
+
+        evt_data = CommentaryEventData(
+            event_type=TTEventType.GAME_WON,
+            player=winner,
+            opponent=player_b,
+            serving_player=serving_player,
+            language=str(settings.language or "en"),
+            style=normalize_commentary_style(getattr(settings, "style", CommentaryStyle.NEUTRAL.value)),
+            game_score=game_score,
+            match_score=game_event.get("match_score", ""),
+            completed_games=game_event.get("completed_games", []),
+        )
+
+        state = st.session_state.match_manager.state
+        ctx = MatchContextBuilder.from_spoken_score_state(state)
+        if ctx.completed_games:
+            ctx.current_game = len(ctx.completed_games) + 1
+
+        detail = st.session_state.get("commentary_detail", "standard")
+        engine = CommentaryEngine()
+        generated = engine.generate_commentary(
+            evt_data,
+            ctx,
+            spoken_enabled=settings.enabled and not settings.muted,
+            detail=detail,
+        )
+
+        text = generated.final_text or generated.text or ""
+        priority = 3
+        should_speak = speak and generated.should_speak
+
+        line = CommentaryLine(
+            text=text,
+            event_type="set_win",
+            priority=priority,
+            should_speak=should_speak,
+            dedupe_key=dedupe_key,
+            event_id=str(uuid.uuid4()),
+            generated_text=generated.generated_text,
+            final_text=generated.final_text,
+            template_language=generated.language,
+            template_style=generated.style,
+            base_template=generated.base_template,
+            used_fallback=generated.used_fallback,
+            fallback_reason=None,
+            mixed_language_detected=generated.mixed_language_detected,
+            used_ollama=False,
+            ollama_rejected_reason=None,
+            tts_language_code=generated.tts_language_code,
+            cache_key=None,
+            cache_hit=False,
+            selected_language=evt_data.language,
+            normalized_language=generated.language,
+            event_id_str="game_won",
+        )
+        line._local_commentary = generated
+    else:
+        should_gen = _commentary_service.should_generate(
+            "set_win",
+            ImportanceLevel.CRITICAL,
+            settings.mode,
+            settings.intensity,
+        )
+        if not should_gen:
+            return False
+
+        line = _commentary_service.build_set_win_commentary(game_event, settings)
+        line.should_speak = speak and settings.mode not in (CommentaryMode.OFF, CommentaryMode.VISUAL_ONLY)
 
     debug_info = {
         "game_number": game_number,
@@ -2057,24 +2283,24 @@ def _emit_set_win_commentary(game_event: dict, *, speak: bool) -> bool:
         "match_score": game_event.get("match_score", ""),
         "completed_games": game_event.get("completed_games", []),
         "dedupe_key": dedupe_key,
-        "event_id": line.event_id,
-        "event_id_str": line.event_id_str,
-        "selected_language": line.selected_language,
-        "normalized_language": line.normalized_language,
-        "template_language": line.template_language,
-        "template_style": line.template_style,
-        "base_template": line.base_template,
-        "generated_text": line.generated_text,
-        "final_text": line.final_text,
-        "used_fallback": line.used_fallback,
-        "fallback_reason": line.fallback_reason,
-        "mixed_language_detected": line.mixed_language_detected,
-        "used_ollama": line.used_ollama,
-        "ollama_rejected_reason": line.ollama_rejected_reason,
-        "spoken": line.should_speak,
-        "tts_language_code": line.tts_language_code,
-        "cache_key": line.cache_key,
-        "cache_hit": line.cache_hit,
+        "event_id": getattr(line, "event_id", ""),
+        "event_id_str": getattr(line, "event_id_str", "set_win"),
+        "selected_language": getattr(line, "selected_language", settings.language),
+        "normalized_language": getattr(line, "normalized_language", ""),
+        "template_language": getattr(line, "template_language", ""),
+        "template_style": getattr(line, "template_style", ""),
+        "base_template": getattr(line, "base_template", ""),
+        "generated_text": getattr(line, "generated_text", ""),
+        "final_text": getattr(line, "final_text", ""),
+        "used_fallback": getattr(line, "used_fallback", False),
+        "fallback_reason": getattr(line, "fallback_reason", None),
+        "mixed_language_detected": getattr(line, "mixed_language_detected", False),
+        "used_ollama": getattr(line, "used_ollama", False),
+        "ollama_rejected_reason": getattr(line, "ollama_rejected_reason", None),
+        "spoken": getattr(line, "should_speak", True),
+        "tts_language_code": getattr(line, "tts_language_code", "en-US"),
+        "cache_key": getattr(line, "cache_key", None),
+        "cache_hit": getattr(line, "cache_hit", False),
     }
 
     try:
@@ -2094,35 +2320,35 @@ def _emit_set_win_commentary(game_event: dict, *, speak: bool) -> bool:
                 "game_score": game_score,
                 "match_score": game_event.get("match_score", ""),
                 "completed_games": game_event.get("completed_games", []),
-                "language": line.normalized_language,
-                "style": line.template_style,
+                "language": getattr(line, "normalized_language", settings.language),
+                "style": getattr(line, "template_style", "neutral"),
                 "dedupe_key": dedupe_key,
             }, default=str),
             score_before_json=None,
             score_after_json=None,
-            style=line.template_style or "neutral",
-            language=line.normalized_language or "en",
+            style=getattr(line, "template_style", "neutral") or "neutral",
+            language=getattr(line, "normalized_language", "en") or "en",
             commentary_mode=settings.mode.value,
             intensity=settings.intensity.value,
-            template_id=line.base_template,
-            generated_text=line.generated_text or "",
-            final_text=line.final_text or "",
-            used_ollama=line.used_ollama,
+            template_id=getattr(line, "base_template", None),
+            generated_text=getattr(line, "generated_text", "") or "",
+            final_text=getattr(line, "final_text", "") or "",
+            used_ollama=getattr(line, "used_ollama", False),
             ollama_model=getattr(_commentary_service.rewriter, "model", None) if _commentary_service.rewriter else None,
-            ollama_cache_hit=line.cache_hit,
-            spoken=line.should_speak,
+            ollama_cache_hit=getattr(line, "cache_hit", False),
+            spoken=getattr(line, "should_speak", True),
             tts_mode="browser",
             latency_ms=None,
             error=None,
-            cache_key=line.cache_key,
+            cache_key=getattr(line, "cache_key", None),
         )
     except Exception:
         pass
 
     st.session_state.pending_commentary = line
-    st.session_state.last_commentary_event_id = line.event_id
+    st.session_state.last_commentary_event_id = getattr(line, "event_id", "")
     st.session_state.last_commentary_text = line.text
-    st.session_state.last_set_win_text = line.final_text
+    st.session_state.last_set_win_text = getattr(line, "final_text", "")
     st.session_state.last_commentary_debug = debug_info
     st.session_state.commentary_emitted_game_keys = emitted_keys + [dedupe_key]
     return True
@@ -2154,11 +2380,79 @@ def _reconcile_finished_games() -> None:
             "match_score": match_score,
             "completed_games": completed_games,
             "language": st.session_state.get("commentary_language", "en"),
-            "style": st.session_state.get("commentary_style", CommentaryStyle.NEUTRAL.value),
+            "style": normalize_commentary_style(st.session_state.get("commentary_style", CommentaryStyle.NEUTRAL.value)),
             "match_id": match_id,
             "player_a": _mm.state.player_a,
             "player_b": _mm.state.player_b,
         }, speak=True)
+
+    # Emit match_won commentary when the match is complete.
+    if _e.match_status == "match_won":
+        winner_name = _mm.state.player_a if _e.games_won_a > _e.games_won_b else _mm.state.player_b
+        loser_name = _mm.state.player_b if _e.games_won_a > _e.games_won_b else _mm.state.player_a
+        match_score = f"{_e.games_won_a}\u2013{_e.games_won_b}"
+        completed_games = [f"{x}\u2013{y}" for x, y in games]
+        dedupe_key = f"{match_id}:match_won:{winner_name}:{match_score}"
+
+        emitted_keys = st.session_state.get("commentary_emitted_game_keys", [])
+        if dedupe_key not in emitted_keys:
+            if st.session_state.get("commentary_engine") == "local":
+                from tournament_platform.app.services.commentary.event_schema import CommentaryEventData, TTEventType
+                from tournament_platform.app.services.commentary.match_context import MatchContextBuilder
+
+                evt_data = CommentaryEventData(
+                    event_type=TTEventType.MATCH_WON,
+                    player=winner_name,
+                    opponent=loser_name,
+                    serving_player=winner_name,
+                    language=str(st.session_state.get("commentary_language", "en")),
+                    style=normalize_commentary_style(st.session_state.get("commentary_style", CommentaryStyle.NEUTRAL.value)),
+                    match_score=match_score,
+                    completed_games=completed_games,
+                )
+                state = _mm.state
+                ctx = MatchContextBuilder.from_spoken_score_state(state)
+                ctx.games_won_a = _e.games_won_a
+                ctx.games_won_b = _e.games_won_b
+                ctx.completed_games = completed_games
+
+                engine = CommentaryEngine()
+                generated = engine.generate_commentary(
+                    evt_data,
+                    ctx,
+                    spoken_enabled=True,
+                    detail=st.session_state.get("commentary_detail", "standard"),
+                )
+                text = generated.final_text or generated.text or ""
+                line = CommentaryLine(
+                    text=text,
+                    event_type="match_won",
+                    priority=3,
+                    should_speak=True,
+                    dedupe_key=dedupe_key,
+                    event_id=str(uuid.uuid4()),
+                    generated_text=generated.generated_text,
+                    final_text=generated.final_text,
+                    template_language=generated.language,
+                    template_style=generated.style,
+                    base_template=generated.base_template,
+                    used_fallback=generated.used_fallback,
+                    fallback_reason=None,
+                    mixed_language_detected=generated.mixed_language_detected,
+                    used_ollama=False,
+                    ollama_rejected_reason=None,
+                    tts_language_code=generated.tts_language_code,
+                    cache_key=None,
+                    cache_hit=False,
+                    selected_language=evt_data.language,
+                    normalized_language=generated.language,
+                    event_id_str="match_won",
+                )
+                line._local_commentary = generated
+                st.session_state.pending_commentary = line
+                st.session_state.last_commentary_event_id = line.event_id
+                st.session_state.last_commentary_text = line.text
+            st.session_state.commentary_emitted_game_keys = emitted_keys + [dedupe_key]
 
 
 def render_commentary_settings() -> None:
@@ -2171,10 +2465,24 @@ def render_commentary_settings() -> None:
                 value=st.session_state.commentary_enabled,
                 help="Turn spoken commentary on or off.",
             )
+            _current_style = normalize_commentary_style(st.session_state.commentary_style)
+            if _current_style not in COMMENTARY_STYLE_OPTIONS:
+                _current_style = COMMENTARY_STYLE_OPTIONS[0]
             st.session_state.commentary_style = st.selectbox(
                 "Voice style",
-                options=[s.value for s in CommentaryStyle],
-                index=[s.value for s in CommentaryStyle].index(st.session_state.commentary_style),
+                options=COMMENTARY_STYLE_OPTIONS,
+                index=COMMENTARY_STYLE_OPTIONS.index(_current_style),
+            )
+            _engine_options = ["legacy", "local"]
+            _engine_labels = {"legacy": "Legacy", "local": "Local template engine"}
+            _current_engine = st.session_state.get("commentary_engine", "legacy")
+            _engine_idx = _engine_options.index(_current_engine) if _current_engine in _engine_options else 0
+            st.session_state.commentary_engine = st.selectbox(
+                "Commentary engine",
+                options=_engine_options,
+                format_func=lambda k: _engine_labels.get(k, k),
+                index=_engine_idx,
+                help="Choose the commentary generation path. Legacy uses the existing templates; Local uses the new TT template bank.",
             )
         with col2:
             st.session_state.commentary_verbosity = st.selectbox(
@@ -2186,6 +2494,17 @@ def render_commentary_settings() -> None:
                 "Voice",
                 options=["default"],
                 index=0,
+            )
+            _detail_options = ["short", "standard", "tactical"]
+            _detail_labels = {"short": "Short", "standard": "Standard", "tactical": "Tactical"}
+            _current_detail = st.session_state.get("commentary_detail", "standard")
+            _detail_idx = _detail_options.index(_current_detail) if _current_detail in _detail_options else 1
+            st.session_state.commentary_detail = st.selectbox(
+                "Commentary detail",
+                options=_detail_options,
+                format_func=lambda k: _detail_labels.get(k, k),
+                index=_detail_idx,
+                help="Short = minimal output. Standard = normal play-by-play. Tactical = include tactical commentary when available.",
             )
 
         col_mute, col_replay = st.columns(2)
@@ -2291,25 +2610,27 @@ def render_commentary_settings() -> None:
             st.session_state.commentary_voice_profile = _new_profile_id
 
             _profile_sync_applied = False
-            if _new_profile_id == "sport_commentator":
-                if st.session_state.get("commentary_style") != CommentaryStyle.ANNOUNCER.value:
+            # Only sync when the profile *selection actually changed* (tracked
+            # via commentary_voice_profile_applied). This avoids an unconditional
+            # st.rerun() every render that would fight the user's style choice
+            # and could make the page appear frozen.
+            _applied_profile = st.session_state.get("commentary_voice_profile_applied")
+            if _new_profile_id != _applied_profile:
+                if _new_profile_id == "sport_commentator":
                     st.session_state.commentary_style = CommentaryStyle.ANNOUNCER.value
-                    _profile_sync_applied = True
-                if st.session_state.get("commentary_intensity") != CommentaryIntensity.MEDIUM.value:
                     st.session_state.commentary_intensity = CommentaryIntensity.MEDIUM.value
                     _profile_sync_applied = True
-            elif _new_profile_id == "coach":
-                if st.session_state.get("commentary_style") != CommentaryStyle.COACH.value:
+                elif _new_profile_id == "coach":
                     st.session_state.commentary_style = CommentaryStyle.COACH.value
                     _profile_sync_applied = True
-            elif _new_profile_id in ("lt_browser_default",):
-                if st.session_state.get("commentary_language") != "lt":
+                elif _new_profile_id in ("lt_browser_default",):
                     st.session_state.commentary_language = "lt"
                     _profile_sync_applied = True
-            elif _new_profile_id in ("en_browser_default",):
-                if st.session_state.get("commentary_language") != "en":
+                elif _new_profile_id in ("en_browser_default",):
                     st.session_state.commentary_language = "en"
                     _profile_sync_applied = True
+                if _profile_sync_applied:
+                    st.session_state.commentary_voice_profile_applied = _new_profile_id
 
             if _profile_sync_applied:
                 st.rerun()
@@ -3611,67 +3932,159 @@ def _render_ui() -> None:
     # ============================================================================
     st.divider()
     st.subheader("📊 Match Analytics")
-    
+
     _match_id = st.session_state.get("voice_selected_match_id")
+    _engine = st.session_state.match_manager.engine
+    _p1 = st.session_state.voice_selected_player1_name or "Player A"
+    _p2 = st.session_state.voice_selected_player2_name or "Player B"
+
+    _options = []
+    _render_match_id = None
+    _render_engine = None
+    _render_service = None
+    _render_formatted = None
+
     if _match_id:
-        col_sum, col_exp = st.columns(2)
-        with col_sum:
-            if st.button("📋 Generate Summary", key="generate_summary_btn", use_container_width=True):
-                from tournament_platform.app.services.voice.match_summary import MatchSummaryService
-                service = MatchSummaryService()
-                _engine = st.session_state.match_manager.engine
-                _meta_base = {
-                    "players": [
-                        st.session_state.voice_selected_player1_name or "Player A",
-                        st.session_state.voice_selected_player2_name or "Player B",
-                    ],
-                    "tournament": "Current Tournament",
+        _live_score = f"{_engine.score_a}-{_engine.score_b}"
+        _live_label = f"Current live match — {_p1} vs {_p2} ({_live_score})"
+        _options.append({
+            "id": "live",
+            "label": _live_label,
+            "player_a_name": _p1,
+            "player_b_name": _p2,
+            "winner_name": None,
+            "match_score": _live_score,
+            "game_scores": None,
+            "source": "live",
+        })
+
+    _current_tournament_id = st.session_state.get("voice_selected_tournament_id")
+    if _current_tournament_id is not None:
+        _db = SessionLocal()
+        try:
+            from tournament_platform.app.services.match_analytics import load_completed_match_options
+            _completed_opts = load_completed_match_options(_db, tournament_id=_current_tournament_id, limit=100)
+            _options.extend([
+                {
+                    "id": opt.id,
+                    "label": opt.label,
+                    "player_a_name": opt.player_a_name,
+                    "player_b_name": opt.player_b_name,
+                    "winner_name": opt.winner_name,
+                    "match_score": opt.match_score,
+                    "game_scores": opt.game_scores,
+                    "source": "database",
                 }
-                _persisted = _get_persisted_match_meta(_match_id, _engine)
-                _meta = {
-                    **_meta_base,
-                    "score": _persisted["score"],
-                    "winner": _persisted["winner"],
-                    "game_scores": _persisted["game_scores"],
-                }
-                _summary = service.generate_match_summary(_match_id, _meta)
-                st.session_state.voice_match_summary = _summary
-                st.rerun()
-        with col_exp:
-            if st.button("📤 Export Report", key="export_report_btn", use_container_width=True):
-                from tournament_platform.app.services.voice.report_exporter import MatchReportExporter
-                exporter = MatchReportExporter()
-                _engine = st.session_state.match_manager.engine
-                _meta_base = {
-                    "players": [
-                        st.session_state.voice_selected_player1_name or "Player A",
-                        st.session_state.voice_selected_player2_name or "Player B",
-                    ],
-                    "tournament": "Current Tournament",
-                }
-                _persisted = _get_persisted_match_meta(_match_id, _engine)
-                _meta = {
-                    **_meta_base,
-                    "score": _persisted["score"],
-                    "winner": _persisted["winner"],
-                    "game_scores": _persisted["game_scores"],
-                }
-                _report = exporter.export_match_report(_match_id, _meta, include_summary=True, include_commentary=False)
-                timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
-                st.download_button(
-                    label=f"Download report_{timestamp}.md",
-                    data=_report,
-                    file_name=f"match_report_{_match_id}_{timestamp}.md",
-                    mime="text/markdown",
-                    key="download_match_report",
-                )
-    
-        if "voice_match_summary" in st.session_state:
-            _s = st.session_state.voice_match_summary
-            st.markdown(f"**Summary:** {_s.winner} wins {_s.final_score}")
-            if _s.llm_text:
-                st.caption(_s.llm_text)
-    
+                for opt in _completed_opts
+            ])
+        finally:
+            _db.close()
+
+    if not _options:
+        _empty_msg = "No completed matches available yet. Complete or submit a match to see analytics."
+        if _current_tournament_id is not None:
+            _tdb = SessionLocal()
+            try:
+                _tournament = _tdb.query(Tournament).filter(Tournament.id == _current_tournament_id).first()
+                if _tournament and _tournament.name:
+                    _empty_msg = f"No completed matches found for {_tournament.name}. Complete and submit a match to see analytics."
+            finally:
+                _tdb.close()
+        st.info(_empty_msg)
+    else:
+        _labels = [o["label"] for o in _options]
+        _selected_label = st.selectbox("Analyze completed match", _labels, key="match_analytics_select")
+        _selected_idx = _labels.index(_selected_label)
+        _selected = _options[_selected_idx]
+
+        _sel_id = _selected["id"]
+        _sel_source = _selected["source"]
+        _sel_p1 = _selected["player_a_name"]
+        _sel_p2 = _selected["player_b_name"]
+
+        if _sel_source == "database":
+            _db2 = SessionLocal()
+            try:
+                _match = _db2.query(Match).filter(Match.id == int(_sel_id)).first()
+                if _match:
+                    from tournament_platform.app.services.match_analytics import build_synthetic_engine_from_match
+                    _synthetic_engine = build_synthetic_engine_from_match(_match)
+                    _render_service = MatchAnalyticsService(player_a_name=_sel_p1, player_b_name=_sel_p2)
+                    _render_insight = _render_service.analyze(_synthetic_engine, match_id=_match.id)
+                    _render_formatted = _render_service.format(_render_insight)
+                    _render_match_id = _match.id
+                    _render_engine = _synthetic_engine
+                else:
+                    st.warning("Selected match not found.")
+            finally:
+                _db2.close()
+        else:
+            _render_service = MatchAnalyticsService(player_a_name=_p1, player_b_name=_p2)
+            _render_insight = _render_service.analyze(_engine, match_id=_match_id)
+            _render_formatted = _render_service.format(_render_insight)
+            _render_match_id = _match_id
+            _render_engine = _engine
+
+        if _render_match_id is not None and _render_formatted is not None:
+            with st.expander("📋 Summary", expanded=True):
+                st.markdown(f"**{_render_formatted.get('title', 'Match Analytics')}**\n\n{_render_formatted.get('summary', 'No summary available.')}")
+
+            if _render_formatted.get("game_by_game"):
+                with st.expander("🎮 Game by game"):
+                    for g in _render_formatted["game_by_game"]:
+                        st.markdown(f"- Game {g['game']}: **{g['winner']}** won {g['score']} — {g['summary']}")
+
+            if _render_formatted.get("momentum"):
+                with st.expander("⚡ Momentum"):
+                    for m in _render_formatted["momentum"]:
+                        size = "Major" if m["is_major"] else "Scoring"
+                        st.markdown(f"- **{m['player']}**: {size} run of {m['points']} points ({m['start_score']} → {m['end_score']})")
+
+            if _render_formatted.get("key_events"):
+                with st.expander("🔑 Key moments"):
+                    for ke in _render_formatted["key_events"]:
+                        st.markdown(f"- [{ke['event_type']}] {ke['text']}")
+
+            col_sum, col_exp = st.columns(2)
+            with col_sum:
+                if st.button("🤖 Generate AI Summary", key="generate_ai_summary_btn", use_container_width=True):
+                    try:
+                        _ai_text = _render_service.generate_ai_summary(_render_insight, _render_match_id, _render_engine)
+                        st.session_state.voice_ai_summary = _ai_text
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"AI summary failed: {e}")
+            with col_exp:
+                if st.button("📤 Export Report", key="export_report_btn", use_container_width=True):
+                    from tournament_platform.app.services.voice.report_exporter import MatchReportExporter
+                    exporter = MatchReportExporter()
+                    _meta_base = {
+                        "players": [
+                            st.session_state.voice_selected_player1_name or "Player A",
+                            st.session_state.voice_selected_player2_name or "Player B",
+                        ],
+                        "tournament": "Current Tournament",
+                    }
+                    _persisted = _get_persisted_match_meta(_render_match_id, _render_engine)
+                    _meta = {
+                        **_meta_base,
+                        "score": _persisted["score"],
+                        "winner": _persisted["winner"],
+                        "game_scores": _persisted["game_scores"],
+                    }
+                    _report = exporter.export_match_report(_render_match_id, _meta, include_summary=True, include_commentary=False)
+                    timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
+                    st.download_button(
+                        label=f"Download report_{timestamp}.md",
+                        data=_report,
+                        file_name=f"match_report_{_render_match_id}_{timestamp}.md",
+                        mime="text/markdown",
+                        key="download_match_report",
+                    )
+
+            if "voice_ai_summary" in st.session_state and st.session_state.voice_ai_summary:
+                st.markdown(f"**🤖 AI Summary:**\n\n{st.session_state.voice_ai_summary}")
+
     # Announcements toggle
     st.divider()
     st.subheader("📢 Announcements")

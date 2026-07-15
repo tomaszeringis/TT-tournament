@@ -73,18 +73,47 @@ def normalize_language(language: Any) -> str:
     return "en"
 
 
-def normalize_style(style: Any) -> str:
+# Styles the UI may expose as renderable commentary styles. ``silent`` is a
+# verbosity/mode, not a renderable style, so it is intentionally excluded.
+SUPPORTED_COMMENTARY_STYLES = {
+    "neutral": "Neutral",
+    "professional": "Professional",
+    "coach": "Coach",
+    "announcer": "Announcer",
+    "minimal": "Minimal",
+    "kids": "Kids",
+}
+
+# Legacy / typo aliases map to the closest supported style.
+_STYLE_ALIASES = {
+    "couch": "coach",
+    "couching": "coach",
+    "coaching": "coach",
+    "commentator": "announcer",
+    "sport_commentator": "announcer",
+    "energetic": "announcer",
+    "beginner": "neutral",
+    "simple": "neutral",
+}
+
+
+def normalize_commentary_style(style: Any) -> str:
+    """Return a supported commentary style string, never raising.
+
+    Accepts enum instances, ``None`` and arbitrary strings. Unknown values and
+    unrecognized aliases fall back to ``"neutral"`` so callers can always
+    construct ``CommentaryStyle(result)`` safely.
+    """
     if hasattr(style, "value"):
         style = style.value
     s = str(style or "neutral").strip().lower()
-    if s in {"neutral", "professional", "coach", "announcer", "minimal", "kids"}:
+    if s in SUPPORTED_COMMENTARY_STYLES:
         return s
-    # Legacy / unknown aliases map to the closest supported style.
-    if s in {"beginner", "simple"}:
-        return "neutral"
-    if s in {"energetic", "sport_commentator"}:
-        return "announcer"
-    return "neutral"
+    return _STYLE_ALIASES.get(s, "neutral")
+
+
+def normalize_style(style: Any) -> str:
+    return normalize_commentary_style(style)
 
 
 def normalize_verbosity(verbosity: Any) -> str:

@@ -18,6 +18,7 @@ from tournament_platform.services import commentary_templates as ct
 from tournament_platform.services.commentary_templates import (
     select_event_template,
     normalize_verbosity,
+    normalize_commentary_style,
 )
 
 
@@ -43,7 +44,7 @@ class CommentaryTextGenerator:
 
         effective_verbosity = settings.verbosity
         nverb = normalize_verbosity(effective_verbosity)
-        if nverb == "silent":
+        if nverb == "silent" or style_str == "silent":
             return _CommentaryLine(
                 text="",
                 event_type=event_type,
@@ -52,6 +53,10 @@ class CommentaryTextGenerator:
                 dedupe_key=f"{event_type}:{event_id}",
                 event_id=event_id,
             )
+
+        # Normalize the style so legacy/typo values (e.g. "couch") never reach
+        # CommentaryStyle(...) as an invalid value downstream.
+        style_str = normalize_commentary_style(style_str)
 
         if getattr(settings, "voice_profile_id", None) == "sport_commentator":
             critical_moments = (
@@ -185,13 +190,19 @@ class CommentaryTextGenerator:
             template_text = _choose_commentary_template(templates)
             if not template_text:
                 return "", False, None, style_str, ""
-            generated_text = template_text.format(
-                player_a=state.player_a,
-                player_b=state.player_b,
-                score=f"{state.score_a} to {state.score_b}",
-                sets_a=state.sets_a,
-                sets_b=state.sets_b,
-            )
+            try:
+                generated_text = template_text.format(
+                    player_a=state.player_a,
+                    player_b=state.player_b,
+                    score=f"{state.score_a} to {state.score_b}",
+                    sets_a=state.sets_a,
+                    sets_b=state.sets_b,
+                )
+            except (KeyError, IndexError):
+                # Template uses variables we do not supply (e.g. legacy
+                # coach/announcer templates with {player}); let the caller fall
+                # back to the safe message instead of crashing the render path.
+                generated_text = ""
             return generated_text, False, None, style_str, template_text
         else:
             template_texts, used_fallback, fallback_reason = _select_base_template(event_id_str, language, style_str)
