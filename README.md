@@ -82,10 +82,12 @@ Recommended deployment Python version: **3.13** (3.12 also works).
   database (`tournament_platform/data/tournament.db`) is recreated on each deploy/restart and
   data is not persisted — use persistent storage or an external database for production data.
 - Entry point: `streamlit_app.py` at the repository root
-  (run `streamlit run streamlit_app.py`). This module simply executes
-  `tournament_platform/app/main.py`, which is the real Streamlit UI script.
+  (run `streamlit run streamlit_app.py`). This module calls
+  `main()` from `tournament_platform/app/main.py`, which is the real Streamlit UI
+  script. The `main()` function is the Streamlit entrypoint; importing the module
+  does not start the UI or any external server, so it is safe to import.
   Both files are valid Streamlit entrypoints; the root `streamlit_app.py` is
-  the recommended Main module for Streamlit Cloud.
+  the recommended **Main module** for Streamlit Cloud.
 - **The Streamlit app does NOT start a Uvicorn/FastAPI server in-process.**
   `ensure_api_server()` is disabled inside the Streamlit app (including Streamlit
   Cloud) so it never steals the app's port or fails the healthcheck. For API
@@ -93,6 +95,14 @@ Recommended deployment Python version: **3.13** (3.12 also works).
   `API_BASE_URL` to that external service, or rely on the in-memory
   `MatchManager` (manual scoring, live scoreboard, and match analytics work
   without the API).
+- **Seeing `Uvicorn server started on ...:8501` in the build log is expected and
+  NOT an error.** Streamlit itself runs on a Uvicorn/Starlette server and prints
+  that banner when its own server starts on port 8501 (the Streamlit app port).
+  This is the Streamlit app starting up, not the FastAPI backend. The FastAPI
+  backend binds port `8000` and must never run as the Streamlit Cloud main module.
+  A real problem is a `connection refused` on `/healthz` *before* that banner
+  appears, which means the entrypoint crashed at import — in that case confirm the
+  Main module is `streamlit_app.py` and that the build used `pyproject.toml`.
 - If the app was previously deployed with an incompatible Python (e.g. a version
   outside `>=3.11,<3.14`), **delete the app and redeploy it with Python 3.13 selected
   in Advanced settings** — Streamlit Cloud keeps the Python version from the original
