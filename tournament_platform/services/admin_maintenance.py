@@ -239,5 +239,15 @@ def get_environment_warnings() -> List[str]:
         warnings.append("SQLite is used for the database. "
                        "This is not recommended for multi-user production environments. "
                        "Consider using PostgreSQL for production.")
-    
+
+    # Check auth cookie signing key strength (streamlit-authenticator requires
+    # a 32+ byte HMAC key; a short/placeholder key triggers InsecureKeyLengthWarning).
+    _cookie_key = settings.AUTH_COOKIE_KEY or ""
+    if len(_cookie_key.encode("utf-8")) < 32 or _cookie_key.startswith("change-me"):
+        warnings.append(
+            "AUTH_COOKIE_KEY is missing or too short (<32 bytes). Set a 32+ byte "
+            "secret via the AUTH_COOKIE_KEY environment variable or Streamlit secrets "
+            "to avoid auth cookie signing weaknesses."
+        )
+
     return warnings

@@ -23,17 +23,39 @@ _api_server_started = False
 _api_server_lock = threading.Lock()
 
 
+def _is_streamlit_runtime() -> bool:
+    """Detect whether we are running inside the Streamlit app process.
+
+    Streamlit Cloud sets ``STREAMLIT_SERVER_HEADLESS``; locally the Streamlit
+    runtime is also present. When running as the Streamlit frontend we must NOT
+    start a Uvicorn server in-process (it would compete for the app's port and
+    the healthcheck would fail).
+    """
+    return bool(os.environ.get("STREAMLIT_SERVER_HEADLESS")) or bool(
+        os.environ.get("STREAMLIT_SHARING_MODE")
+    )
+
+
 def ensure_api_server():
-    """Start the FastAPI backend in a background thread (once) so the frontend's
-    HTTP calls to API_BASE_URL succeed on a single-process deployment such as
-    Streamlit Cloud, where only the Streamlit app is launched and the separate
-    ``run_api`` process is not started. Skipped when API_BASE_URL points to an
-    external service, or when running under pytest.
+    """Optionally start the FastAPI backend in a background thread (once).
+
+    This is **intentionally disabled inside the Streamlit app process** (including
+    Streamlit Cloud). Starting Uvicorn there steals the app's port and breaks the
+    Streamlit healthcheck. On Streamlit Cloud the API should be deployed as a
+    separate service and reached via ``API_BASE_URL``, or the app runs with its
+    in-memory ``MatchManager`` and the API is not required for manual scoring,
+    live scoreboard, or match analytics.
+
+    To opt into the legacy single-process behavior (local development only), set
+    ``TOURNAMENT_API_IN_PROCESS=true``.
     """
     global _api_server_started
     if _api_server_started:
         return
     if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    # Never start Uvicorn inside the Streamlit frontend / Streamlit Cloud.
+    if _is_streamlit_runtime() or not os.environ.get("TOURNAMENT_API_IN_PROCESS"):
         return
     parsed = urlparse(API_BASE_URL)
     if parsed.hostname not in ("localhost", "127.0.0.1"):

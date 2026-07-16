@@ -576,6 +576,14 @@ def ensure_schema():
         init_db()
         return
 
+    # When Alembic itself is running (env.py sets this flag), the schema is
+    # managed by the migration run already in progress. Importing this module
+    # from env.py must not trigger a nested ``alembic upgrade`` (which would
+    # tear down the active context proxy and break the outer run).
+    if os.environ.get("ALEMBIC_ENV_ACTIVE") == "1":
+        init_db()
+        return
+
     try:
         from alembic.config import Config
         from alembic import command

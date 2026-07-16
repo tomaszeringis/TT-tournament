@@ -104,7 +104,7 @@ If Piper is selected but fails, the app shows a warning and falls back to browse
 
 ## 8. Troubleshooting
 
-- **"Piper is not installed. Browser speech will be used."** — Install Piper with `python -m pip install "piper-tts>=1.4,<2"`.
+- **"Piper local TTS is not available in this environment."** — Informational only. The app falls back to browser speech. To enable local Piper, install it with `python -m pip install "piper-tts>=1.4,<2"` and add voice models (see below). This message is shown once per session, not on every score update.
 - **"No Piper voices found."** — Add `.onnx` and `.onnx.json` files to `tournament_platform/assets/tts/piper/voices/`.
 - **"Piper synthesis failed."** — Check that the voice model is valid and not corrupted. Try the smoke test.
 - **CLI not found:** The app uses `python -m piper` internally. No PATH configuration is needed.

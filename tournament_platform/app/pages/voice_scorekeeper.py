@@ -126,6 +126,67 @@ from tournament_platform.app.services.commentary_voice.piper_voice import get_pi
 from tournament_platform.app.services.commentary_voice.piper_runtime import find_piper_voices, PiperVoice, is_piper_available
 
 
+def is_streamlit_cloud() -> bool:
+    """Detect whether the app is running on Streamlit Cloud.
+
+    Used only as a hint (e.g. to pick friendlier defaults). The app must still
+    work gracefully in any environment where Piper is missing.
+    """
+    import os
+
+    return bool(os.getenv("STREAMLIT_SERVER_HEADLESS")) or bool(os.getenv("STREAMLIT_SHARING_MODE"))
+
+
+def piper_unavailable_session_key() -> str:
+    """Stable session-state key used to surface a one-time Piper notice."""
+    return "voice_piper_unavailable_notice_shown"
+
+
+def notify_piper_unavailable_once(message: str, *, level: str = "info") -> None:
+    """Show a friendly Piper-unavailable notice once per session.
+
+    Avoids warning spam on every score update. ``level`` is ``"info"`` or
+    ``"warning"`` — never ``"error"``.
+    """
+    import streamlit as st
+
+    key = piper_unavailable_session_key()
+    if st.session_state.get(key):
+        return
+    if level == "warning":
+        st.warning(message)
+    else:
+        st.info(message)
+    st.session_state[key] = True
+
+
+def detect_webrtc_available() -> bool:
+    """Safely detect whether ``streamlit-webrtc`` is importable.
+
+    Never raises; returns False when the optional package is missing.
+    """
+    try:
+        import streamlit_webrtc  # noqa: F401
+
+        return True
+    except ImportError:
+        return False
+
+
+# Computed once at module import time. ``streamlit-webrtc`` is a normal runtime
+# dependency, so this is True on Streamlit Cloud; it gracefully falls back to
+# False (friendly notice, no crash) where it is absent.
+WEBRTC_AVAILABLE = detect_webrtc_available()
+
+
+def ensure_webrtc_diag_state() -> None:
+    """Store WebRTC availability in session state for the diagnostics panel."""
+    import streamlit as st
+
+    if "webrtc_diag_available" not in st.session_state:
+        st.session_state.webrtc_diag_available = WEBRTC_AVAILABLE
+
+
 # ============================================================================
 # Player Selection Helpers
 # ============================================================================
@@ -1939,25 +2000,39 @@ def play_commentary(
 
     piper_voice_id = st.session_state.get("commentary_piper_voice_id")
     if not piper_voice_id:
-        st.warning("No Piper voice selected. Select a voice in commentary settings.")
+        notify_piper_unavailable_once(
+            "No Piper voice selected. Choose a Piper voice in commentary settings, "
+            "or use Browser speech.",
+            level="info",
+        )
         return
 
     from tournament_platform.app.services.commentary_voice.voice_catalog import get_profile
     profile = get_profile(piper_voice_id)
     if not profile or profile.engine != "piper":
-        st.warning("Piper voice not found. Falling back to browser speech.")
+        notify_piper_unavailable_once(
+            "Piper voice not found. Browser speech is available as a fallback.",
+            level="info",
+        )
         return
 
     engine = get_piper_engine()
     if not engine.available:
-        st.warning("Piper is not installed. Falling back to browser speech.")
+        notify_piper_unavailable_once(
+            "Piper local TTS is not available in this environment. "
+            "Browser speech is available as a fallback.",
+            level="info",
+        )
         return
 
     voices = engine.list_voices()
     voice_map = {v.id: v for v in voices}
     piper_voice = voice_map.get(piper_voice_id)
     if not piper_voice:
-        st.warning("Piper voice model not found. Falling back to browser speech.")
+        notify_piper_unavailable_once(
+            "Piper voice model not found. Browser speech is available as a fallback.",
+            level="info",
+        )
         return
 
     try:
@@ -2671,8 +2746,12 @@ def render_commentary_settings() -> None:
                 )
 
         with st.expander("🔧 Advanced spoken commentary", expanded=False):
+            _piper_ok = is_piper_available()
             _engine_options = ["browser", "piper"]
-            _engine_labels = {"browser": "Browser speech", "piper": "Piper local voices"}
+            _engine_labels = {
+                "browser": "Browser speech",
+                "piper": "Piper local voices" + ("" if _piper_ok else " (unavailable)"),
+            }
             _current_engine = st.session_state.get("commentary_tts_engine", "browser")
             _engine_idx = _engine_options.index(_current_engine) if _current_engine in _engine_options else 0
             _new_engine = st.selectbox(
@@ -2681,18 +2760,25 @@ def render_commentary_settings() -> None:
                 format_func=lambda e: _engine_labels.get(e, e),
                 index=_engine_idx,
                 key="commentary_tts_engine_select",
+                help=(
+                    "Browser speech is recommended for Streamlit Cloud. "
+                    "Piper local is optional for local desktop use."
+                ),
             )
             st.session_state.commentary_tts_engine = _new_engine
 
             if _new_engine == "piper":
-                if not is_piper_available():
-                    st.warning("Piper is not installed. Browser speech will be used.")
+                if not _piper_ok:
+                    st.info(
+                        "Piper local TTS is not available in this environment. "
+                        "Browser speech is available as a fallback."
+                    )
                 else:
                     piper_voices = find_piper_voices()
                     if not piper_voices:
-                        st.warning(
+                        st.info(
                             "No Piper voices found. Add `.onnx` and `.onnx.json` files to "
-                            "`tournament_platform/assets/tts/piper/voices/`."
+                            "`tournament_platform/assets/tts/piper/voices/` to enable local voices."
                         )
                     else:
                         _piper_voice_options = [v.id for v in piper_voices]
@@ -2757,6 +2843,37 @@ def render_commentary_settings() -> None:
                     value=float(st.session_state.get("commentary_ollama_timeout", 2.0)),
                     key="commentary_ollama_timeout_input",
                 )
+
+        # --- Audio diagnostics (collapsed by default) ---
+        with st.expander("🩺 Audio diagnostics", expanded=False):
+            ensure_webrtc_diag_state()
+            _diag_webrtc = (
+                "installed" if st.session_state.get("webrtc_diag_available") else "missing"
+            )
+            _diag_piper = "available" if _piper_ok else "missing"
+            _diag_engine = st.session_state.get("commentary_tts_engine", "browser")
+            _diag_voice_input = (
+                "live microphone" if st.session_state.get("voice_scoring_enabled")
+                else "push-to-talk"
+            )
+            _diag_browser_fallback = (
+                "enabled" if _diag_engine in ("browser", "auto") or not _piper_ok
+                else "disabled"
+            )
+            st.markdown(
+                "- streamlit-webrtc: **%s**\n"
+                "- Piper local: **%s**\n"
+                "- selected TTS mode: **%s**\n"
+                "- selected voice input mode: **%s**\n"
+                "- browser speech fallback: **%s**"
+                % (
+                    _diag_webrtc,
+                    _diag_piper,
+                    _diag_engine,
+                    _diag_voice_input,
+                    _diag_browser_fallback,
+                )
+            )
 
         # --- Audio controls (moved from Live Scoreboard, Phase 6 / TTS Phase 4) ---
         st.divider()
@@ -3623,19 +3740,20 @@ def _render_ui() -> None:
                 "This mode is experimental and may miss commands in noisy environments. "
                 "Push-to-talk remains the default reliable mode."
             )
-            # Check if streamlit-webrtc is available
-            try:
-                from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase  # noqa: F401
-                webrtc_available = True
-            except ImportError:
-                webrtc_available = False
-    
+            # Safely reflect WebRTC availability (computed once at import).
+            ensure_webrtc_diag_state()
+            webrtc_available = WEBRTC_AVAILABLE
+
             if not webrtc_available:
-                st.warning(
-                    "⚠️ streamlit-webrtc is not installed. "
-                    "Install it with: `pip install streamlit-webrtc` "
-                    "or enable the `[live]` extras in pyproject.toml."
-                )
+                # Show a friendly, once-per-session notice inside the voice
+                # settings area only. Never warn globally or on every rerun.
+                if not st.session_state.get("shown_webrtc_missing_warning"):
+                    st.info(
+                        "Live microphone mode is unavailable because "
+                        "`streamlit-webrtc` is not installed. Manual scoring and "
+                        "browser speech still work."
+                    )
+                    st.session_state.shown_webrtc_missing_warning = True
                 st.caption("You can still use the push-to-talk voice input below.")
             else:
                 # Start/Stop listening controls

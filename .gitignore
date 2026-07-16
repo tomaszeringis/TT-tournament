@@ -12,6 +12,8 @@ backups/*.db
 *.sqlite3
 data/chroma_db/
 tournament_platform/data/chroma_db/
+# Runtime data directory created at app startup (SQLite, vector DB, caches)
+/data/
 
 # Environment files (may contain secrets)
 .env

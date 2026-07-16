@@ -100,14 +100,14 @@ def play_cue(event_type: str, *, enabled: Optional[bool] = None) -> None:
         return
 
     try:
-        import streamlit.components.v1 as components
+        from tournament_platform.app.components.html_helper import render_html
         # Mount the JS once per page load; subsequent calls just trigger playback.
-        components.html(_CUE_JS, height=0, width=0)
+        render_html(_CUE_JS, height=0, width=0)
         # Trigger the cue via a second tiny HTML fragment that calls the function.
         trigger = (
             f"<script>window.__playScoreCue && window.__playScoreCue({event_type!r});</script>"
         )
-        components.html(trigger, height=0, width=0)
+        render_html(trigger, height=0, width=0)
     except Exception as exc:
         logger.debug("Sound cue suppressed (%s): %s", event_type, exc)
 

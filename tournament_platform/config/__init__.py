@@ -105,7 +105,7 @@ class Settings(BaseSettings):
     # Streamlit Authenticator
     # -------------------------------------------------------------------------
     AUTH_COOKIE_NAME: str = "tt_auth_cookie"
-    AUTH_COOKIE_KEY: str = "random_signature_key"
+    AUTH_COOKIE_KEY: str = "change-me-auth-cookie-key-32b-production"
     AUTH_COOKIE_EXPIRY_DAYS: int = 30
 
     # -------------------------------------------------------------------------

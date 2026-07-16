@@ -1,8 +1,8 @@
 # NOTE: This file is a legacy/local convenience snapshot and is NOT the source of
 # truth for deployments. Canonical dependencies (including the Python version
 # requirement) live in the repo-root `pyproject.toml` [project] table, which
-# Streamlit Cloud uses to install dependencies. That file requires Python >=3.11.
-# Keep the Streamlit version below consistent with pyproject.toml.
+# Streamlit Cloud uses to install dependencies. That file requires Python
+# >=3.11,<3.14. Keep the Streamlit version below consistent with pyproject.toml.
 
 # Core Web Framework
 streamlit>=1.58.0

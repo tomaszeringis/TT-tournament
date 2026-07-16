@@ -4,7 +4,7 @@ import zipfile
 from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
+from tournament_platform.app.components.html_helper import render_html
 
 _ASSETS = Path(__file__).resolve().parents[2] / "assets" / "animations"
 _LOTTIE_FILE = _ASSETS / "flow_3.lottie"
@@ -125,6 +125,6 @@ def render_loading_animation(
         )
         return
 
-    components.html(html, height=size, scrolling=False)
+    render_html(html, height=size, scrolling=False)
     if message:
         st.caption(message)

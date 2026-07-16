@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 import streamlit as st
 
+from tournament_platform.app.components.html_helper import render_html
 
 def speak_commentary(
     text: str,
@@ -38,8 +39,6 @@ def speak_commentary(
     """
     if not text:
         return
-
-    import streamlit.components.v1 as components
 
     escaped_text = json.dumps(text, ensure_ascii=False)
 
@@ -83,7 +82,7 @@ def speak_commentary(
     """
 
     # Render with zero size; the script runs in the browser context.
-    components.html(html, height=0, width=0)
+    render_html(html, height=0, width=0)
 
 
 def play_local_audio(wav_path: str, *, key: str = "local_audio") -> None:
@@ -133,9 +132,7 @@ def speak_commentary_audio_file(audio_path: Path, *, key: str | None = None) -> 
         }})();
         </script>
         """
-        import streamlit.components.v1 as components
-
-        components.html(html, height=0, width=0)
+        render_html(html, height=0, width=0)
     except Exception as exc:
         logger = __import__("logging").getLogger(__name__)
         logger.debug("Audio file playback failed (%s): %s", audio_path, exc)
@@ -148,8 +145,6 @@ def get_available_voices() -> list:
     Note: This must be called from a browser context. In Streamlit, voices
     may not be available until the page has fully loaded. Use with caution.
     """
-    import streamlit.components.v1 as components
-
     html = """
     <script>
     (function() {
@@ -159,5 +154,5 @@ def get_available_voices() -> list:
     })();
     </script>
     """
-    components.html(html, height=0, width=0)
+    render_html(html, height=0, width=0)
     return []

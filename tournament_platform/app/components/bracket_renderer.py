@@ -1,5 +1,5 @@
 import streamlit as st
-import streamlit.components.v1 as components
+from tournament_platform.app.components.html_helper import render_html
 import json
 
 
@@ -101,4 +101,4 @@ def render_bracket(bracket_data: dict, height: int = 600):
     """
 
     # Use responsive height - let Streamlit handle the container width
-    components.html(html_content, height=height, scrolling=True)
+    render_html(html_content, height=height, scrolling=True)

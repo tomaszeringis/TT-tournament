@@ -39,7 +39,7 @@ python -m tournament_platform.api.server
 ### 5. Start the frontend (Terminal 2)
 ```powershell
 $env:PYTHONPATH = "C:\Users\TomasZeringis\PycharmProjects\tournament_platform"
-streamlit run tournament_platform/app/main.py
+streamlit run streamlit_app.py
 ```
 
 Open `http://localhost:8501` in your browser.
@@ -50,37 +50,91 @@ For a guided walkthrough of the AI quick-win features, see [QUICK_WINS.md](QUICK
 
 ## ☁️ Streamlit Cloud deployment
 
-**Use Python 3.11 in the Streamlit Cloud "Advanced settings" when deploying.**
+**Use Python 3.13 (or 3.12) in the Streamlit Cloud "Advanced settings" when deploying.**
 
-This app requires **Python >=3.11** (see `requires-python` in `pyproject.toml`) because
-recent Streamlit releases (`streamlit>=1.58.0`) require Python 3.10+, and we pin the
-supported range to `>=3.11,<3.13` to avoid accidental breakage on future Python versions.
+This app supports **Python >=3.11,<3.14** (see `requires-python` in `pyproject.toml`).
+Recent Streamlit releases (`streamlit>=1.58.0`) require Python 3.10+, and all runtime
+dependencies (including `streamlit-webrtc` and `av`) install and import successfully on
+Python 3.13. The supported range is pinned to `<3.14` to avoid accidental breakage on
+future Python versions.
 
-Recommended deployment Python version: **3.11**.
+Recommended deployment Python version: **3.13** (3.12 also works).
 
 - Dependencies are installed from the repo-root `pyproject.toml` (`[project]` table).
   That file is the source of truth; `tournament_platform/requirements.txt` is only a
   legacy local snapshot and is not used by Streamlit Cloud.
-- `pyaudio` (real-time microphone capture, needs the system PortAudio library) is an
-  **optional** dependency (`[live]` extra) and is intentionally NOT installed on
-  Streamlit Cloud, where microphone input and PortAudio are unavailable. These live
-   voice features are therefore not available in the cloud deployment.
+- `streamlit-webrtc` (and its `av`/`numpy` runtime deps) are declared in the default
+  **[project] dependencies** (not just the `[live]` extra), so Streamlit Cloud installs
+  them automatically. The WebRTC-based "Continuous Listening" and "Live Camera" features
+  therefore render and work on Streamlit Cloud when the browser grants microphone/camera
+  permissions. `pyaudio` (real-time microphone capture, needs the system PortAudio
+  library) remains an **optional** dependency (`[live]` extra) and is intentionally NOT
+  installed on Streamlit Cloud, where PortAudio is unavailable.
+- If Streamlit Cloud reports `streamlit-webrtc is not installed`, confirm Cloud is using
+  the repo-root `pyproject.toml`, confirm `streamlit-webrtc` is present in the `[project]`
+  `dependencies` list (not only `[live]`), and redeploy. Both affected pages
+  (`voice_scorekeeper.py`, `video_scorekeeper_live.py`) already guard the import with a
+  friendly warning fallback, so a missing package never crashes the app.
 - The database schema is created automatically at app startup via `alembic upgrade head`
   (`ensure_schema()` in `tournament_platform/models.py`), so no manual `alembic upgrade head`
   step is required on Streamlit Cloud. This applies the full migration history, which is the
   canonical schema source. Note: Streamlit Cloud's filesystem is ephemeral, so the SQLite
   database (`tournament_platform/data/tournament.db`) is recreated on each deploy/restart and
   data is not persisted — use persistent storage or an external database for production data.
-- Entry point: `tournament_platform/app/main.py`
-  (run `streamlit run tournament_platform/app/main.py`).
-- The FastAPI backend is started automatically in a background thread at app
-  startup (`ensure_api_server()` in `tournament_platform/app/api_client.py`) so the
-  frontend's `http://localhost:8000` calls work on a single Streamlit Cloud app,
-  where only the Streamlit process is launched. Set `API_BASE_URL` to an external
-  service if you deploy the API separately.
-- If the app was previously deployed with Python 3.9, **delete the app and redeploy it
-  with Python 3.11 selected in Advanced settings** — Streamlit Cloud keeps the Python
-  version from the original deploy and won't pick up the new requirement otherwise.
+- Entry point: `streamlit_app.py` at the repository root
+  (run `streamlit run streamlit_app.py`). This module simply executes
+  `tournament_platform/app/main.py`, which is the real Streamlit UI script.
+  Both files are valid Streamlit entrypoints; the root `streamlit_app.py` is
+  the recommended Main module for Streamlit Cloud.
+- **The Streamlit app does NOT start a Uvicorn/FastAPI server in-process.**
+  `ensure_api_server()` is disabled inside the Streamlit app (including Streamlit
+  Cloud) so it never steals the app's port or fails the healthcheck. For API
+  features, deploy the FastAPI backend as a separate service and set
+  `API_BASE_URL` to that external service, or rely on the in-memory
+  `MatchManager` (manual scoring, live scoreboard, and match analytics work
+  without the API).
+- If the app was previously deployed with an incompatible Python (e.g. a version
+  outside `>=3.11,<3.14`), **delete the app and redeploy it with Python 3.13 selected
+  in Advanced settings** — Streamlit Cloud keeps the Python version from the original
+  deploy and won't pick up the new requirement otherwise.
+
+## Database migrations
+
+Run migrations from the repository root:
+
+```bash
+python -m alembic -c tournament_platform/alembic.ini upgrade head
+```
+
+Useful commands:
+
+```bash
+python -m alembic -c tournament_platform/alembic.ini current
+python -m alembic -c tournament_platform/alembic.ini heads
+python -m alembic -c tournament_platform/alembic.ini history
+```
+
+Notes:
+- The app uses `DATABASE_URL` when provided. If it is not provided, it falls back to a
+  local SQLite database under `data/` (path resolved from `pyproject.toml` / `models.py`).
+- The schema is also created automatically at app startup via `alembic upgrade head`
+  (`ensure_schema()` in `tournament_platform/models.py`), so no manual step is required on
+  Streamlit Cloud. On Streamlit Cloud the `data/` directory is ephemeral, so data is not
+  persisted between restarts.
+- Do **not** import `tournament_platform.alembic.env` directly. Use the Alembic CLI or
+  `alembic.command.upgrade()` together with `alembic.config.Config`.
+
+## TTS on Streamlit Cloud
+
+Browser speech is the recommended TTS mode on Streamlit Cloud.
+
+Piper is optional and intended for local desktop use (install via the `[tts]` extra:
+`pip install -e ".[tts]"`). If Piper is not installed, the app automatically falls back
+to browser speech or silent mode depending on the selected TTS setting, and never shows
+a blocking error. Selecting "Piper local" when Piper is unavailable shows one friendly
+info message and disables the option rather than crashing the page or spamming warnings.
+
+PIPER_TTS_SETUP.md has the local setup steps.
 
 ---
 
