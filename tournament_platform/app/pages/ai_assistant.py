@@ -19,7 +19,9 @@ from tournament_platform.config import settings
 from tournament_platform.services.settings import ENABLE_RULES_ASSISTANT
 from tournament_platform.app.utils import api_request, get_current_match_context
 from tournament_platform.services.ai_facade import answer_rules_question, AIAnswer
+from tournament_platform.app.services.ollama_bridge import generate, chat, status as ollama_status
 from tournament_platform.app.components.ai_status import render_ai_status_badge, render_ai_status_expander
+from tournament_platform.app.components.runtime_diagnostics import render_runtime_diagnostics
 from tournament_platform.app.components.ai_chat import (
     render_chat_history,
     render_chat_input,
@@ -157,13 +159,36 @@ with tabs[0]:
         with st.chat_message("assistant"):
             with st.status("Thinking...", expanded=False) as status:
                 render_loading_animation("Generating AI response...", size=120)
+                # Default answer covers the bridge-down / fallback case.
+                ai_answer = AIAnswer(
+                    answer="Sorry, I couldn't process your question. Please ensure Ollama is running and the model is available.",
+                    sources=[],
+                    source_details=[],
+                    confidence=None,
+                    grounded=False,
+                )
+                response = ai_answer.answer
                 try:
-                    ai_answer: AIAnswer = answer_rules_question(prompt)
-                    response = ai_answer.answer
+                    # Prefer the FastAPI/Ollama bridge when connected, so the
+                    # same path is used on Streamlit Cloud and locally. Falls
+                    # back to the local RAG facade if the bridge is unavailable.
+                    bridge = chat(
+                        messages=[{"role": "user", "content": prompt}],
+                    )
+                    if bridge and bridge.get("ok"):
+                        text = bridge.get("message") or bridge.get("response") or ""
+                        if text:
+                            response = text
+                            # No RAG sources when served directly from Ollama.
+                            ai_answer = AIAnswer(
+                                answer=response, sources=[], source_details=[],
+                                confidence=None, grounded=False,
+                            )
+                    if not response or response == ai_answer.answer:
+                        ai_answer = answer_rules_question(prompt)
+                        response = ai_answer.answer
                     status.update(label="Answer ready", state="complete", expanded=False)
-                except Exception as e:
-                    response = "Sorry, I couldn't process your question. Please ensure Ollama is running and the model is available."
-                    ai_answer = AIAnswer(answer=response, sources=[], source_details=[], confidence=None, grounded=False)
+                except Exception:
                     status.update(label="Error occurred", state="error", expanded=False)
 
             st.write(response)
@@ -280,3 +305,4 @@ with tabs[1]:
 # ---------------------------------------------------------------------------
 st.divider()
 render_ai_status_expander()
+render_runtime_diagnostics()

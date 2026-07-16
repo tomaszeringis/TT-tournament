@@ -41,6 +41,15 @@ except Exception:  # pragma: no cover - optional dependency
 
 logger = logging.getLogger(__name__)
 
+# Reduce noisy streamlit-webrtc.process warnings after implementing bounded
+# queues and non-blocking callbacks. Keep the logger at ERROR so genuine
+# failures still surface, but suppress the "queued frames not consumed"
+# informational spam.
+try:
+    logging.getLogger("streamlit_webrtc.process").setLevel(logging.ERROR)
+except Exception:
+    pass
+
 # Import the MatchManager
 from tournament_platform.services.match_manager import MatchManager, MatchState
 from tournament_platform.models import SessionLocal, Match, MatchStatus, Player, Tournament
@@ -74,6 +83,7 @@ from tournament_platform.app.services.voice.parse_result import VoiceParseResult
 from tournament_platform.app.services.voice.commands import VoiceIntent, parse as parse_command, cheat_sheet as command_cheat_sheet
 from tournament_platform.app.services.voice.confirmation import policy_decision
 from tournament_platform.app.services.voice.vad import VoiceActivityDetector, create_vad
+from tournament_platform.app.services.voice.hf_token import get_hf_token
 from tournament_platform.app.services.voice.dataset_recorder import VoiceDatasetRecorder, VoiceDatasetSample
 from tournament_platform.app.services.voice_audio import VoiceAudioBuffer, AudioChunk
 from tournament_platform.app.services.voice_asr import LocalASR, LocalASRError
@@ -458,6 +468,24 @@ def disable_voice_scoring_and_clear_pending_state(reason: str = "voice_toggle_of
                 ctx["processor"].stop()
             except Exception:
                 pass
+    
+    # Clear processor queues explicitly
+    if ctx and ctx.get("processor"):
+        try:
+            proc = ctx["processor"]
+            with proc._lock:
+                while not proc._chunk_queue.empty():
+                    try:
+                        proc._chunk_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                while not proc.event_queue.empty():
+                    try:
+                        proc.event_queue.get_nowait()
+                    except queue.Empty:
+                        break
+        except Exception:
+            pass
     
     # Clear all pending voice state
     st.session_state.pending_confirmations = []
@@ -984,10 +1012,9 @@ class VoiceAudioProcessor(AudioProcessorBase):
         )
         # Phase 6: Load vocabulary for ASR biasing and post-processing
         self.vocabulary = VoiceVocabulary.load()
-        self.asr = ASRBackendFactory.create(vocabulary=self.vocabulary)
         self.parser = VoiceParser()
         self.post_processor = TranscriptPostProcessor(self.vocabulary)
-        self.event_queue: queue.Queue = queue.Queue()
+        self.event_queue: queue.Queue = queue.Queue(maxsize=50)
         self._processing = False
         self._lock = threading.Lock()
         # Configuration passed from main thread (not read from session state
@@ -995,8 +1022,15 @@ class VoiceAudioProcessor(AudioProcessorBase):
         self._voice_strict_mode = voice_strict_mode
         # Single worker thread for all chunks (avoids thread explosion)
         self._worker_thread: Optional[threading.Thread] = None
-        self._chunk_queue: queue.Queue = queue.Queue()
+        self._chunk_queue: queue.Queue = queue.Queue(maxsize=20)
         self._stop_worker = threading.Event()
+        self._dropped_chunks = 0
+
+    def _get_asr(self):
+        """Lazy-load the ASR backend to keep processor initialization lightweight."""
+        if self._asr is None:
+            self._asr = ASRBackendFactory.create(vocabulary=self.vocabulary)
+        return self._asr
 
     def _start_worker(self) -> None:
         """Start the single background transcription worker if not already running."""
@@ -1051,15 +1085,14 @@ class VoiceAudioProcessor(AudioProcessorBase):
             if buffered > 0:
                 flushed = self.audio_buffer.flush()
                 if flushed:
-                    logger.info(
+                    logger.debug(
                         "VoiceAudioProcessor: flushed chunk on format change "
                         "(old_format=%s, new_format=%s, old_rate=%d, new_rate=%s, old_channels=%d, new_channels=%s)",
                         self._sample_format, detected_format or self._sample_format,
                         self.audio_buffer.sample_rate, sample_rate,
                         self.audio_buffer.channels, channels,
                     )
-                    self._start_worker()
-                    self._chunk_queue.put(flushed)
+                    self._enqueue_chunk(flushed)
         
         if detected_format is not None and detected_format != self._sample_format:
             self._sample_format = detected_format
@@ -1087,13 +1120,12 @@ class VoiceAudioProcessor(AudioProcessorBase):
                     if buffered > 0:
                         flushed = self.audio_buffer.flush()
                         if flushed:
-                            logger.info(
+                            logger.debug(
                                 "VoiceAudioProcessor: flushed chunk on fallback format change "
                                 "(old_format=%s, new_format=%s)",
                                 self._sample_format, fallback_format,
                             )
-                            self._start_worker()
-                            self._chunk_queue.put(flushed)
+                            self._enqueue_chunk(flushed)
                     self._sample_format = fallback_format
                     if self.audio_buffer.sample_format != self._sample_format:
                         self.audio_buffer.update_format(sample_format=self._sample_format)
@@ -1104,15 +1136,30 @@ class VoiceAudioProcessor(AudioProcessorBase):
         chunk = self.audio_buffer.push_frame(frame_bytes)
 
         if chunk is not None:
-            logger.info(
+            logger.debug(
                 "VoiceAudioProcessor: emitted chunk %.1f ms, RMS=%.4f, frames=%d, "
                 "format=%s, sample_rate=%d, channels=%d",
                 chunk.duration_ms, chunk.rms, len(chunk.frames),
                 chunk.sample_format, chunk.sample_rate, chunk.channels,
             )
-            # Ensure worker is running and queue the chunk
-            self._start_worker()
-            self._chunk_queue.put(chunk)
+            self._enqueue_chunk(chunk)
+
+    def _enqueue_chunk(self, chunk: AudioChunk) -> None:
+        """Enqueue a chunk with bounded queue and drop-oldest policy."""
+        self._start_worker()
+        try:
+            self._chunk_queue.put_nowait(chunk)
+        except queue.Full:
+            # Drop oldest to keep real-time behavior
+            try:
+                self._chunk_queue.get_nowait()
+                self._dropped_chunks += 1
+            except queue.Empty:
+                pass
+            try:
+                self._chunk_queue.put_nowait(chunk)
+            except queue.Full:
+                pass  # Queue still full; drop this chunk too
 
     def recv(self, frame):
         """
@@ -1165,7 +1212,7 @@ class VoiceAudioProcessor(AudioProcessorBase):
 
             # Measure ASR latency for observability (Phase 1/5).
             start = time.time()
-            raw_text = self.asr.transcribe_pcm(pcm_bytes)
+            raw_text = self._get_asr().transcribe_pcm(pcm_bytes)
             latency_ms = (time.time() - start) * 1000.0
             logger.debug("ASR raw result: '%s' (latency: %.1f ms)", raw_text, latency_ms)
             if not raw_text:
@@ -1187,8 +1234,11 @@ class VoiceAudioProcessor(AudioProcessorBase):
                 event.requires_confirmation = True
 
             # Put event in queue for the main Streamlit loop to consume
-            self.event_queue.put((raw_text, text, event))
-            logger.info("Voice event queued: type=%s, text='%s'", event.type, text)
+            try:
+                self.event_queue.put_nowait((raw_text, text, event))
+            except queue.Full:
+                pass  # Drop event if main thread is too far behind
+            logger.debug("Voice event queued: type=%s, text='%s'", event.type, text)
 
         except Exception as e:
             logger.error("Error in voice transcription thread: %s", e)
@@ -1212,6 +1262,18 @@ class VoiceAudioProcessor(AudioProcessorBase):
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=1.0)
         self.audio_buffer.reset()
+        # Clear pending queues to release memory and stop stale processing
+        with self._lock:
+            while not self._chunk_queue.empty():
+                try:
+                    self._chunk_queue.get_nowait()
+                except queue.Empty:
+                    break
+            while not self.event_queue.empty():
+                try:
+                    self.event_queue.get_nowait()
+                except queue.Empty:
+                    break
 
 
 def persist_voice_match_to_db(match_id: int, engine) -> None:
@@ -3918,11 +3980,12 @@ def _render_ui() -> None:
                         st.session_state.voice_webrtc_processor_factory = _make_processor
     
                     ctx = webrtc_streamer(
-                        key="voice_score_webrtc",
+                        key="voice-scorekeeper-webrtc",
                         mode=WebRtcMode.SENDONLY,
                         audio_processor_factory=st.session_state.voice_webrtc_processor_factory,
                         rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
                         media_stream_constraints={"audio": True, "video": False},
+                        async_processing=True,
                     )
     
                     logger.info(
@@ -3959,7 +4022,59 @@ def _render_ui() -> None:
                     # Show last accepted update
                     if st.session_state.last_voice_feedback:
                         st.caption(f"Last update: {st.session_state.last_voice_feedback}")
-    
+                    
+                    # Voice diagnostics
+                    with st.expander("🩺 Voice diagnostics", expanded=False):
+                        _hf_token = get_hf_token()
+                        _hf_configured = "yes" if _hf_token else "no"
+                        _asr_status = st.session_state.get("voice_asr_status") or {}
+                        _asr_loaded = "yes" if _asr_status.get("available") else "no"
+                        _proc = st.session_state.get("voice_webrtc_ctx", {}).get("processor")
+                        _q_size = proc._chunk_queue.qsize() if proc else 0
+                        _dropped = getattr(proc, "_dropped_chunks", 0) if proc else 0
+                        _evt_q = proc.event_queue.qsize() if proc else 0
+                        _last_rms = st.session_state.get("voice_last_chunk_rms", 0.0)
+                        _seg_ms = getattr(proc.audio_buffer, 'get_buffer_duration_ms', lambda: 0.0)() if proc else 0.0
+                        _last_transcript = st.session_state.get("last_voice_transcript", "")
+                        _last_accepted = st.session_state.get("voice_last_applied_event_key")
+                        _last_rejected_reason = st.session_state.get("last_voice_feedback", "")
+                        st.markdown(
+                            "- WebRTC installed: **%s**\n"
+                            "- voice scoring enabled: **%s**\n"
+                            "- HF_TOKEN configured: **%s**\n"
+                            "- ASR model loaded: **%s**\n"
+                            "- audio queue size: **%d**\n"
+                            "- event queue size: **%d**\n"
+                            "- dropped audio frames: **%d**\n"
+                            "- VAD RMS latest: **%.4f**\n"
+                            "- current speech segment duration: **%.1f ms**\n"
+                            "- last transcript: **%s**\n"
+                            "- last accepted command: **%s**\n"
+                            "- last rejected command reason: **%s**"
+                            % (
+                                "yes" if WEBRTC_AVAILABLE else "no",
+                                "yes" if st.session_state.get("voice_scoring_enabled") else "no",
+                                _hf_configured,
+                                _asr_loaded,
+                                _q_size,
+                                _evt_q,
+                                _dropped,
+                                _last_rms,
+                                _seg_ms,
+                                _last_transcript or "—",
+                                _last_accepted or "—",
+                                _last_rejected_reason or "—",
+                            )
+                        )
+
+                    # Runtime / Ollama bridge diagnostics
+                    try:
+                        from tournament_platform.app.components.runtime_diagnostics import render_runtime_diagnostics
+
+                        render_runtime_diagnostics()
+                    except Exception:
+                        pass
+
                 # Confidence indicator
                 if st.session_state.last_voice_event:
                     _conf = getattr(st.session_state.last_voice_event, "confidence", 0.0)

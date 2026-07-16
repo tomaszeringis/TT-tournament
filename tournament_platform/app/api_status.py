@@ -20,7 +20,7 @@ from typing import Dict, Optional
 
 import requests
 
-from tournament_platform.config.runtime import get_api_token, get_runtime_config
+from tournament_platform.config.runtime import get_api_token, get_runtime_config, get_ollama_status
 
 # Brief in-process cache so the health check does not run on every rerun.
 _CACHE_TTL_SECONDS = 10.0
@@ -151,4 +151,21 @@ def get_app_status() -> dict:
         "label": "Optional API unavailable",
         "message": "External API is not reachable. The app is using local fallback mode.",
         "ok": True,
+    }
+
+
+def get_ollama_diagnostics(cfg=None) -> dict:
+    """Return Ollama availability diagnostics for the UI.
+
+    Combines the runtime Ollama status (which routes through the FastAPI bridge
+    when an external API is configured) with the resolved Ollama model name.
+    """
+    if cfg is None:
+        cfg = get_runtime_config()
+    status = get_ollama_status()
+    return {
+        "through_api": bool(status.get("through_api")),
+        "available": status.get("available"),
+        "model": status.get("model") or cfg.ollama_model,
+        "error": status.get("error"),
     }

@@ -158,6 +158,60 @@ API_TOKEN = "your-long-random-token"
 and is never logged or shown in the UI. Set `API_REQUIRED = "true"` only if the
 app must hard-fail when the backend is down.
 
+### Local Ollama + FastAPI bridge (no Ollama on Cloud)
+
+Streamlit Cloud **never** talks to Ollama directly and Ollama is **not** exposed
+through ngrok. The FastAPI backend on your laptop is the single bridge:
+
+```text
+Streamlit Cloud  ->  API_BASE_URL (ngrok -> FastAPI:8000)  ->  local Ollama (127.0.0.1:11434)
+```
+
+1. Start and prepare local Ollama:
+
+   ```bash
+   ollama serve
+   ollama pull llama3.1:8b
+   curl http://127.0.0.1:11434/api/tags
+   ```
+
+2. Run the FastAPI backend locally (it calls `OLLAMA_BASE_URL`, default
+   `http://127.0.0.1:11434`):
+
+   ```bash
+   poetry run uvicorn tournament_platform.api.main:app --host 127.0.0.1 --port 8000 --reload
+   ```
+
+3. Expose only the FastAPI server through ngrok (never Ollama):
+
+   ```bash
+   ngrok http 127.0.0.1:8000
+   ```
+
+4. Streamlit Cloud **secrets** (`API_BASE_URL` is the ngrok URL):
+
+   ```toml
+   API_BASE_URL = "https://your-fastapi-ngrok-url.ngrok-free.app"
+   API_REQUIRED = "false"
+   API_TOKEN = "your-long-random-token"
+
+   OLLAMA_MODEL = "llama3.1:8b"
+   ```
+
+5. Local FastAPI environment (PowerShell), before starting the server above:
+
+   ```powershell
+   $env:API_TOKEN="your-long-random-token"
+   $env:OLLAMA_BASE_URL="http://127.0.0.1:11434"
+   $env:OLLAMA_MODEL="llama3.1:8b"
+   poetry run uvicorn tournament_platform.api.main:app --host 127.0.0.1 --port 8000 --reload
+   ```
+
+The bridge exposes `GET /health`, `GET /ollama/status`, `POST /ollama/generate`,
+and `POST /ollama/chat`. In local Streamlit mode (no `API_BASE_URL`) the app uses
+the local `ollama` client directly. The FastAPI bridge adds the bearer token and
+falls back to template commentary if Ollama is down.
+
 ### ngrok caveats
 
 - **The ngrok URL changes every time the tunnel restarts** — update the

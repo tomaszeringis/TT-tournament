@@ -579,13 +579,22 @@ class CommentaryRewriter:
         )
 
     def _call_ollama(self, prompt: str) -> str:
-        import ollama
-        response = ollama.chat(
-            model=self.model,
+        # Route through the bridge facade so the same path is used on Streamlit
+        # Cloud (FastAPI + ngrok) and locally (direct ollama). The facade falls
+        # back to the local ollama client when no external API is configured and
+        # degrades to a ValueError (caught upstream -> template fallback) if the
+        # model is unavailable.
+        from tournament_platform.app.services.ollama_bridge import chat
+
+        result = chat(
             messages=[{"role": "user", "content": prompt}],
-            options={"timeout": self.timeout},
+            model=self.model,
         )
-        text = response.get("message", {}).get("content", "").strip()
+        if not result or not result.get("ok"):
+            raise ValueError(
+                f"Ollama rewrite unavailable: {result.get('error') if result else 'no response'}"
+            )
+        text = (result.get("message") or result.get("response") or "").strip()
         if not text:
             raise ValueError("Empty Ollama response")
         return text

@@ -375,6 +375,13 @@ with admin_tabs[4]:
     # Collapsed runtime diagnostics (hidden by default) for Admin / operator use.
     with st.expander("🩺 Runtime diagnostics", expanded=False):
         try:
+            from tournament_platform.app.components.runtime_diagnostics import render_runtime_diagnostics
+
+            render_runtime_diagnostics()
+        except Exception:
+            pass
+
+        try:
             from tournament_platform.config import settings as _settings
             from tournament_platform.config.runtime import get_runtime_config
 

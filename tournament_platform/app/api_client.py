@@ -16,9 +16,13 @@ from urllib.parse import urlparse
 import requests
 
 from tournament_platform.app.settings import API_BASE_URL, API_TIMEOUT_SECONDS, SHOW_DEBUG_DETAILS
-from tournament_platform.config.runtime import get_api_token
+from tournament_platform.config.runtime import get_api_token, get_runtime_config
 
 logger = logging.getLogger(__name__)
+
+# Short timeout for status/liveness probes, long timeout for generation.
+STATUS_TIMEOUT_SECONDS = float(os.environ.get("API_STATUS_TIMEOUT_SECONDS", "2"))
+GENERATE_TIMEOUT_SECONDS = float(os.environ.get("API_GENERATE_TIMEOUT_SECONDS", "60"))
 
 _api_server_started = False
 _api_server_lock = threading.Lock()
@@ -145,7 +149,7 @@ class ApiClient:
         try:
             response = requests.get(
                 self._build_url("/health"),
-                timeout=self.timeout,
+                timeout=STATUS_TIMEOUT_SECONDS,
                 headers=self.auth_headers,
             )
             response.raise_for_status()
@@ -161,6 +165,111 @@ class ApiClient:
             return None
         except Exception as e:
             self._handle_error(e, "API health check")
+            return None
+
+    def ollama_status(self) -> Optional[Dict[str, Any]]:
+        """Probe the FastAPI Ollama bridge for Ollama availability.
+
+        Returns the ``/ollama/status`` payload (with ``available`` bool) or
+        ``None`` if the API itself is unreachable. Never raises.
+        """
+        try:
+            response = requests.get(
+                self._build_url("/ollama/status"),
+                timeout=STATUS_TIMEOUT_SECONDS,
+                headers=self.auth_headers,
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.ConnectionError:
+            self._handle_error(None, "Ollama status - connection error")
+            return None
+        except requests.exceptions.Timeout:
+            self._handle_error(None, "Ollama status - timeout")
+            return None
+        except requests.exceptions.HTTPError as e:
+            self._handle_error(e, "Ollama status - HTTP error")
+            return None
+        except Exception as e:
+            self._handle_error(e, "Ollama status")
+            return None
+
+    def ollama_generate(
+        self,
+        prompt: str,
+        model: Optional[str] = None,
+        system: Optional[str] = None,
+        temperature: float = 0.3,
+    ) -> Optional[Dict[str, Any]]:
+        """Call the FastAPI bridge to Ollama ``/api/generate``.
+
+        Returns the cleaned bridge response (``ok``, ``model``, ``response``,
+        ``raw``) or ``None`` on transport failure. On Ollama-side failure the
+        bridge returns ``{"ok": false, "error": ...}`` which is returned as-is
+        so callers can fall back to templates.
+        """
+        try:
+            response = requests.post(
+                self._build_url("/ollama/generate"),
+                json={
+                    "prompt": prompt,
+                    "model": model,
+                    "system": system,
+                    "temperature": temperature,
+                },
+                timeout=GENERATE_TIMEOUT_SECONDS,
+                headers=self.auth_headers,
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.ConnectionError:
+            self._handle_error(None, "Ollama generate - connection error")
+            return None
+        except requests.exceptions.Timeout:
+            self._handle_error(None, "Ollama generate - timeout")
+            return None
+        except requests.exceptions.HTTPError as e:
+            self._handle_error(e, "Ollama generate - HTTP error")
+            return None
+        except Exception as e:
+            self._handle_error(e, "Ollama generate")
+            return None
+
+    def ollama_chat(
+        self,
+        messages: list,
+        model: Optional[str] = None,
+        temperature: float = 0.3,
+    ) -> Optional[Dict[str, Any]]:
+        """Call the FastAPI bridge to Ollama ``/api/chat``.
+
+        ``messages`` is a list of ``{"role": ..., "content": ...}`` dicts.
+        Returns the cleaned bridge response or ``None`` on transport failure.
+        """
+        try:
+            response = requests.post(
+                self._build_url("/ollama/chat"),
+                json={
+                    "messages": messages,
+                    "model": model,
+                    "temperature": temperature,
+                },
+                timeout=GENERATE_TIMEOUT_SECONDS,
+                headers=self.auth_headers,
+            )
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.ConnectionError:
+            self._handle_error(None, "Ollama chat - connection error")
+            return None
+        except requests.exceptions.Timeout:
+            self._handle_error(None, "Ollama chat - timeout")
+            return None
+        except requests.exceptions.HTTPError as e:
+            self._handle_error(e, "Ollama chat - HTTP error")
+            return None
+        except Exception as e:
+            self._handle_error(e, "Ollama chat")
             return None
     
     def report_match_legacy(
