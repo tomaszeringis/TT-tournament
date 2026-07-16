@@ -22,6 +22,7 @@ import threading
 import queue
 import logging
 import time
+from datetime import datetime
 from typing import Any, Optional, Tuple, Dict, List
 from dataclasses import dataclass, is_dataclass, asdict
 
@@ -3015,22 +3016,78 @@ def fetch_active_tournaments() -> List[Dict]:
         db.close()
 
 
-@st.cache_data(ttl=30)
+def _normalize_status(value) -> str:
+    """Lowercase/trim a match status, handling None gracefully."""
+    if value is None:
+        return ""
+    return str(value).strip().lower()
+
+
 def fetch_active_matches(tournament_id: int, statuses: Optional[List[str]] = None) -> List[Dict]:
-    """Fetch scorable matches for a tournament via the API."""
-    params = {"limit": 100}
-    if statuses:
-        params["statuses"] = ",".join(statuses)
-    response = api_request(
-        "get",
-        f"/api/tournaments/{tournament_id}/matches/active",
-        params=params,
-        parse_json=True,
-        error_context="fetching active matches",
-    )
-    if response and isinstance(response, dict):
-        return response.get("matches", [])
-    return []
+    """Fetch scorable matches for a tournament from the local database.
+
+    The canonical match source is the ``Match`` table (the same source the
+    Tournament page reads via ``tournament.matches``). We read it directly
+    rather than going through the FastAPI server, because the API is optional
+    and not available in Streamlit Cloud local mode.
+
+    If an external API is explicitly configured AND reachable, we still fall
+    back to the local DB on any failure so match loading never blocks.
+    """
+    allowed = set()
+    for s in (statuses or []):
+        norm = _normalize_status(s)
+        if norm:
+            allowed.add(norm)
+    if not allowed:
+        allowed = {MatchStatus.active.value, MatchStatus.pending.value}
+
+    db = SessionLocal()
+    try:
+        query = db.query(Match).filter(
+            Match.tournament_id == tournament_id,
+            Match.status.in_(allowed),
+        )
+        matches = query.all()
+
+        def sort_key(m: Match):
+            status_priority = 0 if _normalize_status(m.status.value) in {"active", "in_progress"} else 1
+            return (
+                status_priority,
+                m.round_number or 0,
+                m.bracket_index or 0,
+                m.scheduled_time or datetime.min,
+                m.id,
+            )
+
+        matches = sorted(matches, key=sort_key)
+
+        result = []
+        for m in matches:
+            p1 = db.query(Player).filter(Player.id == m.player1_id).first() if m.player1_id else None
+            p2 = db.query(Player).filter(Player.id == m.player2_id).first() if m.player2_id else None
+            incomplete = not (m.player1_id and m.player2_id and p1 and p2)
+            result.append({
+                "match_id": m.id,
+                "player1_id": m.player1_id,
+                "player1_name": p1.name if p1 else (m.player1 or "TBD"),
+                "player2_id": m.player2_id,
+                "player2_name": p2.name if p2 else (m.player2 or "TBD"),
+                "status": m.status.value if isinstance(m.status, MatchStatus) else str(m.status),
+                "round_number": m.round_number,
+                "bracket_index": m.bracket_index,
+                "scheduled_time": m.scheduled_time.isoformat() if m.scheduled_time else None,
+                "location": m.location,
+                "score": m.score,
+                "winner": m.winner,
+                "incomplete": incomplete,
+            })
+        return result
+    except Exception as e:  # pragma: no cover - defensive
+        logger.error("Failed to load active matches from DB: %s", e, exc_info=True)
+        return []
+    finally:
+        db.close()
 
 
 def format_match_option(match: Dict) -> str:
@@ -3088,6 +3145,38 @@ def clear_selected_match() -> None:
     clear_result_review_state()
 
 
+def _render_match_diagnostics(tournament_id: int, status_filter: List[str], matches: List[Dict]) -> None:
+    """Render a collapsed diagnostics expander for match-loading verification."""
+    with st.expander("🔍 Match loading diagnostics", expanded=False):
+        db = SessionLocal()
+        try:
+            tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+            t_name = tournament.name if tournament else None
+            player_count = db.query(Player).count()
+            generated = list(tournament.matches) if tournament else []
+            generated_count = len(generated)
+            repo_matches = db.query(Match).filter(Match.tournament_id == tournament_id).all()
+            repo_count = len(repo_matches)
+            statuses_found = sorted({_normalize_status(m.status.value) for m in repo_matches})
+        except Exception as e:
+            t_name = None
+            player_count = 0
+            generated_count = 0
+            repo_count = 0
+            statuses_found = [f"error: {e}"]
+        finally:
+            db.close()
+
+        st.write(f"- selected tournament ID: `{tournament_id}`")
+        st.write(f"- selected tournament name: `{t_name}`")
+        st.write(f"- number of players: `{player_count}`")
+        st.write(f"- number of generated matches (Tournament page source): `{generated_count}`")
+        st.write(f"- number of DB/repository matches: `{repo_count}`")
+        st.write(f"- number of pending/active matches after filter: `{len(matches)}`")
+        st.write(f"- statuses found: `{statuses_found}`")
+        st.write(f"- status filter applied: `{status_filter}`")
+
+
 def render_active_match_selector() -> None:
     """Render the active tournament match selector UI."""
     st.subheader("🎯 Active Tournament Matches")
@@ -3138,7 +3227,17 @@ def render_active_match_selector() -> None:
     st.session_state.voice_match_options = matches
 
     if not matches:
-        st.info("No active or pending matches found for this tournament.")
+        # Manual player selection (rendered later on the page) is the fallback
+        # path, but only when the tournament has at least 2 registered players.
+        _players = get_all_players()
+        if len(_players) >= 2:
+            st.info(
+                "No scheduled matches yet. Select two players below to start a "
+                "manual match."
+            )
+        else:
+            st.info("No active or pending matches found for this tournament.")
+        _render_match_diagnostics(tournament_id, status_filter, matches)
         return
 
     # Build options list, disabling incomplete matches
@@ -3182,6 +3281,8 @@ def render_active_match_selector() -> None:
     if st.button("🗑️ Clear selected match", key="voice_clear_match"):
         clear_selected_match()
         st.rerun()
+
+    _render_match_diagnostics(tournament_id, status_filter, matches)
 
 
 def render_selected_match_summary() -> None:

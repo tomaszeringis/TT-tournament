@@ -9,9 +9,17 @@ This allows both pages to reuse identical logic without duplication.
 from typing import List, Dict, Optional
 
 import streamlit as st
+from datetime import datetime
 
-from tournament_platform.models import SessionLocal, Tournament
-from tournament_platform.app.utils import api_request, format_match_option
+from tournament_platform.models import SessionLocal, Tournament, Match, Player, MatchStatus
+from tournament_platform.app.utils import format_match_option
+
+
+def _normalize_status(value) -> str:
+    """Lowercase/trim a match status, handling None gracefully."""
+    if value is None:
+        return ""
+    return str(value).strip().lower()
 
 
 @st.cache_data(ttl=60)
@@ -28,22 +36,63 @@ def fetch_active_tournaments() -> List[Dict]:
         db.close()
 
 
-@st.cache_data(ttl=30)
 def fetch_active_matches(tournament_id: int, statuses: Optional[List[str]] = None) -> List[Dict]:
-    """Fetch scorable matches for a tournament via the API."""
-    params = {"limit": 100}
-    if statuses:
-        params["statuses"] = ",".join(statuses)
-    response = api_request(
-        "get",
-        f"/api/tournaments/{tournament_id}/matches/active",
-        params=params,
-        parse_json=True,
-        error_context="fetching active matches",
-    )
-    if response and isinstance(response, dict):
-        return response.get("matches", [])
-    return []
+    """Fetch scorable matches for a tournament from the local database.
+
+    Reads the canonical ``Match`` table directly (same source as the
+    Tournament page) instead of the optional FastAPI server, so match loading
+    works in Streamlit Cloud local mode without an external API.
+    """
+    allowed = set()
+    for s in (statuses or []):
+        norm = _normalize_status(s)
+        if norm:
+            allowed.add(norm)
+    if not allowed:
+        allowed = {MatchStatus.active.value, MatchStatus.pending.value}
+
+    db = SessionLocal()
+    try:
+        matches = db.query(Match).filter(
+            Match.tournament_id == tournament_id,
+            Match.status.in_(allowed),
+        ).all()
+
+        def sort_key(m: Match):
+            status_priority = 0 if _normalize_status(m.status.value) in {"active", "in_progress"} else 1
+            return (
+                status_priority,
+                m.round_number or 0,
+                m.bracket_index or 0,
+                m.scheduled_time or datetime.min,
+                m.id,
+            )
+
+        matches = sorted(matches, key=sort_key)
+
+        result = []
+        for m in matches:
+            p1 = db.query(Player).filter(Player.id == m.player1_id).first() if m.player1_id else None
+            p2 = db.query(Player).filter(Player.id == m.player2_id).first() if m.player2_id else None
+            incomplete = not (m.player1_id and m.player2_id and p1 and p2)
+            result.append({
+                "match_id": m.id,
+                "player1_id": m.player1_id,
+                "player1_name": p1.name if p1 else (m.player1 or "TBD"),
+                "player2_id": m.player2_id,
+                "player2_name": p2.name if p2 else (m.player2 or "TBD"),
+                "status": m.status.value if isinstance(m.status, MatchStatus) else str(m.status),
+                "round_number": m.round_number,
+                "bracket_index": m.bracket_index,
+                "scheduled_time": m.scheduled_time.isoformat() if m.scheduled_time else None,
+                "location": m.location,
+                "score": m.score,
+                "winner": m.winner,
+                "incomplete": incomplete,
+            })
+        return result
+    finally:
+        db.close()
 
 
 def apply_selected_match_to_session(prefix: str, match: Dict) -> None:
