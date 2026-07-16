@@ -9,7 +9,10 @@ import os
 
 try:
     from dotenv import load_dotenv
-    load_dotenv()
+
+    # override=False so explicitly-set process environment variables win over
+    # the local-only .env file (which is not present on Streamlit Cloud).
+    load_dotenv(override=False)
 except ImportError:
     pass  # python-dotenv not installed; rely on process env only
 
@@ -44,7 +47,7 @@ def _get_env_float(name: str, default: float) -> float:
 # Import overlapping values from the main config to keep a single source of truth.
 from tournament_platform.config import settings as _app_settings  # noqa: E402
 
-API_BASE_URL: str = _get_env_str("API_BASE_URL", _app_settings.API_BASE_URL)
+API_BASE_URL: str = _get_env_str("API_BASE_URL", _app_settings.API_BASE_URL or "")
 
 # ---------------------------------------------------------------------------
 # Ollama LLM

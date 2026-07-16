@@ -33,7 +33,9 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------------------
     API_HOST: str = "0.0.0.0"
     API_PORT: int = 8000
-    API_BASE_URL: str = "http://localhost:8000"
+    # Not set by default: the Streamlit frontend runs in local Streamlit mode
+    # unless an external backend is explicitly configured via API_BASE_URL.
+    API_BASE_URL: Optional[str] = None
 
     # -------------------------------------------------------------------------
     # Database

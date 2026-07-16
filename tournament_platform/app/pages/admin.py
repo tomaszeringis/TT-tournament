@@ -42,6 +42,28 @@ import tournament_platform.app.pages.operator_console as op
 import tournament_platform.app.pages.schedule_board as sched
 
 
+def _webrtc_installed() -> bool:
+    """Safely detect whether ``streamlit-webrtc`` is importable."""
+    try:
+        import streamlit_webrtc  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+def _piper_available() -> bool:
+    """Safely detect whether Piper TTS is available."""
+    try:
+        from tournament_platform.app.services.commentary_voice.piper_runtime import (
+            is_piper_available,
+        )
+
+        return bool(is_piper_available())
+    except Exception:
+        return False
+
+
 @st.cache_data(ttl=30, show_spinner="Loading database summary...")
 def get_database_summary():
     """Get cached database summary counts."""
@@ -305,9 +327,22 @@ with admin_tabs[4]:
     with col1:
         db_icon = "✅" if db_healthy else "❌"
         st.metric("Database Status", f"{db_icon} {'Connected' if db_healthy else 'Disconnected'}", delta=db_status)
-        
-        api_icon = "✅" if api_healthy else "❌"
-        st.metric("API Status", f"{api_icon} {'Running' if api_healthy else 'Unavailable'}", delta=api_status)
+
+        # Context-aware API/app status. In local Streamlit mode (no external API
+        # configured) this shows a healthy "Local Streamlit" status rather than a
+        # scary "Unavailable".
+        from tournament_platform.app.api_status import get_app_status
+
+        app_status = get_app_status()
+        if app_status["state"] in ("local_mode", "connected", "optional_unavailable"):
+            api_icon = "✅" if app_status["state"] != "optional_unavailable" else "⚠️"
+        else:
+            api_icon = "❌"
+        st.metric(
+            "App Status" if app_status["state"] == "local_mode" else "API Status",
+            f"{api_icon} {app_status['label']}",
+            delta=app_status["message"],
+        )
     
     with col2:
         # Use lightweight AI health check instead of instantiating AIEngine
@@ -336,7 +371,41 @@ with admin_tabs[4]:
         model_display = ai_health.model_name or settings.OLLAMA_MODEL
     except Exception:
         model_display = settings.OLLAMA_MODEL
-    
+
+    # Collapsed runtime diagnostics (hidden by default) for Admin / operator use.
+    with st.expander("🩺 Runtime diagnostics", expanded=False):
+        try:
+            from tournament_platform.config import settings as _settings
+            from tournament_platform.config.runtime import get_runtime_config
+
+            rc = get_runtime_config()
+            diag = get_app_status()
+            db_url = _settings.DATABASE_URL or "not configured"
+            st.markdown(
+                "- **Mode:** `%s`\n"
+                "- **API required:** %s\n"
+                "- **API base URL configured:** %s\n"
+                "- **API status:** %s\n"
+                "- **Database URL configured:** %s\n"
+                "- **Current database path:** `%s`\n"
+                "- **Streamlit Cloud detected:** %s\n"
+                "- **streamlit-webrtc installed:** %s\n"
+                "- **Piper available:** %s"
+                % (
+                    diag["mode"],
+                    "yes" if rc.api_required else "no",
+                    "yes" if rc.api_base_url else "no",
+                    diag["state"],
+                    "yes" if db_url != "not configured" else "no",
+                    db_url,
+                    "yes" if rc.is_streamlit_cloud else "no",
+                    "yes" if _webrtc_installed() else "no",
+                    "yes" if _piper_available() else "no",
+                )
+            )
+        except Exception as exc:
+            st.warning(f"Could not build runtime diagnostics: {exc}")
+
     versions = get_runtime_versions()
     system_info = {
         "Database Type": "SQLite",

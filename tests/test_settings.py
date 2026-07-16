@@ -17,10 +17,18 @@ def test_settings_import():
     assert hasattr(mod, "SPEECH_MODEL_SIZE")
 
 
-def test_defaults():
-    """Defaults should preserve current behavior."""
+def test_defaults(monkeypatch):
+    """By default no external API is configured (local Streamlit mode).
+
+    A local-only ``.env`` may set API_BASE_URL for development; this test clears
+    it to assert the code-level default (no hardcoded localhost in the shipped
+    source). Streamlit Cloud has no ``.env`` and runs in local Streamlit mode.
+    """
+    monkeypatch.setenv("API_BASE_URL", "")
     mod = importlib.import_module("tournament_platform.services.settings")
-    assert mod.API_BASE_URL == "http://localhost:8000"
+    importlib.reload(mod)
+    # When not explicitly configured, the default is empty/None (no localhost).
+    assert mod.API_BASE_URL in (None, "")
     assert mod.OLLAMA_MODEL == "llama3:latest"
     assert mod.ENABLE_VOICE_ENTRY is True
     assert mod.ENABLE_RULES_ASSISTANT is True

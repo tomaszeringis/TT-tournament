@@ -14,6 +14,12 @@ def _get_env_str(name: str, default: str) -> str:
     return os.environ.get(name, default)
 
 
+def _get_env_str_or_none(name: str) -> Optional[str]:
+    """Read an optional string environment variable; return ``None`` if unset."""
+    value = os.environ.get(name)
+    return value if value else None
+
+
 def _get_env_int(name: str, default: int) -> int:
     """Read an integer environment variable with a default."""
     value = os.environ.get(name, "")
@@ -37,8 +43,12 @@ def _get_env_bool(name: str, default: bool) -> bool:
 # API / Backend
 # ---------------------------------------------------------------------------
 # Base URL used by the Streamlit frontend to reach the FastAPI backend.
-# Can be overridden via environment variable.
-API_BASE_URL: str = _get_env_str("API_BASE_URL", "http://localhost:8000")
+#
+# Defaults to ``None`` (not configured) so the Streamlit app runs in local
+# Streamlit mode without pinging a nonexistent localhost backend. Set
+# ``API_BASE_URL`` only when a real external backend exists. Local development
+# may set ``API_BASE_URL=http://localhost:8000`` explicitly.
+API_BASE_URL: Optional[str] = _get_env_str_or_none("API_BASE_URL")
 
 # Timeout for API requests in seconds.
 API_TIMEOUT_SECONDS: int = _get_env_int("API_TIMEOUT_SECONDS", 10)

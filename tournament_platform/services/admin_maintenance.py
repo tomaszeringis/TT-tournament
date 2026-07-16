@@ -13,7 +13,6 @@ from sqlalchemy.orm import Session
 from tournament_platform.models import Player, Match, Tournament, MatchStatus, engine
 from tournament_platform.config import settings
 from tournament_platform.app.settings import API_BASE_URL, SHOW_DEBUG_DETAILS
-from tournament_platform.app.api_client import api_client
 
 
 # ---------------------------------------------------------------------------
@@ -138,17 +137,26 @@ def get_safe_database_status() -> tuple[bool, str]:
 
 def get_safe_api_status() -> tuple[bool, str]:
     """
-    Check if FastAPI health endpoint is responding.
+    Determine the external API status in a Cloud-safe way.
+
+    When no external API is configured (local Streamlit mode) this returns a
+    healthy "Local mode" status rather than a scary "Unavailable". A configured
+    but unreachable API is reported as unavailable (fatal only when required).
 
     Returns:
         Tuple of (is_healthy: bool, status_message: str)
     """
     try:
-        response = api_client.health()
-        if response is not None:
-            status = response.get("status", "unknown")
-            return True, f"Running - {status}"
-        return False, "Unavailable"
+        from tournament_platform.app.api_status import get_app_status
+
+        status = get_app_status()
+        if status["state"] == "local_mode":
+            return True, "Local mode"
+        if status["state"] == "connected":
+            return True, "Connected"
+        if status["state"] == "optional_unavailable":
+            return True, "Optional API unavailable"
+        return False, "Required API unavailable"
     except Exception:
         return False, "Unavailable"
 

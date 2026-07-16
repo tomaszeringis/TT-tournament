@@ -103,7 +103,10 @@ class ApiClient:
             base_url: Optional override for the API base URL.
             timeout: Optional override for the request timeout in seconds.
         """
-        self.base_url = base_url or API_BASE_URL
+        # Fall back to a local default only when no explicit/resolved URL is set.
+        # The app prefers local Streamlit mode (no external API) by default; this
+        # fallback keeps the client usable when a backend is explicitly wired up.
+        self.base_url = base_url or API_BASE_URL or "http://localhost:8000"
         self.timeout = timeout or API_TIMEOUT_SECONDS
         ensure_api_server()
     

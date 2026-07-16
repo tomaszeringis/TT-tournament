@@ -19,7 +19,61 @@ from tournament_platform.app.services.score_engine import (
     undo_last_action,
     reset_match,
 )
-from tournament_platform.app.api_client import api_client
+from tournament_platform.config.runtime import get_runtime_config
+
+
+def _commit_local(match_id: int, score: str, winner: str) -> dict:
+    """Commit a reported match result directly to the local database.
+
+    Used when the Streamlit app runs in local mode (no external API backend).
+    Mirrors the FastAPI ``/api/operator/matches/{id}/report`` behavior so manual
+    scoring works without a separate server.
+    """
+    from tournament_platform.models import SessionLocal
+    from tournament_platform.services.match_reporting import (
+        MatchAlreadyCompletedError,
+        MatchNotFoundError,
+        ReportMatchCommand,
+        report_existing_match,
+    )
+
+    db = SessionLocal()
+    try:
+        report_existing_match(
+            db,
+            ReportMatchCommand(match_id=match_id, winner=winner, score=score),
+        )
+        return {"status": "success", "match_id": match_id, "score": score, "winner": winner}
+    except MatchNotFoundError:
+        return {"status": "error", "message": f"Match {match_id} not found"}
+    except MatchAlreadyCompletedError:
+        return {"status": "error", "message": f"Match {match_id} already completed"}
+    except Exception as exc:  # pragma: no cover - defensive
+        return {"status": "error", "message": f"Failed to report locally: {exc}"}
+    finally:
+        db.close()
+
+
+def _report_match(match_id: int, score: str, winner: str) -> dict:
+    """Report a match result, using the configured backend or local DB fallback.
+
+    When an external API is configured (``API_BASE_URL``), the HTTP client is
+    used. Otherwise the result is committed to the local database directly so
+    manual scoring continues to work on Streamlit Cloud.
+    """
+    cfg = get_runtime_config()
+    if cfg.api_base_url:  # pragma: no cover - exercised when backend configured
+        from tournament_platform.app.api_client import api_client
+
+        score1, score2 = (int(x) for x in score.split("-"))
+        return api_client.report_match(
+            match_id=match_id,
+            score1=score1,
+            score2=score2,
+            winner=winner,
+        ) or {"status": "error", "message": "API unreachable"}
+
+    return _commit_local(match_id, score, winner)
 
 
 def _state_key(match_id: int, key_prefix: str) -> str:
@@ -180,10 +234,9 @@ def render_manual_score_panel(match: dict, key_prefix: str = "msp") -> bool:
             if not report["winner"]:
                 st.error("Cannot determine a winner from the draft.")
                 return False
-            result = api_client.report_match(
+            result = _report_match(
                 match_id=match_id,
-                score1=int(report["score"].split("-")[0]),
-                score2=int(report["score"].split("-")[1]),
+                score=report["score"],
                 winner=report["winner"],
             )
             if result and result.get("status") == "success":
