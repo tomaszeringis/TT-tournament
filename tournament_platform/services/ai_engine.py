@@ -76,10 +76,25 @@ class AIEngine:
         self._ensure_model_available()
 
     def _ensure_model_available(self, silent=False):
-        """Verify that Ollama is running and the required model is available."""
+        """Verify that Ollama is running and the required model is available.
+
+        In Cloud/external API mode this resolves availability through the
+        FastAPI bridge and never instantiates the local Ollama client, so no
+        ``localhost:11434`` connection is attempted and the "Failed to connect
+        to Ollama" error never appears on Streamlit Cloud.
+        """
+        try:
+            from tournament_platform.app.services.ai_provider import resolve_provider
+
+            if resolve_provider() == "api_bridge":
+                # Bridge governs availability; nothing to verify locally.
+                return
+        except Exception:
+            pass
+
         try:
             available_models_resp = ollama.list()
-            
+
             # Extract model names correctly based on response type
             if hasattr(available_models_resp, 'models'):
                 model_names = [m.model for m in available_models_resp.models]
@@ -95,22 +110,34 @@ class AIEngine:
                             print(f"Warning: Model '{self.model}' not found. Falling back to '{fallback}'.")
                         self.model = fallback
                         return
-                
+
                 if not silent:
                     print(f"Warning: Neither '{self.model}' nor common fallbacks found in Ollama.")
-                # We don't pull automatically here to avoid blocking UI for too long, 
+                # We don't pull automatically here to avoid blocking UI for too long,
                 # but we've verified connection at least.
         except Exception as e:
             if not silent:
                 print(f"Error connecting to Ollama: {e}")
-            # We don't raise here to allow the class to be instantiated, 
+            # We don't raise here to allow the class to be instantiated,
             # but actual calls will fail later with the connection error.
 
     def _chat_with_fallback(self, messages, format=None, stream=False):
         """
-        Internal helper to call ollama.chat with dynamic model fallback and robust error handling.
+        Internal helper to call Ollama with dynamic model fallback and robust
+        error handling. In Cloud/external API mode this routes through the
+        FastAPI bridge; locally it uses the ``ollama`` client directly.
         """
         try:
+            from tournament_platform.app.services.ai_provider import ollama_chat, resolve_provider
+
+            if resolve_provider() == "api_bridge":
+                result = ollama_chat(messages=messages, model=self.model, temperature=0.3)
+                if not result or not result.get("ok"):
+                    raise ConnectionError(
+                        f"Ollama unavailable via API bridge: {result.get('error') if result else 'no response'}"
+                    )
+                return {"message": {"role": "assistant", "content": result.get("message", "")}}
+
             return ollama.chat(
                 model=self.model,
                 messages=messages,
@@ -119,13 +146,13 @@ class AIEngine:
             )
         except Exception as e:
             error_str = str(e).lower()
-            
+
             # Handle model not found error by trying fallback immediately
             if "not found" in error_str or "404" in error_str:
                 original_model = self.model
                 # Re-check available models and update self.model
                 self._ensure_model_available(silent=True)
-                
+
                 if self.model != original_model:
                     # Retry with new model
                     try:
@@ -137,7 +164,7 @@ class AIEngine:
                         )
                     except Exception as retry_err:
                         e = retry_err # Fall through to common error handling
-                
+
                 # If we're here, either fallback failed or no fallback was found
                 raise ValueError(
                     f"Model '{original_model}' not found in Ollama. "
@@ -151,7 +178,7 @@ class AIEngine:
                     f"Failed to connect to Ollama at {settings.OLLAMA_HOST}. "
                     f"Please ensure Ollama is running ('ollama serve'). Details: {e}"
                 ) from e
-                
+
             # Other errors
             raise
 

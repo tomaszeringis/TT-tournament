@@ -156,7 +156,19 @@ class UmpireEngine:
         logger.info("RulesRetriever initialized for Voice Rules Chat")
      
     def _get_ollama_model(self) -> str:
-        """Get available Ollama model with fallback."""
+        """Get available Ollama model with fallback.
+
+        In Cloud/external API mode this returns the configured model without
+        touching the local Ollama client (the bridge governs availability).
+        """
+        try:
+            from tournament_platform.app.services.ai_provider import resolve_provider
+
+            if resolve_provider() == "api_bridge":
+                return self.config.ollama_model
+        except Exception:
+            pass
+
         try:
             available_models_resp = ollama.list()
             
@@ -272,13 +284,36 @@ class UmpireEngine:
         self,
         transcript: str
     ) -> AsyncGenerator[str, None]:
-        """Stream LLM response for a transcript."""
+        """Stream LLM response for a transcript.
+
+        In Cloud/external API mode it uses the FastAPI bridge (non-streaming)
+        and yields the completed commentary. Locally it streams from Ollama.
+        """
         try:
+            from tournament_platform.app.services.ai_provider import resolve_provider
+
+            if resolve_provider() == "api_bridge":
+                from tournament_platform.app.services.ai_provider import ollama_chat
+
+                result = ollama_chat(
+                    messages=[
+                        {"role": "system", "content": self._umpire_system_prompt},
+                        {"role": "user", "content": transcript},
+                    ],
+                    model=self._get_ollama_model(),
+                    temperature=0.3,
+                )
+                if result and result.get("ok"):
+                    yield result.get("message", "")
+                else:
+                    yield f"Error: {result.get('error') if result else 'Ollama unavailable via API'}"
+                return
+
             model = self._get_ollama_model()
-            
+
             # ollama.chat with stream=True returns a sync generator, run in executor
             loop = asyncio.get_event_loop()
-            
+
             def sync_stream():
                 return ollama.chat(
                     model=model,
@@ -289,9 +324,9 @@ class UmpireEngine:
                     stream=True,
                     options={"num_predict": 150}  # Limit response length to prevent infinite generation
                 )
-            
+
             response_gen = await loop.run_in_executor(None, sync_stream)
-            
+
             chunk_count = 0
             max_chunks = 200  # Safety limit to prevent infinite streaming
             for chunk in response_gen:
@@ -302,7 +337,7 @@ class UmpireEngine:
                     break
                 if 'message' in chunk and 'content' in chunk['message']:
                     yield chunk['message']['content']
-                    
+
         except Exception as e:
             logger.error(f"LLM processing error: {e}")
             yield f"Error: {str(e)}"

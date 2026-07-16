@@ -108,12 +108,30 @@ class LLMInterpreter:
         self._audit_log: List[Dict[str, Any]] = []
 
     def _get_client(self):
-        """Lazy-load the Ollama client."""
+        """Lazy-load the Ollama client.
+
+        On Streamlit Cloud (external API bridge mode) the local Ollama client is
+        never used; the interpreter is effectively disabled there because Ollama
+        is only reachable via the FastAPI bridge.
+        """
         if self._client is not None:
             return self._client
 
         if not self.enabled:
             raise LLMInterpreterError("LLM interpreter is disabled")
+
+        try:
+            from tournament_platform.app.services.ai_provider import resolve_provider
+
+            if resolve_provider() == "api_bridge":
+                raise LLMInterpreterError(
+                    "Local Ollama interpreter is unavailable on Streamlit Cloud; "
+                    "use the FastAPI bridge instead."
+                )
+        except LLMInterpreterError:
+            raise
+        except Exception:
+            pass
 
         try:
             import ollama

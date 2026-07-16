@@ -17,6 +17,10 @@ def render_bracket(bracket_data: dict, height: int = 600):
                      responsiveness on smaller screens.
     """
 
+    # TODO(dep-warning): streamlit.components.v1.html may be removed after
+    # 2026-06-01. This renders an inline HTML document (loading the
+    # brackets-viewer CDN script/style) via render_html(). A future native
+    # replacement would host brackets-viewer locally and/or use st.iframe.
     # Convert dict to JSON string for JS injection
     # We escape < to prevent </script> injection
     bracket_json = json.dumps(bracket_data).replace('<', '\\u003c')

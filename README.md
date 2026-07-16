@@ -194,9 +194,16 @@ Streamlit Cloud  ->  API_BASE_URL (ngrok -> FastAPI:8000)  ->  local Ollama (127
    API_BASE_URL = "https://your-fastapi-ngrok-url.ngrok-free.app"
    API_REQUIRED = "false"
    API_TOKEN = "your-long-random-token"
-
    OLLAMA_MODEL = "llama3.1:8b"
+   HF_TOKEN = "optional-hugging-face-token"
+   TTS_DEFAULT_MODE = "Browser speech"
+   VOICE_INPUT_MODE = "manual"
    ```
+
+   > **Do NOT set `OLLAMA_BASE_URL` on Streamlit Cloud.** That points to the
+   > Cloud container, not your laptop. Only the local FastAPI process should set
+   > `$env:OLLAMA_BASE_URL="http://127.0.0.1:11434"`. The Cloud app reaches
+   > Ollama only through the FastAPI ngrok bridge.
 
 5. Local FastAPI environment (PowerShell), before starting the server above:
 
