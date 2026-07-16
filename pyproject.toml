@@ -87,7 +87,7 @@ packages = [
 
 [project.scripts]
 tournament-platform = "tournament_platform.app.main:main"
-tournament-platform-api = "tournament_platform.api.server:run_api"
+tournament-platform-api = "tournament_platform.api.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

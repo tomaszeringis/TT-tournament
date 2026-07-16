@@ -90,19 +90,88 @@ Recommended deployment Python version: **3.13** (3.12 also works).
   the recommended **Main module** for Streamlit Cloud.
 - **The Streamlit app does NOT start a Uvicorn/FastAPI server in-process.**
   `ensure_api_server()` is disabled inside the Streamlit app (including Streamlit
-  Cloud) so it never steals the app's port or fails the healthcheck. For API
-  features, deploy the FastAPI backend as a separate service and set
-  `API_BASE_URL` to that external service, or rely on the in-memory
-  `MatchManager` (manual scoring, live scoreboard, and match analytics work
-  without the API).
+  Cloud) so it never steals the app's port or fails the healthcheck. For optional
+  API features, run the FastAPI backend as a **separate** process (see the
+  "Optional local API + ngrok" section below) and set `API_BASE_URL` to that
+  external service. Manual scoring, live scoreboard, and match analytics work
+  without the API via the local database.
 - **Seeing `Uvicorn server started on ...:8501` in the build log is expected and
   NOT an error.** Streamlit itself runs on a Uvicorn/Starlette server and prints
   that banner when its own server starts on port 8501 (the Streamlit app port).
   This is the Streamlit app starting up, not the FastAPI backend. The FastAPI
   backend binds port `8000` and must never run as the Streamlit Cloud main module.
   A real problem is a `connection refused` on `/healthz` *before* that banner
-  appears, which means the entrypoint crashed at import — in that case confirm the
-  Main module is `streamlit_app.py` and that the build used `pyproject.toml`.
+   appears, which means the entrypoint crashed at import — in that case confirm the
+   Main module is `streamlit_app.py` and that the build used `pyproject.toml`.
+
+## 🔌 Optional local API + ngrok (Streamlit Cloud)
+
+The Streamlit Cloud app runs in **local Streamlit mode** by default and needs no
+external API. All core features (manual scoring, tournament management, live
+scoreboard, match analytics, voice scorekeeper, admin tools) work against the
+local SQLite database directly. An external FastAPI backend is **optional**.
+
+Runtime modes (resolved from env vars and Streamlit secrets, in that order):
+
+| Mode | When |
+| --- | --- |
+| `local_streamlit` | `API_BASE_URL` not set — app uses local services. |
+| `external_api` | `API_BASE_URL` set and reachable (`${API_BASE_URL}/health`, 1.5 s timeout). |
+| `optional_api_unavailable` | `API_BASE_URL` set but unreachable and `API_REQUIRED=false` — app falls back to local services. |
+| `required_unavailable` | `API_BASE_URL` set, unreachable, and `API_REQUIRED=true` — a clear red error is shown (the app still does not crash). |
+
+The dashboard shows **App Status ✅ Ready / Mode: Local Streamlit** by default.
+When an API is configured and reachable it shows **API Status ✅ Connected /
+Mode: External API**. An unreachable optional API shows **API Status ⚠️ Optional
+API unavailable / Mode: Local fallback** (a warning, never a fatal error).
+
+### Run the FastAPI backend locally
+
+The backend is a **separate process** and must never be started by the Streamlit
+Cloud app:
+
+```bash
+uvicorn tournament_platform.api.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+or:
+
+```bash
+python -m tournament_platform.api.main
+```
+
+### Expose it through ngrok
+
+```bash
+ngrok http 8000
+```
+
+Then set Streamlit Cloud **secrets** (Settings → Secrets) to the ngrok URL:
+
+```toml
+API_BASE_URL = "https://your-ngrok-url.ngrok-free.app"
+API_REQUIRED = "false"
+API_TOKEN = "your-long-random-token"
+```
+
+`API_TOKEN` (if set) is sent as `Authorization: Bearer <token>` on every request
+and is never logged or shown in the UI. Set `API_REQUIRED = "true"` only if the
+app must hard-fail when the backend is down.
+
+### ngrok caveats
+
+- **The ngrok URL changes every time the tunnel restarts** — update the
+  `API_BASE_URL` secret after each restart, or use a paid fixed domain.
+- **Your laptop must stay awake** (no sleep/hibernate) or the server dies.
+- **The API server process must keep running** (the `uvicorn` command above).
+- **The ngrok tunnel must keep running** (the `ngrok http 8000` command above).
+- When the tunnel or server stops, the app automatically returns to **local
+  fallback mode** (if `API_REQUIRED=false`), so scoring and analytics keep
+  working.
+- Do **not** set `API_BASE_URL` to `localhost`/`127.0.0.1` on Streamlit Cloud —
+  those addresses refer to the Cloud container, not your laptop. They are only
+  valid for local development on the same machine as the API.
+
 - If the app was previously deployed with an incompatible Python (e.g. a version
   outside `>=3.11,<3.14`), **delete the app and redeploy it with Python 3.13 selected
   in Advanced settings** — Streamlit Cloud keeps the Python version from the original

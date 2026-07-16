@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import requests
 
 from tournament_platform.app.settings import API_BASE_URL, API_TIMEOUT_SECONDS, SHOW_DEBUG_DETAILS
+from tournament_platform.config.runtime import get_api_token
 
 logger = logging.getLogger(__name__)
 
@@ -108,8 +109,18 @@ class ApiClient:
         # fallback keeps the client usable when a backend is explicitly wired up.
         self.base_url = base_url or API_BASE_URL or "http://localhost:8000"
         self.timeout = timeout or API_TIMEOUT_SECONDS
+        # Resolved once at construction so a configured bearer token is sent on
+        # every request without the token ever being logged or exposed in the UI.
+        self._token = get_api_token()
         ensure_api_server()
-    
+
+    @property
+    def auth_headers(self) -> dict:
+        """Return the authorization headers (empty when no token is configured)."""
+        if self._token:
+            return {"Authorization": f"Bearer {self._token}"}
+        return {}
+
     def _build_url(self, endpoint: str) -> str:
         """Build a full URL from an endpoint path."""
         return f"{self.base_url.rstrip('/')}/{endpoint.lstrip('/')}"
@@ -135,6 +146,7 @@ class ApiClient:
             response = requests.get(
                 self._build_url("/health"),
                 timeout=self.timeout,
+                headers=self.auth_headers,
             )
             response.raise_for_status()
             return response.json()
@@ -180,6 +192,7 @@ class ApiClient:
                     "winner": winner,
                 },
                 timeout=self.timeout,
+                headers=self.auth_headers,
             )
             response.raise_for_status()
             return response.json()
@@ -211,6 +224,7 @@ class ApiClient:
                 self._build_url("/api/rules/ask"),
                 json={"question": question},
                 timeout=self.timeout,
+                headers=self.auth_headers,
             )
             response.raise_for_status()
             return response.json()
@@ -227,23 +241,35 @@ class ApiClient:
             self._handle_error(e, "Rules query")
             return None
     
+    def _request(self, method: str, endpoint: str, **kwargs):
+        """Send a request with the bearer token (if configured).
+
+        Uses ``getattr(requests, method)`` so tests that patch
+        ``requests.get/post/patch`` keep working. The token is merged into the
+        request headers and is never logged.
+        """
+        headers = dict(kwargs.pop("headers", {}))
+        headers.update(self.auth_headers)
+        return getattr(requests, method)(
+            self._build_url(endpoint),
+            timeout=self.timeout,
+            headers=headers,
+            **kwargs,
+        )
+
     def get(self, endpoint: str, **kwargs) -> Optional[Dict[str, Any]]:
         """
         Make a GET request to the API.
-        
+
         Args:
             endpoint: API endpoint path.
             **kwargs: Additional arguments passed to requests.get.
-            
+
         Returns:
             A dict with the response JSON if successful, None otherwise.
         """
         try:
-            response = requests.get(
-                self._build_url(endpoint),
-                timeout=self.timeout,
-                **kwargs,
-            )
+            response = self._request("get", endpoint, **kwargs)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.ConnectionError:
@@ -271,11 +297,7 @@ class ApiClient:
             A dict with the response JSON if successful, None otherwise.
         """
         try:
-            response = requests.post(
-                self._build_url(endpoint),
-                timeout=self.timeout,
-                **kwargs,
-            )
+            response = self._request("post", endpoint, **kwargs)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.ConnectionError:
@@ -303,11 +325,7 @@ class ApiClient:
             A dict with the response JSON if successful, None otherwise.
         """
         try:
-            response = requests.patch(
-                self._build_url(endpoint),
-                timeout=self.timeout,
-                **kwargs,
-            )
+            response = self._request("patch", endpoint, **kwargs)
             response.raise_for_status()
             return response.json()
         except requests.exceptions.ConnectionError:
