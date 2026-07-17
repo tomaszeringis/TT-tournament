@@ -3229,6 +3229,46 @@ def _normalize_status_dict(value, default_reason: str = "Status unavailable") ->
     }
 
 
+def _get_voice_webrtc_processor(ctx: object | None) -> object | None:
+    """Safely return the active WebRTC/audio processor.
+
+    Streamlit session_state may contain None, a dict, a streamlit-webrtc
+    context object, or another object without processor fields. Never
+    assume ctx supports .get().
+    """
+    if ctx is None:
+        return None
+
+    if isinstance(ctx, dict):
+        return (
+            ctx.get("processor")
+            or ctx.get("audio_processor")
+            or ctx.get("voice_processor")
+        )
+
+    for attr_name in ("processor", "audio_processor", "voice_processor"):
+        processor = getattr(ctx, attr_name, None)
+        if processor is not None:
+            return processor
+
+    return None
+
+
+def _safe_queue_size(queue_obj: object | None) -> int:
+    """Return qsize safely for queue-like objects."""
+    if queue_obj is None:
+        return 0
+
+    qsize = getattr(queue_obj, "qsize", None)
+    if not callable(qsize):
+        return 0
+
+    try:
+        return int(qsize())
+    except Exception:
+        return 0
+
+
 def fetch_active_matches(tournament_id: int, statuses: Optional[List[str]] = None) -> List[Dict]:
     """Fetch scorable matches for a tournament from the local database.
 
@@ -4234,10 +4274,12 @@ def _render_ui() -> None:
                             default_reason="ASR status unavailable",
                         )
                         _asr_loaded = "yes" if bool(_asr_status.get("available", False)) else "no"
-                        _proc = st.session_state.get("voice_webrtc_ctx", {}).get("processor")
-                        _q_size = proc._chunk_queue.qsize() if proc else 0
-                        _dropped = getattr(proc, "_dropped_chunks", 0) if proc else 0
-                        _evt_q = proc.event_queue.qsize() if proc else 0
+                        _webrtc_ctx = st.session_state.get("voice_webrtc_ctx")
+                        proc = _get_voice_webrtc_processor(_webrtc_ctx)
+
+                        _q_size = _safe_queue_size(getattr(proc, "_chunk_queue", None)) if proc else 0
+                        _dropped = int(getattr(proc, "_dropped_chunks", 0) or 0) if proc else 0
+                        _evt_q = _safe_queue_size(getattr(proc, "event_queue", None)) if proc else 0
                         _last_rms = st.session_state.get("voice_last_chunk_rms", 0.0)
                         _seg_ms = getattr(proc.audio_buffer, 'get_buffer_duration_ms', lambda: 0.0)() if proc else 0.0
                         _last_transcript = st.session_state.get("last_voice_transcript", "")
@@ -4419,7 +4461,8 @@ def _render_ui() -> None:
         audio_file = st.audio_input("🎙️ Push to Talk", key="voice_push_to_talk_input")
         if audio_file is not None:
             _file_fingerprint = getattr(audio_file, "name", "") + str(getattr(audio_file, "size", 0))
-            _cached_event = st.session_state.get("_voice_p2p_cache", {}).get(_file_fingerprint)
+            _voice_p2p_cache = st.session_state.get("_voice_p2p_cache") or {}
+            _cached_event = _voice_p2p_cache.get(_file_fingerprint)
             if _cached_event is None:
                 if st.session_state.get("quick_voice_mode") == "quick":
                     pcm_bytes = _audio_input_to_pcm(audio_file)
