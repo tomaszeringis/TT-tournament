@@ -46,6 +46,15 @@ class TestMakeEventKey:
         r2 = _make_result(VoiceIntent.SCORE_POINT, slots={"player": "B"})
         assert _make_event_key(r1) != _make_event_key(r2)
 
+    def test_game_index_makes_same_command_distinct(self):
+        # A "point A" command at the start of Game 2 must NOT collide with the
+        # same command at the end of Game 1, otherwise the first voice point of
+        # the next game is silently dropped as a duplicate.
+        r = _make_result(VoiceIntent.SCORE_POINT, slots={"player": "A"})
+        key_game1 = _make_event_key(r, current_game_index=0)
+        key_game2 = _make_event_key(r, current_game_index=1)
+        assert key_game1 != key_game2
+
 
 class TestRouteCommand:
     def test_unknown_intent_rejects(self):
@@ -80,6 +89,22 @@ class TestRouteCommand:
         r = route_command(result, ctx)
         assert r.decision == RouteDecision.IGNORE
         assert r.reason == "duplicate_suppressed"
+
+    def test_same_command_next_game_not_suppressed(self):
+        # Repro of "voice stops after Game 1": the same "point A" that won
+        # Game 1 must NOT be treated as a duplicate when spoken again to open
+        # Game 2. The route key now encodes the game index.
+        result = _make_result(VoiceIntent.SCORE_POINT, slots={"player": "A"})
+        event_key_game1 = _make_event_key(result, current_game_index=0)
+        ctx = RouteContext(
+            last_applied_event_key=event_key_game1,
+            last_applied_event_ts=time.time(),  # still well within cooldown
+            current_game_index=1,  # we are now in Game 2
+            cooldown_ms=5000.0,
+        )
+        r = route_command(result, ctx)
+        assert r.decision != RouteDecision.IGNORE
+        assert r.reason != "duplicate_suppressed"
 
     def test_non_duplicate_passes_cooldown(self):
         result = _make_result(VoiceIntent.SCORE_POINT, slots={"player": "A"})

@@ -50,6 +50,11 @@ class RouteContext:
 
     current_score_a: int = 0
     current_score_b: int = 0
+    # Index of the current game (0-based count of completed games). Including
+    # it in the duplicate key guarantees a command repeated at the start of the
+    # next game is never treated as a duplicate of the previous game's last
+    # command, which previously blocked the first voice point after a game ended.
+    current_game_index: int = 0
     strict_mode: bool = False
     enable_confirmation: bool = True
     cooldown_ms: float = 1200.0
@@ -78,13 +83,17 @@ class RouteResult:
     event_key: Optional[str] = None
 
 
-def _make_event_key(result: VoiceParseResult) -> str:
-    """Stable hash for duplicate suppression."""
+def _make_event_key(result: VoiceParseResult, current_game_index: int = 0) -> str:
+    """Stable hash for duplicate suppression.
+
+    The key includes the current game index so that a command repeated at the
+    start of a new game is never collapsed into the previous game's last command.
+    """
     intent = result.intent.value if isinstance(result.intent, VoiceIntent) else str(result.intent)
     player = result.slots.get("player", "")
     score_a = result.slots.get("score_a", "")
     score_b = result.slots.get("score_b", "")
-    raw = f"{intent}|{player}|{score_a}|{score_b}"
+    raw = f"{intent}|{player}|{score_a}|{score_b}|g{current_game_index}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
 
 
@@ -251,7 +260,7 @@ def route_command(
     # --------------------------------------------------------------- #
     # 4. Duplicate suppression
     # --------------------------------------------------------------- #
-    event_key = _make_event_key(result)
+    event_key = _make_event_key(result, context.current_game_index)
     if context.is_duplicate(event_key):
         return RouteResult(
             decision=RouteDecision.IGNORE,

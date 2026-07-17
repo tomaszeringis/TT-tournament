@@ -320,6 +320,85 @@ class TestSetScoreValidation:
         assert s.score_a == 0  # reset for next game
 
 
+class TestGameBoundaryTransition:
+    """Voice must keep scoring after a game completes but the match does not."""
+
+    def test_game_completed_flag_set_not_match(self):
+        # The final point of Game 1 must report game_completed=True but
+        # match_completed=False while the match is still best-of-3.
+        s2 = create_match(best_of=3)
+        for _ in range(10):
+            add_point(s2, "A")
+        for _ in range(7):
+            add_point(s2, "B")
+        res = add_point(s2, "A")  # 11-7 -> game won, match not won
+        assert res.game_completed is True
+        assert res.match_completed is False
+        assert res.game_won == "A"
+
+    def test_first_point_after_game_one_applied(self):
+        # Reproduces the reported bug: after Game 1 ends 11-7, the very first
+        # voice point of Game 2 must increment the score (not stay 0-0).
+        s = create_match(best_of=3, points_to_win=11)
+        # Reach 11-7 by interleaving so B hits 7 before A's 11th point.
+        for _ in range(7):
+            add_point(s, "A")
+            add_point(s, "B")
+        for _ in range(4):
+            add_point(s, "A")
+
+        assert s.games_won_a == 1
+        assert s.score_a == 0 and s.score_b == 0
+        assert s.match_status != "match_won"
+
+        # First command of Game 2 ("point player one" / "blue").
+        res = add_point(s, "A")
+        assert res.ok is True
+        assert s.score_a == 1
+        assert s.score_b == 0
+        assert s.match_status == "in_progress"
+
+    def test_voice_scoring_continues_after_first_game(self):
+        # Exact scenario from the bug report (best-of-3, first to 2 games).
+        state = create_match(best_of=3, points_to_win=11)
+
+        # Player A wins Game 1, 11-7 (interleaved so B reaches 7 first).
+        for _ in range(7):
+            add_point(state, "A")
+            add_point(state, "B")
+        for _ in range(4):
+            add_point(state, "A")
+
+        assert state.games_won_a == 1
+        assert state.score_a == 0 and state.score_b == 0
+        assert state.match_status != "match_won"
+
+        # First voice command in Game 2 must work.
+        result = add_point(state, "A")
+        assert result.ok is True
+        assert state.score_a == 1
+        assert state.score_b == 0
+
+    def test_match_completed_flag_set_when_match_won(self):
+        # Best-of-3: A wins Game 1 and Game 2. The winning point of
+        # Game 2 must report BOTH game_completed and match_completed.
+        s = create_match(best_of=3, points_to_win=11)
+        # Game 1: A wins 11-0.
+        for _ in range(11):
+            add_point(s, "A")
+        assert s.games_won_a == 1
+        assert s.match_status == "game_won"
+        # Game 2: A wins 11-0 -> match won on this point.
+        for _ in range(10):
+            add_point(s, "A")
+        res = add_point(s, "A")
+        assert s.games_won_a == 2
+        assert s.match_status == "match_won"
+        assert res.game_completed is True
+        assert res.match_completed is True
+        assert res.match_won == "A"
+
+
 # ---------------------------------------------------------------------------
 # Manual scoring uses the same engine
 # ---------------------------------------------------------------------------

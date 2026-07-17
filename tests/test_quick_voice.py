@@ -71,3 +71,24 @@ class TestQuickVoiceCooldown:
             result = engine.process(word, 0, 0)
             assert result["action"] == "accept"
             assert result["player"] == "B"
+
+    def test_same_command_next_game_accepted(self):
+        # Repro of "voice stops after Game 1": saying "blue" to win Game 1
+        # and again to open Game 2 must NOT be suppressed as a duplicate.
+        engine = QuickVoiceScoringEngine(cooldown_ms=1200.0)
+        result1 = engine.process("blue", 10, 7, current_game_index=0)
+        assert result1["action"] == "accept"
+        # Game 2 begins: same player, same word, immediately after. Because
+        # the game index advanced, the per-player cooldown resets.
+        result2 = engine.process("blue", 0, 0, current_game_index=1)
+        assert result2["action"] == "accept"
+        assert result2["reason"] != "duplicate"
+
+    def test_cooldown_still_blocks_within_same_game(self):
+        # Within a single game the cooldown still applies.
+        engine = QuickVoiceScoringEngine(cooldown_ms=1200.0)
+        engine.process("blue", 0, 0, current_game_index=0)
+        result = engine.process("blue", 1, 0, current_game_index=0)
+        assert result["action"] == "ignore"
+        assert result["reason"] == "duplicate"
+

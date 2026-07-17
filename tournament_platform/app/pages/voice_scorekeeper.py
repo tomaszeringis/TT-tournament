@@ -455,6 +455,42 @@ def _maybe_voice_rerun() -> None:
         st.rerun()
 
 
+def _reset_voice_game_boundary_state() -> None:
+    """Clear voice dedupe/cooldown state at a game boundary.
+
+    When a game completes and the next one begins, the previous game's last
+    applied command must not block the first command of the new game. We clear
+    the last-applied event key/timestamp (full-voice path) and the quick-voice
+    per-player throttle. This is the fix for "voice stops scoring after Game 1":
+    a repeated command such as "blue" to open Game 2 was being suppressed as a
+    duplicate of the "blue" that won Game 1.
+
+    Note: this does NOT touch match-completion state, player names, games won,
+    completed game scores, point trail, or any tournament/selection context.
+    """
+    st.session_state.voice_last_applied_event_key = None
+    st.session_state.voice_last_applied_event_ts = 0.0
+    st.session_state.last_applied_voice_event_ids = []
+
+    # Reset the quick-voice per-player throttle so a repeated color alias at the
+    # start of the next game is accepted immediately.
+    st.session_state.quick_voice_last_player = None
+    st.session_state.quick_voice_last_ts = 0.0
+
+    # Invalidate the processor-side quick-voice engine if it carries stale state.
+    _proc = None
+    _ctx = st.session_state.get("voice_webrtc_ctx")
+    if _ctx:
+        _proc = _ctx.get("processor")
+    if _proc is not None and hasattr(_proc, "quick_engine") and _proc.quick_engine is not None:
+        try:
+            _proc.quick_engine.last_player = None
+            _proc.quick_engine.last_ts = 0.0
+            _proc.quick_engine.last_game_index = len(st.session_state.match_manager.engine.round_scores)
+        except Exception:
+            pass
+
+
 # ============================================================================
 # Voice Scoring Gate Helpers
 # ============================================================================
@@ -466,7 +502,7 @@ def is_voice_scoring_enabled() -> bool:
 
 def reject_if_voice_disabled(source: str) -> bool:
     """Return True if the given voice source should be rejected because voice scoring is disabled."""
-    if source in {"voice", "continuous", "push_to_talk", "asr", "debug_voice"}:
+    if source in {"voice", "continuous", "push_to_talk", "asr", "webrtc", "debug_voice"}:
         return not is_voice_scoring_enabled()
     return False
 
@@ -587,6 +623,7 @@ def _process_quick_voice_event(transcript: str) -> None:
         transcript=transcript,
         current_score_a=mm.state.score_a,
         current_score_b=mm.state.score_b,
+        current_game_index=len(mm.engine.round_scores),
     )
 
     if result["action"] == "accept":
@@ -712,10 +749,15 @@ def apply_score_event_and_refresh_ui(
     )
     parsed.source = source
 
+    # Capture the game index BEFORE applying so we can detect a game-completed
+    # transition on this command and refresh dedup/voice state accordingly.
+    _game_index_before = len(mm.engine.round_scores)
+
     # 3. Route
     _route_ctx = RouteContext(
         current_score_a=current_score_a,
         current_score_b=current_score_b,
+        current_game_index=_game_index_before,
         strict_mode=st.session_state.get("voice_strict_mode", False),
         enable_confirmation=enable_confirmation,
         last_applied_event_key=st.session_state.get("voice_last_applied_event_key"),
@@ -816,6 +858,14 @@ def apply_score_event_and_refresh_ui(
         new_score = mm.state.get_score_string()
         note = "" if success else msg
 
+        # Detect a game-completion transition produced by this command so we can
+        # reset voice dedupe / cooldown state at the game boundary. This is the
+        # root cause of "voice stops scoring after the first game": the last
+        # command of Game 1 (e.g. "blue") collided with the first command of
+        # Game 2 as a duplicate, silently blocking all further voice scoring.
+        _game_index_after = len(mm.engine.round_scores)
+        _game_completed = _game_index_after > _game_index_before
+
         if success:
             # Check if this was an auto-confirmed high-confidence command
             is_auto_confirmed = (
@@ -833,6 +883,11 @@ def apply_score_event_and_refresh_ui(
             event_ts = time.time()
             st.session_state.voice_last_applied_event_key = event_key
             st.session_state.voice_last_applied_event_ts = event_ts
+
+            # Reset dedupe/cooldown state across the game boundary so the first
+            # command of the next game is never suppressed as a duplicate.
+            if _game_completed:
+                _reset_voice_game_boundary_state()
 
             st.session_state.last_voice_feedback = msg
             st.session_state.last_voice_transcript = parsed.raw_transcript
@@ -4636,8 +4691,63 @@ def _render_ui() -> None:
                     if st.button("Clear Event Log", key="clear_voice_log"):
                         st.session_state.voice_event_log = []
                         st.rerun()
-    
-            # Confirmation / cancel panel (always visible when voice scoring is enabled)
+
+            # Voice scoring debug expander (diagnostics for the game->game
+            # transition). Surfaces the exact state that controls whether the
+            # next voice command is accepted, so the "voice stops after Game1"
+            # class of bug is visible instead of silent.
+            with st.expander("🩺 Voice scoring debug", expanded=False):
+                _mm = st.session_state.get("match_manager")
+                _eng = getattr(_mm, "engine", None)
+                _quick_mode = st.session_state.get("quick_voice_mode", "off")
+                _last_accepted = st.session_state.get("voice_last_applied_event_key")
+                _last_rejected = st.session_state.get("last_voice_feedback", "")
+                _q_last_player = st.session_state.get("quick_voice_last_player")
+                _q_last_ts = st.session_state.get("quick_voice_last_ts", 0.0)
+                _rerun_req = bool(st.session_state.get(_VOICE_RERUN_KEY))
+                st.markdown(
+                    "- voice mode: **%s**\n"
+                    "- voice enabled: **%s**\n"
+                    "- last transcript: **%s**\n"
+                    "- last parsed intent: **%s**\n"
+                    "- last accepted command: **%s**\n"
+                    "- last rejected reason: **%s**\n"
+                    "- current score: **%s**\n"
+                    "- games won: **%s – %s**\n"
+                    "- completed games: **%s**\n"
+                    "- game_won flag: **%s**\n"
+                    "- match_complete flag: **%s**\n"
+                    "- last applied event id: **%s**\n"
+                    "- quick voice last player/time: **%s / %s**\n"
+                    "- rerun requested: **%s**"
+                    % (
+                        _quick_mode,
+                        "yes" if st.session_state.get("voice_scoring_enabled") else "no",
+                        st.session_state.get("last_voice_transcript", "—") or "—",
+                        (
+                            st.session_state.get("last_voice_event").intent
+                            if st.session_state.get("last_voice_event") else "—"
+                        ),
+                        _last_accepted or "—",
+                        _last_rejected or "—",
+                        (
+                            f"{_eng.score_a}-{_eng.score_b}"
+                            if _eng else "n/a"
+                        ),
+                        (
+                            f"{_eng.games_won_a}-{_eng.games_won_b}"
+                            if _eng else "n/a"
+                        ),
+                        len(_eng.round_scores) if _eng else 0,
+                        _eng.match_status == "game_won" if _eng else "n/a",
+                        _eng.match_status == "match_won" if _eng else "n/a",
+                        _last_accepted or "—",
+                        f"{_q_last_player} / {_q_last_ts:.0f}" if _q_last_player else "—",
+                        _rerun_req,
+                    )
+                )
+
+            # Debug voice panel (developer helper)
             if st.session_state.voice_scoring_enabled:
                 _render_confirm_panel()
     

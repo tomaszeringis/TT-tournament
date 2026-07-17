@@ -42,12 +42,18 @@ class QuickVoiceScoringEngine:
         self.last_ts: float = 0.0
         self.last_phrase: str = ""
         self.last_status: str = "idle"  # idle | accepted | duplicate_ignored | rejected
+        # Index of the last game processed. Used to reset cooldown state on a
+        # game boundary so the first command of the next game (which often repeats
+        # the previous game's final command, e.g. "blue" to win then "blue" to
+        # open the next game) is never suppressed as a duplicate.
+        self.last_game_index: int = 0
 
     def process(
         self,
         transcript: str,
         current_score_a: int,
         current_score_b: int,
+        current_game_index: int = 0,
     ) -> Dict[str, Any]:
         """
         Returns dict with:
@@ -77,6 +83,15 @@ class QuickVoiceScoringEngine:
                 "reason": "no_color_word",
                 "event": None,
             }
+
+        # Game boundary: a new game means the previous cooldown window no longer
+        # applies, so reset the per-player throttle. This prevents the first
+        # command of the next game from being suppressed as a duplicate of the
+        # last command of the previous game.
+        if current_game_index != self.last_game_index:
+            self.last_player = None
+            self.last_ts = 0.0
+            self.last_game_index = current_game_index
 
         if self.last_player == player and (now - self.last_ts) < self.cooldown_ms:
             self.last_status = "duplicate_ignored"

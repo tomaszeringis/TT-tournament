@@ -151,6 +151,13 @@ class ScoreResult:
     deuce: bool = False
     game_won: Optional[str] = None             # "A" | "B"
     match_won: Optional[str] = None            # "A" | "B"
+    # Game/match transition flags. ``game_completed`` is True when the point/score
+    # that produced this result ended a game but the match is still going. When the
+    # match is also decided, ``match_completed`` is True and ``game_completed`` is
+    # also True. Voice scoring relies on these to reset cooldown state on the game
+    # boundary WITHOUT disabling voice for the next game.
+    game_completed: bool = False
+    match_completed: bool = False
     rejected_reason: Optional[str] = None
 
 
@@ -350,10 +357,12 @@ def add_point(state: MatchState, player: str) -> ScoreResult:
     if winner:
         complete_game(state, winner)
         result.game_won = winner
+        result.game_completed = True
         match_winner = check_match_winner(state)
         if match_winner:
             state.match_status = "match_won"
             result.match_won = match_winner
+            result.match_completed = True
     else:
         # Continuing play (possibly into the next game after a game was won).
         if state.match_status == "game_won":
@@ -401,10 +410,12 @@ def set_score(
     if winner:
         complete_game(state, winner)
         result.game_won = winner
+        result.game_completed = True
         match_winner = check_match_winner(state)
         if match_winner:
             state.match_status = "match_won"
             result.match_won = match_winner
+            result.match_completed = True
     else:
         if state.match_status == "game_won":
             state.match_status = "in_progress"
