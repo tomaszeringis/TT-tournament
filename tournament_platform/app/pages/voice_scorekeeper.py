@@ -22,6 +22,7 @@ import threading
 import queue
 import logging
 import time
+import numpy as np
 from datetime import datetime
 from typing import Any, Optional, Tuple, Dict, List
 from dataclasses import dataclass, is_dataclass, asdict
@@ -1076,6 +1077,7 @@ class VoiceAudioProcessor(AudioProcessorBase):
         sample_format: str = SAMPLE_FORMAT_FLOAT32,
         voice_strict_mode: bool = False,
         vad: Optional[VoiceActivityDetector] = None,
+        asr: object = None,
     ):
         """
         Initialize the audio processor.
@@ -1085,6 +1087,9 @@ class VoiceAudioProcessor(AudioProcessorBase):
             sample_format: Audio sample format ("float32" or "int16").
             voice_strict_mode: If True, flag score events for confirmation.
             vad: Optional VoiceActivityDetector for improved speech detection.
+            asr: Optional pre-built ASR backend. When ``None`` (default), the
+                backend is lazily loaded via ``_get_asr()`` and the processor
+                degrades gracefully if ASR is unavailable.
         """
         # Detect sample format from WebRTC frames (default to float32 for safety)
         self._sample_format = getattr(self, '_sample_format', sample_format)
@@ -1108,12 +1113,67 @@ class VoiceAudioProcessor(AudioProcessorBase):
         self._chunk_queue: queue.Queue = queue.Queue(maxsize=20)
         self._stop_worker = threading.Event()
         self._dropped_chunks = 0
+        # Always initialize _asr so _get_asr() never raises AttributeError
+        # when ASR loading is deferred or fails. Standardize all ASR access
+        # through _get_asr() instead of reading self._asr directly.
+        self._asr = asr
+        self._asr_ready = asr is not None
+        self._asr_error: Optional[str] = None
+        self._status: str = "idle"
+        # Rate-limited logging state to avoid flooding Streamlit Cloud logs.
+        self._last_audio_error_log_ts: float = 0.0
+        self._audio_error_count: int = 0
 
     def _get_asr(self):
-        """Lazy-load the ASR backend to keep processor initialization lightweight."""
-        if self._asr is None:
-            self._asr = ASRBackendFactory.create(vocabulary=self.vocabulary)
+        """Lazy-load the ASR backend to keep processor initialization lightweight.
+
+        Returns ``None`` if no ASR backend is available, never raising. Callers
+        must check for ``None`` rather than assuming a backend exists.
+        """
+        if getattr(self, "_asr", None) is not None:
+            return self._asr
+        try:
+            backend = ASRBackendFactory.create(vocabulary=self.vocabulary)
+        except Exception as exc:  # pragma: no cover - defensive
+            self._asr_error = str(exc)
+            self._asr_ready = False
+            self._set_status("ASR unavailable")
+            return None
+        self._asr = backend
+        self._asr_ready = bool(getattr(backend, "is_available", lambda: False)())
+        if not self._asr_ready:
+            self._asr_error = getattr(
+                backend.get_status(), "load_error", None
+            ) if hasattr(backend, "get_status") else None
+            self._set_status("ASR unavailable")
+        else:
+            self._set_status("ASR ready")
         return self._asr
+
+    def _set_status(self, status: str) -> None:
+        """Update the processor status visible in the UI diagnostics panel."""
+        self._status = status
+
+    def _log_rate_limited(self, message: str, exc: Optional[Exception] = None) -> None:
+        """Log repeated audio/transcription errors at most once per 30 seconds.
+
+        Individual frame issues should use ``logger.debug``; this helper is for
+        repeated failures that would otherwise flood Streamlit Cloud logs. It
+        emits a single summary line with a failure count instead of one line
+        per failure.
+        """
+        now = time.time()
+        self._audio_error_count += 1
+        if now - self._last_audio_error_log_ts >= 30.0:
+            last_err = str(exc) if exc else ""
+            logger.warning(
+                "%s: %d failures in last 30s. Last error: %s",
+                message,
+                self._audio_error_count,
+                last_err,
+            )
+            self._last_audio_error_log_ts = now
+            self._audio_error_count = 0
 
     def _start_worker(self) -> None:
         """Start the single background transcription worker if not already running."""
@@ -1121,12 +1181,21 @@ class VoiceAudioProcessor(AudioProcessorBase):
             return
 
         def _worker_loop() -> None:
-            """Consume chunks from _chunk_queue and transcribe them."""
+            """Consume chunks from _chunk_queue and transcribe them safely."""
             while not self._stop_worker.is_set():
+                asr = self._get_asr()
+                if asr is None:
+                    self._set_status("ASR unavailable")
+                    break
+
                 try:
-                    chunk = self._chunk_queue.get(timeout=0.1)
+                    chunk = self._chunk_queue.get(timeout=0.25)
                 except queue.Empty:
                     continue
+
+                if chunk is None:
+                    continue
+
                 self._transcribe_chunk(chunk)
 
         self._worker_thread = threading.Thread(target=_worker_loop, daemon=True)
@@ -1191,7 +1260,9 @@ class VoiceAudioProcessor(AudioProcessorBase):
         # Fallback: detect from numpy array dtype if format name was not available
         if detected_format is None:
             try:
-                array = frame.to_ndarray()
+                array = _frame_to_ndarray(frame)
+                if array is None:
+                    return
                 if array.dtype == np.int16:
                     fallback_format = SAMPLE_FORMAT_INT16
                 else:
@@ -1214,8 +1285,15 @@ class VoiceAudioProcessor(AudioProcessorBase):
                         self.audio_buffer.update_format(sample_format=self._sample_format)
             except Exception:
                 pass
-        
-        frame_bytes = frame.to_ndarray().tobytes()
+
+        try:
+            frame_bytes = _frame_to_ndarray(frame)
+        except Exception as exc:
+            logger.debug("Skipping invalid audio frame: %s", exc)
+            return
+        if frame_bytes is None:
+            return
+        frame_bytes = frame_bytes.tobytes()
         chunk = self.audio_buffer.push_frame(frame_bytes)
 
         if chunk is not None:
@@ -1274,6 +1352,12 @@ class VoiceAudioProcessor(AudioProcessorBase):
         the main thread.
         """
         try:
+            asr = self._get_asr()
+            if asr is None:
+                self._set_status("ASR unavailable")
+                logger.debug("Skipping transcription: ASR unavailable")
+                return
+
             pcm_bytes = chunk.to_pcm_bytes()
             if not pcm_bytes:
                 logger.debug("Empty PCM bytes, skipping transcription")
@@ -1295,7 +1379,7 @@ class VoiceAudioProcessor(AudioProcessorBase):
 
             # Measure ASR latency for observability (Phase 1/5).
             start = time.time()
-            raw_text = self._get_asr().transcribe_pcm(pcm_bytes)
+            raw_text = asr.transcribe_pcm(pcm_bytes)
             latency_ms = (time.time() - start) * 1000.0
             logger.debug("ASR raw result: '%s' (latency: %.1f ms)", raw_text, latency_ms)
             if not raw_text:
@@ -1324,7 +1408,7 @@ class VoiceAudioProcessor(AudioProcessorBase):
             logger.debug("Voice event queued: type=%s, text='%s'", event.type, text)
 
         except Exception as e:
-            logger.error("Error in voice transcription thread: %s", e)
+            self._log_rate_limited("Error in voice transcription thread", e)
 
     def get_events(self) -> List[Tuple[str, str, VoiceScoreEvent]]:
         """Drain all pending events from the queue.
@@ -1342,6 +1426,7 @@ class VoiceAudioProcessor(AudioProcessorBase):
     def stop(self) -> None:
         """Stop processing and flush remaining audio."""
         self._stop_worker.set()
+        self._set_status("stopped")
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=1.0)
         self.audio_buffer.reset()
@@ -1552,10 +1637,72 @@ def clear_result_review_state() -> None:
     st.session_state.commentary_emitted_game_keys = []
 
 
+def _frame_to_ndarray(frame: Any) -> Optional[np.ndarray]:
+    """Extract a numpy array from a WebRTC audio frame (or return it if already an array).
+
+    Returns ``None`` for ``None`` input, empty frames, or frames without audio
+    data. Never raises — callers are responsible for handling ``None``.
+    """
+    if frame is None:
+        return None
+    try:
+        if hasattr(frame, "to_ndarray"):
+            arr = frame.to_ndarray()
+        elif isinstance(frame, np.ndarray):
+            arr = frame
+        else:
+            return None
+        arr = np.asarray(arr)
+        if arr.size == 0:
+            return None
+        return arr
+    except Exception as exc:
+        logger.debug("Skipping invalid audio frame: %s", exc)
+        return None
+
+
 def _audio_input_to_pcm(audio_file: Any) -> bytes:
-    """Convert st.audio_input bytes (WebM/Opus) to mono PCM 16kHz int16."""
+    """Convert st.audio_input audio to mono PCM 16kHz int16 bytes.
+
+    Accepts a single PyAV ``AudioFrame``, a list/tuple of frames, a numpy array,
+    a raw file object (WebM/Opus etc.), or ``None``. Individual invalid frames
+    are skipped (DEBUG level); repeated failures are rate-limited at WARNING
+    level instead of spamming the Streamlit Cloud logs on every frame.
+    """
+    if audio_file is None:
+        logger.debug("No audio input provided")
+        return b""
+
+    # numpy array: convert directly.
+    if isinstance(audio_file, np.ndarray):
+        return _pcm_float32_to_int16(_audio_frame_to_mono_float32(audio_file))
+
+    # list/tuple of frames: concatenate their mono float32 PCM.
+    if isinstance(audio_file, (list, tuple)):
+        if not audio_file:
+            return b""
+        chunks: list[np.ndarray] = []
+        for f in audio_file:
+            arr = _frame_to_ndarray(f)
+            if arr is None:
+                continue
+            chunks.append(_audio_frame_to_mono_float32(arr))
+        if not chunks:
+            logger.debug("No decodable audio frames in input list")
+            return b""
+        return _pcm_float32_to_int16(np.concatenate(chunks).astype(np.float32, copy=False))
+
+    # Single PyAV frame.
+    if hasattr(audio_file, "to_ndarray") and not hasattr(audio_file, "demux"):
+        arr = _frame_to_ndarray(audio_file)
+        if arr is None:
+            return b""
+        return _pcm_float32_to_int16(_audio_frame_to_mono_float32(arr))
+
+    # Otherwise assume a file-like/container object and demux via av.
     try:
         import av
+
         container = av.open(audio_file)
         stream = next(s for s in container.streams if s.type == "audio")
         resampler = av.AudioResampler(
@@ -1570,8 +1717,26 @@ def _audio_input_to_pcm(audio_file: Any) -> bytes:
                 pcm_frames.append(resampled.to_ndarray().tobytes())
         return b"".join(pcm_frames)
     except Exception as exc:
-        logger.error("Failed to convert audio input to PCM: %s", exc)
+        logger.debug("Failed to convert audio input to PCM: %s", exc)
         return b""
+
+
+def _audio_frame_to_mono_float32(arr: np.ndarray) -> np.ndarray:
+    """Convert an audio ndarray to mono float32 in ``[-1, 1]``."""
+    from tournament_platform.app.services.voice.vad import normalize_audio
+
+    arr = np.asarray(arr)
+    if arr.ndim == 2:
+        arr = arr.mean(axis=0)
+    elif arr.ndim > 2:
+        arr = arr.reshape(-1)
+    return normalize_audio(arr)
+
+
+def _pcm_float32_to_int16(arr: np.ndarray) -> bytes:
+    """Convert mono float32 PCM in ``[-1, 1]`` to mono int16 16kHz bytes."""
+    int16_audio = np.clip(arr * 32767, -32768, 32767).astype(np.int16)
+    return int16_audio.tobytes()
 
 
 def _process_push_to_talk_audio(audio_file: Any) -> Optional[VoiceScoreEvent]:
@@ -4285,11 +4450,15 @@ def _render_ui() -> None:
                         _last_transcript = st.session_state.get("last_voice_transcript", "")
                         _last_accepted = st.session_state.get("voice_last_applied_event_key")
                         _last_rejected_reason = st.session_state.get("last_voice_feedback", "")
+                        _proc_status = getattr(proc, "_status", "n/a") if proc else "no processor"
+                        _asr_ready = "yes" if (proc and getattr(proc, "_asr_ready", False)) else "no"
                         st.markdown(
                             "- WebRTC installed: **%s**\n"
                             "- voice scoring enabled: **%s**\n"
                             "- HF_TOKEN configured: **%s**\n"
                             "- ASR model loaded: **%s**\n"
+                            "- processor active: **%s**\n"
+                            "- processor status: **%s**\n"
                             "- audio queue size: **%d**\n"
                             "- event queue size: **%d**\n"
                             "- dropped audio frames: **%d**\n"
@@ -4303,6 +4472,8 @@ def _render_ui() -> None:
                                 "yes" if st.session_state.get("voice_scoring_enabled") else "no",
                                 _hf_configured,
                                 _asr_loaded,
+                                _asr_ready,
+                                _proc_status,
                                 _q_size,
                                 _evt_q,
                                 _dropped,

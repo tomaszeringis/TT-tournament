@@ -21,6 +21,42 @@ from tournament_platform.app.services.voice_audio import SAMPLE_FORMAT_FLOAT32, 
 logger = logging.getLogger(__name__)
 
 
+def normalize_audio(arr: object) -> np.ndarray:
+    """Normalize raw audio into float32 PCM in ``[-1, 1]``.
+
+    Safe for empty, ``None``, NaN/inf, int16, float, and multi-dimensional
+    arrays. Only integer PCM is divided by ``32768.0``; float PCM already in
+    ``[-1, 1]`` is left untouched. This prevents ``RuntimeWarning: invalid
+    value encountered in divide`` on silent or malformed input.
+
+    Returns an empty float32 array when input is empty/None.
+    """
+    if arr is None:
+        return np.empty(0, dtype=np.float32)
+
+    arr = np.asarray(arr)
+
+    if arr.size == 0:
+        return np.empty(0, dtype=np.float32)
+
+    if arr.ndim > 1:
+        arr = arr.reshape(-1)
+
+    if np.issubdtype(arr.dtype, np.integer):
+        arr = arr.astype(np.float32) / 32768.0
+    else:
+        arr = arr.astype(np.float32, copy=False)
+
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+    # If float audio accidentally arrives in int-like scale, normalize it.
+    max_abs = float(np.max(np.abs(arr))) if arr.size else 0.0
+    if max_abs > 2.0:
+        arr = arr / 32768.0
+
+    return np.clip(arr, -1.0, 1.0)
+
+
 def safe_rms(audio: Optional[np.ndarray]) -> float:
     """Compute RMS safely without int overflow or NaN propagation.
 
@@ -33,19 +69,10 @@ def safe_rms(audio: Optional[np.ndarray]) -> float:
     if audio is None:
         return 0.0
 
-    arr = np.asarray(audio)
+    arr = normalize_audio(audio)
 
     if arr.size == 0:
         return 0.0
-
-    arr = arr.astype(np.float32, copy=False)
-
-    max_abs = float(np.nanmax(np.abs(arr), initial=0.0)) if arr.size else 0.0
-    if max_abs > 2.0:
-        arr = arr / 32768.0
-
-    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-    arr = np.clip(arr, -1.0, 1.0)
 
     return float(np.sqrt(np.mean(np.square(arr, dtype=np.float32), dtype=np.float32)))
 
