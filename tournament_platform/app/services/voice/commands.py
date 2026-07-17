@@ -202,6 +202,8 @@ def _extract_player(text: str) -> Optional[str]:
 _COLOR_ALIAS_PATTERNS = [
     (r"\b(blue|teal|green)\b", "A"),
     (r"\b(red|orange|read)\b", "B"),
+    (r"\b(melynas|mėlynas|zalia|žalia|zalias|žalias)\b", "A"),
+    (r"\b(raudonas|raudona|oranzinis|oranžinis)\b", "B"),
 ]
 
 

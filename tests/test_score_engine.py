@@ -21,6 +21,8 @@ from tournament_platform.app.services.score_engine import (
     complete_game,
     create_match,
     games_to_win_to_best_of,
+    get_live_stats,
+    get_point_log,
     get_serving_player,
     is_deuce,
     reset_match,
@@ -361,6 +363,81 @@ class TestSerialization:
         assert restored.points_to_win == 15
         assert restored.best_of == 3
         assert restored.first_server == "B"
+
+
+# ---------------------------------------------------------------------------
+# Point trail
+# ---------------------------------------------------------------------------
+
+class TestPointTrail:
+    def test_point_trail_records_a(self):
+        s = create_match()
+        add_point(s, "A")
+        assert get_point_log(s) == ["A"]
+
+    def test_point_trail_records_both(self):
+        s = create_match()
+        add_point(s, "A")
+        add_point(s, "B")
+        assert get_point_log(s) == ["A", "B"]
+
+    def test_undo_clears_trail(self):
+        s = create_match()
+        add_point(s, "A")
+        undo_last_action(s)
+        assert get_point_log(s) == []
+
+
+# ---------------------------------------------------------------------------
+# Live stats
+# ---------------------------------------------------------------------------
+
+class TestLiveStats:
+    def test_current_streak_a(self):
+        s = create_match()
+        add_point(s, "A")
+        add_point(s, "A")
+        stats = get_live_stats(s)
+        assert stats["current_streak_player"] == "A"
+        assert stats["current_streak"] == 2
+
+    def test_max_streak(self):
+        s = create_match()
+        add_point(s, "A")
+        add_point(s, "B")
+        add_point(s, "A")
+        add_point(s, "A")
+        stats = get_live_stats(s)
+        assert stats["max_streak_a"] == 2
+        assert stats["max_streak_b"] == 1
+
+    def test_biggest_lead(self):
+        s = create_match()
+        add_point(s, "A")
+        add_point(s, "A")
+        add_point(s, "B")
+        stats = get_live_stats(s)
+        assert stats["biggest_lead_player"] == "A"
+        assert stats["biggest_lead_margin"] == 2
+
+    def test_biggest_lead_changes(self):
+        s = create_match()
+        add_point(s, "A")
+        add_point(s, "A")
+        add_point(s, "B")
+        add_point(s, "B")
+        add_point(s, "B")
+        stats = get_live_stats(s)
+        assert stats["biggest_lead_player"] == "A"
+        assert stats["biggest_lead_margin"] == 2
+
+    def test_empty_trail(self):
+        s = create_match()
+        stats = get_live_stats(s)
+        assert stats["current_streak"] == 0
+        assert stats["max_streak_a"] == 0
+        assert stats["max_streak_b"] == 0
+        assert stats["biggest_lead_margin"] == 0
 
 
 if __name__ == "__main__":

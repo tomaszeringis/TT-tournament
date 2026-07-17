@@ -20,7 +20,7 @@ rules stay centralized and consistent.
 
 import time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 # Supported configuration values (mirrors PingScore's format options).
 VALID_POINTS_TO_WIN = (11, 15, 21)
@@ -70,6 +70,7 @@ class MatchState:
     best_of: int = 5                    # 1 | 3 | 5
 
     history: List[Dict] = field(default_factory=list)
+    point_trail: List[str] = field(default_factory=list)
 
     match_status: str = "in_progress"  # in_progress | game_won | match_won
     last_event: Optional[str] = None
@@ -93,6 +94,8 @@ class MatchState:
             "points_played_this_game": self.points_played_this_game,
             "points_to_win": self.points_to_win,
             "best_of": self.best_of,
+            "history": list(self.history),
+            "point_trail": list(self.point_trail),
             "match_status": self.match_status,
             "last_event": self.last_event,
             "last_updated_at": self.last_updated_at,
@@ -117,6 +120,8 @@ class MatchState:
             points_played_this_game=data.get("points_played_this_game", 0),
             points_to_win=data.get("points_to_win", 11),
             best_of=data.get("best_of", 5),
+            history=list(data.get("history", [])),
+            point_trail=list(data.get("point_trail", [])),
             match_status=data.get("match_status", "in_progress"),
             last_event=data.get("last_event"),
             last_updated_at=data.get("last_updated_at", time.time()),
@@ -256,6 +261,8 @@ def _snapshot(state: MatchState) -> Dict:
         "points_played_this_game": state.points_played_this_game,
         "points_to_win": state.points_to_win,
         "best_of": state.best_of,
+        "history": list(state.history),
+        "point_trail": list(state.point_trail),
         "match_status": state.match_status,
         "last_event": state.last_event,
     }
@@ -278,6 +285,8 @@ def _restore(state: MatchState, snap: Dict) -> None:
     state.points_played_this_game = snap["points_played_this_game"]
     state.points_to_win = snap["points_to_win"]
     state.best_of = snap["best_of"]
+    state.history = list(snap["history"])
+    state.point_trail = list(snap["point_trail"])
     state.match_status = snap["match_status"]
     state.last_event = snap["last_event"]
 
@@ -352,6 +361,7 @@ def add_point(state: MatchState, player: str) -> ScoreResult:
 
     state.last_event = f"point_{player}"
     state.last_updated_at = time.time()
+    state.point_trail.append(player)
     return result
 
 
@@ -447,6 +457,7 @@ def reset_match(state: MatchState) -> ScoreResult:
     state.game_first_server = state.first_server
     state.points_played_this_game = 0
     state.history = []
+    state.point_trail = []
     state.match_status = "in_progress"
     state.last_event = "reset"
     state.last_updated_at = time.time()
@@ -457,3 +468,76 @@ def rematch(state: MatchState) -> ScoreResult:
     """Reset for a rematch, swapping the first server."""
     state.first_server = _other(state.first_server)
     return reset_match(state)
+
+
+# ---------------------------------------------------------------------------
+# Stats helpers (pure, read-only)
+# ---------------------------------------------------------------------------
+
+def get_point_log(state: MatchState) -> List[str]:
+    """Return a point trail like ['A', 'B', 'A', 'A'] from history."""
+    return list(state.point_trail)
+
+
+def get_live_stats(state: MatchState) -> Dict[str, Any]:
+    """Return current streak, max streak, biggest lead."""
+    trail = state.point_trail
+    if not trail:
+        return {
+            "current_streak_player": None,
+            "current_streak": 0,
+            "max_streak_a": 0,
+            "max_streak_b": 0,
+            "biggest_lead_player": None,
+            "biggest_lead_margin": 0,
+        }
+
+    current_streak_player = trail[-1]
+    current_streak = 0
+    for p in reversed(trail):
+        if p == current_streak_player:
+            current_streak += 1
+        else:
+            break
+
+    max_streak_a = 0
+    max_streak_b = 0
+    current = None
+    count = 0
+    for p in trail:
+        if p == current:
+            count += 1
+        else:
+            if current == "A":
+                max_streak_a = max(max_streak_a, count)
+            elif current == "B":
+                max_streak_b = max(max_streak_b, count)
+            current = p
+            count = 1
+    if current == "A":
+        max_streak_a = max(max_streak_a, count)
+    elif current == "B":
+        max_streak_b = max(max_streak_b, count)
+
+    score_a = 0
+    score_b = 0
+    biggest_lead_player = None
+    biggest_lead_margin = 0
+    for p in trail:
+        if p == "A":
+            score_a += 1
+        else:
+            score_b += 1
+        margin = abs(score_a - score_b)
+        if margin > biggest_lead_margin:
+            biggest_lead_margin = margin
+            biggest_lead_player = "A" if score_a > score_b else "B"
+
+    return {
+        "current_streak_player": current_streak_player,
+        "current_streak": current_streak,
+        "max_streak_a": max_streak_a,
+        "max_streak_b": max_streak_b,
+        "biggest_lead_player": biggest_lead_player,
+        "biggest_lead_margin": biggest_lead_margin,
+    }

@@ -73,6 +73,8 @@ from tournament_platform.app.services.score_engine import (
     games_to_win_to_best_of,
     is_deuce,
     get_serving_player,
+    get_point_log,
+    get_live_stats,
 )
 from tournament_platform.app.services.ui_feedback import play_cue, render_sound_toggle
 from tournament_platform.app.services.voice_speaker import SpeakerTagger, DEFAULT_SPEAKERS
@@ -85,6 +87,7 @@ from tournament_platform.app.services.voice.confirmation import policy_decision
 from tournament_platform.app.services.voice.vad import VoiceActivityDetector, create_vad
 from tournament_platform.app.services.voice.hf_token import get_hf_token
 from tournament_platform.app.services.voice.dataset_recorder import VoiceDatasetRecorder, VoiceDatasetSample
+from tournament_platform.app.services.voice.quick_voice import QuickVoiceScoringEngine
 from tournament_platform.app.services.voice_audio import VoiceAudioBuffer, AudioChunk
 from tournament_platform.app.services.voice_asr import LocalASR, LocalASRError
 from tournament_platform.app.services.asr_backends.factory import ASRBackendFactory
@@ -406,6 +409,28 @@ if 'voice_dataset_recorder' not in st.session_state:
 if 'voice_dataset_samples' not in st.session_state:
     st.session_state.voice_dataset_samples = []
 
+# Quick Voice Scoring state
+if 'quick_voice_mode' not in st.session_state:
+    st.session_state.quick_voice_mode = "off"
+if 'quick_voice_last_player' not in st.session_state:
+    st.session_state.quick_voice_last_player = None
+if 'quick_voice_last_ts' not in st.session_state:
+    st.session_state.quick_voice_last_ts = 0.0
+if 'quick_voice_last_phrase' not in st.session_state:
+    st.session_state.quick_voice_last_phrase = ""
+if 'quick_voice_last_status' not in st.session_state:
+    st.session_state.quick_voice_last_status = "idle"
+if 'quick_voice_point_trail' not in st.session_state:
+    st.session_state.quick_voice_point_trail = []
+if 'quick_voice_current_streak' not in st.session_state:
+    st.session_state.quick_voice_current_streak = 0
+if 'quick_voice_max_streak_a' not in st.session_state:
+    st.session_state.quick_voice_max_streak_a = 0
+if 'quick_voice_max_streak_b' not in st.session_state:
+    st.session_state.quick_voice_max_streak_b = 0
+if 'quick_voice_biggest_lead' not in st.session_state:
+    st.session_state.quick_voice_biggest_lead = {"player": None, "margin": 0}
+
 # ============================================================================
 # Voice rerun helpers (one-shot flags)
 # ============================================================================
@@ -509,6 +534,64 @@ def disable_voice_scoring_and_clear_pending_state(reason: str = "voice_toggle_of
     machine = st.session_state.get("voice_confirmation_machine")
     if machine:
         machine.reset()
+
+
+# ============================================================================
+# Quick Voice Scoring helpers
+# ============================================================================
+
+def _on_quick_voice_mode_changed(old_mode: str, new_mode: str) -> None:
+    if old_mode == "quick" and new_mode != "quick":
+        st.session_state.quick_voice_point_trail = []
+        st.session_state.quick_voice_current_streak = 0
+        st.session_state.quick_voice_max_streak_a = 0
+        st.session_state.quick_voice_max_streak_b = 0
+        st.session_state.quick_voice_biggest_lead = {"player": None, "margin": 0}
+        st.session_state.quick_voice_last_player = None
+        st.session_state.quick_voice_last_ts = 0.0
+        st.session_state.quick_voice_last_phrase = ""
+        st.session_state.quick_voice_last_status = "idle"
+        _increment_voice_session_epoch()
+
+
+def _apply_quick_voice_point(player: str, transcript: str) -> None:
+    mm = st.session_state.match_manager
+    prev_state = copy.deepcopy(mm.state)
+    success, msg = mm._add_point(player)
+    if success:
+        st.session_state.quick_voice_last_player = player
+        st.session_state.quick_voice_last_ts = time.time() * 1000.0
+        st.session_state.quick_voice_last_phrase = transcript
+        st.session_state.quick_voice_last_status = "accepted"
+        st.session_state.last_feedback = msg
+        st.toast(msg, icon="✅")
+        play_cue("point")
+        _maybe_speak_tts(msg, "increment")
+        _build_and_store_commentary("point_a" if player == "A" else "point_b", mm.state, prev_state)
+        _request_voice_rerun("quick_voice_accepted")
+
+
+def _process_quick_voice_event(transcript: str) -> None:
+    if st.session_state.get("quick_voice_mode") != "quick":
+        return
+
+    mm = st.session_state.match_manager
+    engine = QuickVoiceScoringEngine()
+    result = engine.process(
+        transcript=transcript,
+        current_score_a=mm.state.score_a,
+        current_score_b=mm.state.score_b,
+    )
+
+    if result["action"] == "accept":
+        _apply_quick_voice_point(result["player"], transcript)
+    elif result["action"] == "ignore":
+        st.session_state.quick_voice_last_player = result.get("player")
+        st.session_state.quick_voice_last_phrase = transcript
+        st.session_state.quick_voice_last_status = result.get("reason", "duplicate_ignored")
+    else:
+        st.session_state.quick_voice_last_phrase = transcript
+        st.session_state.quick_voice_last_status = "rejected"
 
 
 # ============================================================================
@@ -1794,29 +1877,32 @@ def _process_voice_events() -> None:
 
     logger.info("_process_voice_events: processing %d events", len(events))
     for raw_text, text, event in events:
-        # Preserve noise/latency metadata on the text for the canonical function
-        metadata_prefix = ""
-        if getattr(event, 'noise_rms', None) is not None:
-            metadata_prefix = f"[noise_rms={event.noise_rms}]"
-        if getattr(event, 'asr_latency_ms', None) is not None:
-            metadata_prefix += f"[latency={event.asr_latency_ms}]"
+        if st.session_state.get("quick_voice_mode") == "quick":
+            _process_quick_voice_event(text)
+        else:
+            # Preserve noise/latency metadata on the text for the canonical function
+            metadata_prefix = ""
+            if getattr(event, 'noise_rms', None) is not None:
+                metadata_prefix = f"[noise_rms={event.noise_rms}]"
+            if getattr(event, 'asr_latency_ms', None) is not None:
+                metadata_prefix += f"[latency={event.asr_latency_ms}]"
 
-        # Use the canonical function for ALL scoring logic
-        result = apply_score_event_and_refresh_ui(
-            transcript=text,
-            source="webrtc",
-            enable_confirmation=VOICE_ENABLE_CONFIRMATION,  # Use config, not hardcoded False
-            current_score_a=_current_score_a,
-            current_score_b=_current_score_b,
-        )
+            # Use the canonical function for ALL scoring logic
+            result = apply_score_event_and_refresh_ui(
+                transcript=text,
+                source="webrtc",
+                enable_confirmation=VOICE_ENABLE_CONFIRMATION,
+                current_score_a=_current_score_a,
+                current_score_b=_current_score_b,
+            )
 
-        # Log result for observability
-        logger.debug(
-            "Voice event processed: transcript='%s', success=%s, reason='%s', "
-            "prev='%s' -> new='%s'",
-            text, result.success, result.reason,
-            result.previous_score, result.new_score,
-        )
+            # Log result for observability
+            logger.debug(
+                "Voice event processed: transcript='%s', success=%s, reason='%s', "
+                "prev='%s' -> new='%s'",
+                text, result.success, result.reason,
+                result.previous_score, result.new_score,
+            )
 
     # Note: We do NOT call st.rerun() here anymore. The heartbeat at the end
     # of the page handles rerunning while continuous listening is active.
@@ -3723,6 +3809,50 @@ def _render_ui() -> None:
                 st.rerun()
     
     # ============================================================================
+    # Quick Voice Stats & Feedback (Quick Voice Scoring mode only)
+    # ============================================================================
+    if st.session_state.get("quick_voice_mode") == "quick":
+        _e = st.session_state.match_manager.engine
+        _stats = get_live_stats(_e)
+        _trail = get_point_log(_e)
+        
+        st.divider()
+        col_trail, col_stats = st.columns([2, 1])
+        with col_trail:
+            st.markdown("**Point Trail**")
+            chips = "".join(
+                f"<span style='display:inline-block;width:24px;height:24px;border-radius:50%;"
+                f"background:{'#0066FF' if p == 'A' else '#FF6D00'};margin:2px;'></span>"
+                for p in _trail[-20:]
+            )
+            st.markdown(f"<div style='text-align:center;'>{chips}</div>", unsafe_allow_html=True)
+        
+        with col_stats:
+            st.markdown("**Live Stats**")
+            streak_text = f"Streak: {_stats['current_streak_player']} ({_stats['current_streak']})"
+            max_streak_text = f"Max streak: A={_stats['max_streak_a']}, B={_stats['max_streak_b']}"
+            lead_text = f"Biggest lead: {_stats['biggest_lead_player']} by {_stats['biggest_lead_margin']}"
+            st.caption(f"{streak_text}\n{max_streak_text}\n{lead_text}")
+        
+        _last_phrase = st.session_state.quick_voice_last_phrase
+        _last_status = st.session_state.quick_voice_last_status
+        
+        if _last_status == "accepted":
+            st.success(f"🎤 **{_last_phrase}** → Point accepted")
+        elif _last_status == "duplicate_ignored":
+            st.warning(f"🎤 **{_last_phrase}** → Duplicate ignored")
+        elif _last_status == "too_soon":
+            st.info(f"🎤 **{_last_phrase}** → Too soon, ignored")
+        elif _last_status == "rejected":
+            st.info(f"🎤 **{_last_phrase}** → Unknown command")
+        
+        st.caption(
+            "Say **Blue / Teal / Green** for Player A  |  "
+            "Say **Red / Orange** for Player B  |  "
+            "Lithuanian: **Mėlynas** (A), **Žalias** (A), **Raudonas** (B), **Oranžinis** (B)"
+        )
+    
+    # ============================================================================
     # Round / Match Winner Screens (Phase 5 / PingScore port)
     # ============================================================================
     
@@ -3894,6 +4024,16 @@ def _render_ui() -> None:
             help="Turn on voice scorekeeping. Push-to-talk is the default reliable mode. "
                  "Continuous listening is optional and experimental.",
         )
+        _prev_mode = st.session_state.get("quick_voice_mode", "off")
+        st.session_state.quick_voice_mode = st.segmented_control(
+            "Voice Mode",
+            options=["off", "full", "quick"],
+            format_func=lambda x: {"off": "Off", "full": "Full Voice Commands", "quick": "Quick Voice Scoring"}[x],
+            default=_prev_mode,
+        )
+        _new_mode = st.session_state.quick_voice_mode
+        if _new_mode != _prev_mode:
+            _on_quick_voice_mode_changed(_prev_mode, _new_mode)
         # Detect transition: ON→OFF clears all pending voice state
         _curr_enabled = st.session_state.voice_scoring_enabled
         if _prev_enabled and not _curr_enabled:
@@ -4281,9 +4421,22 @@ def _render_ui() -> None:
             _file_fingerprint = getattr(audio_file, "name", "") + str(getattr(audio_file, "size", 0))
             _cached_event = st.session_state.get("_voice_p2p_cache", {}).get(_file_fingerprint)
             if _cached_event is None:
-                _cached_event = _process_push_to_talk_audio(audio_file)
-                if _cached_event is not None:
-                    st.session_state.setdefault("_voice_p2p_cache", {})[_file_fingerprint] = _cached_event
+                if st.session_state.get("quick_voice_mode") == "quick":
+                    pcm_bytes = _audio_input_to_pcm(audio_file)
+                    if pcm_bytes:
+                        if "voice_asr" not in st.session_state:
+                            st.session_state.voice_asr = LocalASR(vocabulary=VoiceVocabulary.load())
+                        try:
+                            raw_text = st.session_state.voice_asr.transcribe_chunk(pcm_bytes)
+                        except Exception:
+                            raw_text = ""
+                        if raw_text and raw_text.strip():
+                            _process_quick_voice_event(raw_text.strip())
+                    _cached_event = None
+                else:
+                    _cached_event = _process_push_to_talk_audio(audio_file)
+                    if _cached_event is not None:
+                        st.session_state.setdefault("_voice_p2p_cache", {})[_file_fingerprint] = _cached_event
             event = _cached_event
             if event is not None:
                 st.session_state.last_voice_transcript = event.raw_text
