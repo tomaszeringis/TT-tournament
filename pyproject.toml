@@ -54,6 +54,7 @@ dependencies = [
     "streamlit-webrtc>=0.75,<0.76",
     "av>=12.0.0",
     "numpy>=1.24.0",
+    "psycopg[binary]>=3.2",
 ]
 
 [project.optional-dependencies]

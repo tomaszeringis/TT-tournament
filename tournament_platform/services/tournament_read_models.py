@@ -19,14 +19,21 @@ from tournament_platform.models import (
 # 1. list_tournaments
 # ============================================================================
 
-def list_tournaments(db: Session) -> List[Dict[str, Any]]:
+def list_tournaments(db: Session, include_archived: bool = False) -> List[Dict[str, Any]]:
     """
-    Return all tournaments with basic info.
+    Return tournaments with basic info.
+    
+    Args:
+        db: Database session
+        include_archived: If True, include archived tournaments. Default False.
     
     Returns:
-        List of dicts with id, name, description, tournament_type, created_at
+        List of dicts with id, name, description, tournament_type, created_at, is_archived
     """
-    tournaments = db.query(Tournament).order_by(Tournament.created_at.desc()).all()
+    query = db.query(Tournament)
+    if not include_archived:
+        query = query.filter(Tournament.is_archived == False)  # noqa: E712
+    tournaments = query.order_by(Tournament.created_at.desc()).all()
     return [
         {
             "id": t.id,
@@ -34,6 +41,7 @@ def list_tournaments(db: Session) -> List[Dict[str, Any]]:
             "description": t.description,
             "tournament_type": t.tournament_type.value if t.tournament_type else "knockout",
             "created_at": t.created_at.isoformat() if t.created_at else None,
+            "is_archived": bool(t.is_archived),
         }
         for t in tournaments
     ]

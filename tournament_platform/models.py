@@ -5,31 +5,30 @@ from pathlib import Path
 import datetime
 import enum
 
-# Build absolute path to database file
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
 
-# Ensure data directory exists
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-DATABASE_PATH = DATA_DIR / "tournament.db"
-# Use 3 slashes for Windows absolute paths. Path.as_posix() ensures forward slashes
-# which are generally better handled by SQLAlchemy's URI parser.
-DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
-
-# Final check for accessibility
-if not DATA_DIR.exists():
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-
 try:
-    # Test file access - create it if it doesn't exist
-    if not DATABASE_PATH.exists():
-        open(DATABASE_PATH, 'a').close()
-except Exception as e:
-    print(f"WARNING: Cannot access database file at {DATABASE_PATH}: {e}")
+    from tournament_platform.core.db_config import engine, SessionLocal, DATABASE_URL as RESOLVED_DATABASE_URL
+    DATABASE_URL = RESOLVED_DATABASE_URL
+except ImportError:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    DATABASE_PATH = DATA_DIR / "tournament.db"
+    DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
+    if not DATA_DIR.exists():
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+    try:
+        if not DATABASE_PATH.exists():
+            open(DATABASE_PATH, 'a').close()
+    except Exception as e:
+        print(f"WARNING: Cannot access database file at {DATABASE_PATH}: {e}")
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30})
+    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+# Backward compatibility for imports that expect DATABASE_PATH
+if 'DATABASE_PATH' not in dir():
+    DATABASE_PATH = DATA_DIR / "tournament.db"
+
 Base = declarative_base()
 
 class MatchStatus(str, enum.Enum):
@@ -63,6 +62,7 @@ class Tournament(Base):
     tournament_type = Column(Enum(TournamentType), default=TournamentType.knockout)
     created_at = Column(DateTime, default=datetime.datetime.utcnow)
     tie_break_order = Column(Text, nullable=True)
+    is_archived = Column(Boolean, default=False)
 
     # Relationship
     matches = relationship("Match", back_populates="tournament")

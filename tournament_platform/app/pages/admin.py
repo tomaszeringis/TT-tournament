@@ -28,6 +28,8 @@ from tournament_platform.app.utils import (
     render_status_badge,
 )
 from tournament_platform.config import settings
+from tournament_platform.config.runtime import get_runtime_config
+from tournament_platform.core.db_config import get_database_type, is_cloud_database
 from tournament_platform.app.settings import API_BASE_URL, SHOW_DEBUG_DETAILS
 from tournament_platform.app.design_system import apply_global_styles
 from tournament_platform.app.components.page_header import render_page_header
@@ -159,6 +161,26 @@ with admin_tabs[0]:
         render_interactive_table(player_df.drop(columns=["ID"]))
     else:
         st.info("No players found in database")
+    
+    st.space("medium")
+    st.write("**📋 All Persisted Tournaments**")
+    
+    try:
+        all_tournaments = db.query(Tournament).order_by(Tournament.created_at.desc()).all()
+        if all_tournaments:
+            for t in all_tournaments:
+                match_count = len(t.matches)
+                completed = sum(1 for m in t.matches if m.status == MatchStatus.completed)
+                t_cols = st.columns([3, 1, 1, 1, 1])
+                t_cols[0].write(f"**{t.name}** {'(archived)' if t.is_archived else ''}")
+                t_cols[1].caption(f"Created: {t.created_at.strftime('%Y-%m-%d') if t.created_at else 'N/A'}")
+                t_cols[2].caption(f"Type: {t.tournament_type.value if t.tournament_type else 'knockout'}")
+                t_cols[3].metric("Matches", match_count)
+                t_cols[4].metric("Completed", completed)
+        else:
+            st.info("No tournaments found in database")
+    except Exception as e:
+        st.error(f"Failed to load tournaments: {e}")
 
 # Tab 2: Match Management
 with admin_tabs[1]:
@@ -316,6 +338,17 @@ with admin_tabs[3]:
 with admin_tabs[4]:
     st.subheader("💚 System Health")
     
+    # Warn if running on Streamlit Cloud without a cloud database configured
+    try:
+        rc = get_runtime_config()
+        if rc.is_streamlit_cloud and not is_cloud_database():
+            st.warning(
+                "Running on Streamlit Cloud but DATABASE_URL is not configured. "
+                "Data will not persist across restarts. Add DATABASE_URL to Streamlit secrets."
+            )
+    except Exception:
+        pass
+    
     # Perform real health checks using extracted helpers
     db_healthy, db_status = get_safe_database_status()
     api_healthy, api_status = get_safe_api_status()
@@ -415,7 +448,7 @@ with admin_tabs[4]:
 
     versions = get_runtime_versions()
     system_info = {
-        "Database Type": "SQLite",
+        "Database Type": get_database_type(),
         "AI Model": model_display,
         "Streamlit Version": versions.get("streamlit", "unknown"),
         "FastAPI Version": versions.get("fastapi", "unknown"),

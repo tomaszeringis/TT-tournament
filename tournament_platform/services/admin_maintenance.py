@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from tournament_platform.models import Player, Match, Tournament, MatchStatus, engine
 from tournament_platform.config import settings
+from tournament_platform.core.db_config import get_database_type, is_cloud_database
 from tournament_platform.app.settings import API_BASE_URL, SHOW_DEBUG_DETAILS
 
 
@@ -243,7 +244,7 @@ def get_environment_warnings() -> List[str]:
                        "Set to False in production.")
     
     # Check for SQLite in multi-user scenarios
-    if "sqlite" in settings.DATABASE_URL.lower():
+    if not is_cloud_database():
         warnings.append("SQLite is used for the database. "
                        "This is not recommended for multi-user production environments. "
                        "Consider using PostgreSQL for production.")
