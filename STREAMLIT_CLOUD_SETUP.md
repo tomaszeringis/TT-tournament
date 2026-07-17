@@ -62,7 +62,32 @@ OLLAMA_HOST = "http://your-ollama-host:11434"
 # Optional: External API
 API_BASE_URL = "https://your-api.example.com"
 API_TOKEN = "bearer-token-if-needed"
+
+# Voice scoring ASR (Streamlit Cloud defaults shown)
+# Faster-whisper runs locally in the app. Use tiny.en on Cloud for fast, safe
+# startup; switch to base.en/small.en once the pipeline is confirmed working.
+VOICE_ASR_MODEL_SIZE = "tiny.en"
+VOICE_ASR_DEVICE = "cpu"
+VOICE_ASR_COMPUTE_TYPE = "int8"
+
+# Optional: higher Hugging Face download rate limits. NOT required — the app
+# still works (and degrades gracefully) without it.
+# HF_TOKEN = "hf_..."
 ```
+
+### Voice Scoring ASR Notes
+
+- The app reads `VOICE_ASR_MODEL_SIZE` / `VOICE_ASR_DEVICE` / `VOICE_ASR_COMPUTE_TYPE`
+  / `HF_TOKEN` from the environment **or** from Streamlit secrets (whichever is
+  set). Streamlit Cloud secrets do **not** automatically become environment
+  variables, so putting them in `[secrets]` is sufficient.
+- `faster-whisper` is declared in `pyproject.toml` (which pulls in
+  `ctranslate2`, `onnxruntime`, `huggingface-hub`, `tokenizers`, `av`). No
+  `requirements.txt`/`packages.txt` is used; dependencies come from `pyproject.toml`.
+- If the model fails to download or a package is missing, the **Voice ASR
+  Diagnostics** expander on the Voice Scorekeeper page reports the exact state
+  (`package_missing`, `model_download_failed`, `model_init_failed`, etc.) and
+  manual scoring continues to work. It never shows only "Status unavailable".
 
 ### Important: Set DATABASE_URL Before First Deploy
 

@@ -2,6 +2,8 @@
 Tests for LocalASR graceful degradation and status reporting.
 """
 
+import os
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -15,7 +17,7 @@ class TestLocalASRStatus:
         asr = LocalASR()
         status = asr.get_status()
         assert "available" in status
-        assert status["model_size"] == "base.en"
+        assert status["model_size"] == "tiny.en"
         assert status["device"] == "cpu"
         assert status["compute_type"] == "int8"
 
@@ -63,23 +65,23 @@ class TestLocalASRStatus:
         result = asr.transcribe_chunk(b"")
         assert result == ""
 
-    def test_environment_variable_overrides(self):
-        with patch("tournament_platform.app.services.voice_asr.VOICE_ASR_MODEL_SIZE", "small.en"), \
-             patch("tournament_platform.app.services.voice_asr.VOICE_ASR_DEVICE", "cuda"), \
-             patch("tournament_platform.app.services.voice_asr.VOICE_ASR_COMPUTE_TYPE", "float16"):
-            asr = LocalASR()
-            assert asr.model_size == "small.en"
-            assert asr.device == "cuda"
-            assert asr.compute_type == "float16"
+    def test_environment_variable_overrides(self, monkeypatch):
+        monkeypatch.setenv("VOICE_ASR_MODEL_SIZE", "small.en")
+        monkeypatch.setenv("VOICE_ASR_DEVICE", "cuda")
+        monkeypatch.setenv("VOICE_ASR_COMPUTE_TYPE", "float16")
+        asr = LocalASR()
+        assert asr.model_size == "small.en"
+        assert asr.device == "cuda"
+        assert asr.compute_type == "float16"
 
-    def test_default_environment_values(self):
-        with patch("tournament_platform.app.services.voice_asr.VOICE_ASR_MODEL_SIZE", "base.en"), \
-             patch("tournament_platform.app.services.voice_asr.VOICE_ASR_DEVICE", "cpu"), \
-             patch("tournament_platform.app.services.voice_asr.VOICE_ASR_COMPUTE_TYPE", "int8"):
-            asr = LocalASR()
-            assert asr.model_size == "base.en"
-            assert asr.device == "cpu"
-            assert asr.compute_type == "int8"
+    def test_default_environment_values(self, monkeypatch):
+        monkeypatch.delenv("VOICE_ASR_MODEL_SIZE", raising=False)
+        monkeypatch.delenv("VOICE_ASR_DEVICE", raising=False)
+        monkeypatch.delenv("VOICE_ASR_COMPUTE_TYPE", raising=False)
+        asr = LocalASR()
+        assert asr.model_size == "tiny.en"
+        assert asr.device == "cpu"
+        assert asr.compute_type == "int8"
 
 
 class TestLocalASRModelCache:

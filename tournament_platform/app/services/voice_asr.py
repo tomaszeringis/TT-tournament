@@ -14,11 +14,7 @@ from typing import Optional
 
 from tournament_platform.app.services.voice_vocab import VoiceVocabulary
 from tournament_platform.app.services.voice.hf_token import apply_hf_token, get_hf_token
-from tournament_platform.services.settings import (
-    VOICE_ASR_MODEL_SIZE,
-    VOICE_ASR_DEVICE,
-    VOICE_ASR_COMPUTE_TYPE,
-)
+from tournament_platform.app.services.voice.asr_diagnostics import get_voice_setting
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +67,12 @@ class LocalASR:
             compute_type: Compute type ("int8", "float16", "float32")
             vocabulary: Optional VoiceVocabulary for biasing/post-processing.
         """
-        # Read from centralized settings with optional constructor overrides
-        self.model_size = model_size or VOICE_ASR_MODEL_SIZE
-        self.device = device or VOICE_ASR_DEVICE
-        self.compute_type = compute_type or VOICE_ASR_COMPUTE_TYPE
+        # Read from env/secrets with optional constructor overrides.
+        # get_voice_setting honors Streamlit Cloud secrets (which are NOT
+        # injected into os.environ), so ASR config works on Streamlit Cloud.
+        self.model_size = model_size or get_voice_setting("VOICE_ASR_MODEL_SIZE", "tiny.en")
+        self.device = device or get_voice_setting("VOICE_ASR_DEVICE", "cpu")
+        self.compute_type = compute_type or get_voice_setting("VOICE_ASR_COMPUTE_TYPE", "int8")
         self.vocabulary = vocabulary or VoiceVocabulary.load()
         
         # Lazy-loaded model (shared via module-level cache)
@@ -266,8 +264,27 @@ class LocalASR:
         Returns:
             Dict with availability, model info, and any errors.
         """
+        # Derive a precise, UI-safe readiness state instead of a vague reason.
+        if self._model is not None:
+            state = "model_loaded"
+        elif self._load_failed:
+            if self._load_error and "not installed" in self._load_error:
+                state = "package_missing"
+            elif self._load_error and "download" in self._load_error.lower():
+                state = "model_download_failed"
+            elif self._load_error:
+                state = "model_init_failed"
+            else:
+                state = "import_failed"
+        elif self._load_attempted:
+            state = "model_loading"
+        else:
+            state = "not_configured"
+
         return {
             "available": self.is_available(),
+            "state": state,
+            "reason": self._load_error or state,
             "model_size": self.model_size,
             "device": self.device,
             "compute_type": self.compute_type,

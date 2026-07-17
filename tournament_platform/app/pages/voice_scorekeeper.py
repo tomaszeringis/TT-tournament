@@ -87,6 +87,11 @@ from tournament_platform.app.services.voice.commands import VoiceIntent, parse a
 from tournament_platform.app.services.voice.confirmation import policy_decision
 from tournament_platform.app.services.voice.vad import VoiceActivityDetector, create_vad
 from tournament_platform.app.services.voice.hf_token import get_hf_token
+from tournament_platform.app.services.voice.asr_diagnostics import (
+    get_voice_setting,
+    diagnose_faster_whisper_environment,
+    log_voice_asr_environment_once,
+)
 from tournament_platform.app.services.voice.dataset_recorder import VoiceDatasetRecorder, VoiceDatasetSample
 from tournament_platform.app.services.voice.quick_voice import QuickVoiceScoringEngine
 from tournament_platform.app.services.voice_audio import VoiceAudioBuffer, AudioChunk
@@ -3434,6 +3439,59 @@ def _safe_queue_size(queue_obj: object | None) -> int:
         return 0
 
 
+def get_asr_diagnostic() -> Dict[str, Any]:
+    """Return a precise, UI-safe ASR diagnostic dict for the Voice Scorekeeper.
+
+    Combines the backend factory status (which now carries ``state``/``reason``)
+    with the dependency-import probe so the UI never shows only a vague
+    "Status unavailable". The returned dict is safe to render as JSON.
+    """
+    diag = diagnose_faster_whisper_environment()
+    try:
+        backend_status = ASRBackendFactory.backend_status()
+        status = _normalize_status_dict(backend_status, default_reason="not_configured")
+    except Exception as exc:
+        status = {
+            "available": False,
+            "state": "import_failed",
+            "reason": f"{type(exc).__name__}: {exc}",
+            "provider": "faster_whisper",
+        }
+
+    status["imports"] = diag.get("imports", {})
+    status["provider"] = status.get("provider") or "faster_whisper"
+    # Surface the precise state; prefer the backend's own state/reason.
+    status["state"] = status.get("state") or (
+        "ready" if status.get("available") else (status.get("reason") or "not_configured")
+    )
+    return status
+
+
+def get_asr() -> Optional[object]:
+    """Lazily build/return a ready ASR backend for diagnostics/test buttons.
+
+    Returns ``None`` when no backend is available; never raises.
+    """
+    try:
+        return ASRBackendFactory.create()
+    except Exception:
+        return None
+
+
+def _quick_voice_asr_ready() -> bool:
+    """Return True only if a transcript provider (faster-whisper) is ready.
+
+    Quick Voice Scoring relies on the active transcript pipeline, so it must
+    not be presented as "listening" when ASR is unavailable. Browser Web
+    Speech fallback is intentionally out of scope for this fix.
+    """
+    try:
+        diag = get_asr_diagnostic()
+        return bool(diag.get("available"))
+    except Exception:
+        return False
+
+
 def fetch_active_matches(tournament_id: int, statuses: Optional[List[str]] = None) -> List[Dict]:
     """Fetch scorable matches for a tournament from the local database.
 
@@ -3716,6 +3774,11 @@ def _render_ui() -> None:
         title="Voice Scorekeeper",
         icon_name="voice_scorekeeper",
     )
+    # Log ASR environment/dependency diagnostics once per process (Cloud-safe).
+    try:
+        log_voice_asr_environment_once()
+    except Exception:
+        pass
     if get_script_run_ctx() is not None:
         render_tour("voice_scorekeeper")
         apply_global_styles()
@@ -4239,6 +4302,12 @@ def _render_ui() -> None:
         _new_mode = st.session_state.quick_voice_mode
         if _new_mode != _prev_mode:
             _on_quick_voice_mode_changed(_prev_mode, _new_mode)
+        if _new_mode == "quick" and not _quick_voice_asr_ready():
+            st.warning(
+                "Quick Voice Scoring needs a working transcript provider. "
+                "ASR is not ready — see Voice ASR Diagnostics. Use push-to-talk "
+                "or manual scoring until ASR loads."
+            )
         # Detect transition: ON→OFF clears all pending voice state
         _curr_enabled = st.session_state.voice_scoring_enabled
         if _prev_enabled and not _curr_enabled:
@@ -4352,18 +4421,20 @@ def _render_ui() -> None:
                             st.session_state.voice_asr_status = ASRBackendFactory.backend_status()
                         except Exception as e:
                             st.session_state.voice_asr_status = {"available": False, "load_error": str(e)}
-    
-                    # Show ASR status
+
+                    # Show precise ASR status (never a vague "Status unavailable")
                     asr_status = _normalize_status_dict(st.session_state.voice_asr_status)
+                    asr_state = asr_status.get("state") or asr_status.get("reason") or "not_configured"
                     if not asr_status.get("available", False):
-                        error_msg = asr_status.get("reason") or asr_status.get("load_error") or "Unknown error"
+                        error_msg = asr_status.get("reason") or asr_status.get("load_error") or "not_configured"
                         if is_running_on_streamlit_cloud():
-                            logger.warning("ASR unavailable: %s", error_msg)
+                            logger.warning("ASR unavailable (state=%s): %s", asr_state, error_msg)
                             st.warning(
-                                "Cloud ASR is not configured. Manual scoring is still available."
+                                f"Voice ASR not ready ({asr_state}). "
+                                "Manual scoring is still available. See Voice ASR Diagnostics below."
                             )
                         else:
-                            st.error(f"⚠️ Local ASR not available: {error_msg}")
+                            st.error(f"⚠️ Local ASR not available ({asr_state}): {error_msg}")
                             st.caption("Voice scoring requires faster-whisper. Install with: `pip install faster-whisper`")
                         st.session_state.voice_listening = False
                         st.rerun()
@@ -4500,6 +4571,52 @@ def _render_ui() -> None:
                     _color = "🔴" if _conf_pct < 50 else ("🟡" if _conf_pct < 80 else "🟢")
                     st.progress(_conf, text=f"{_color} Confidence: {_conf_pct:.0f}%")
     
+                # Voice ASR Diagnostics expander (precise status + test buttons)
+                with st.expander("🩺 Voice ASR Diagnostics", expanded=False):
+                    _diag = get_asr_diagnostic()
+                    _asr_state = _diag.get("state") or _diag.get("reason") or "not_configured"
+                    st.markdown(
+                        "**ASR provider:** %s  \n"
+                        "**ASR ready:** %s  \n"
+                        "**State:** %s  \n"
+                        "**Model:** %s  \n"
+                        "**Device:** %s  \n"
+                        "**Compute type:** %s  \n"
+                        "**Last ASR error:** %s"
+                        % (
+                            _diag.get("provider", "faster_whisper"),
+                            "yes" if _diag.get("available") else "no",
+                            _asr_state,
+                            _diag.get("model_size", "—"),
+                            _diag.get("device", "—"),
+                            _diag.get("compute_type", "—"),
+                            _diag.get("reason") or "none",
+                        )
+                    )
+
+                    st.divider()
+                    c_left, c_mid, c_right = st.columns(3)
+                    with c_left:
+                        if st.button("Test imports", key="asr_test_imports"):
+                            st.json(_diag.get("imports", {}))
+                    with c_mid:
+                        if st.button("Load ASR model", key="asr_test_load"):
+                            _asr = get_asr()
+                            if _asr is None:
+                                st.error("No ASR backend available.")
+                            else:
+                                st.json(_asr.get_status().__dict__ if hasattr(_asr.get_status(), "__dict__") else _asr.get_status())
+                    with c_right:
+                        if st.button("Refresh status", key="asr_refresh"):
+                            st.session_state.voice_asr_status = None
+                            st.rerun()
+
+                    st.caption(
+                        "Import probe shows exactly which ASR packages are "
+                        "present on this runtime. 'Load ASR model' attempts to "
+                        "instantiate the model and reports the precise outcome."
+                    )
+
                 # Debug expander
                 with st.expander("🔍 Voice Debug", expanded=False):
                     st.markdown("**Recent Voice Events**")
@@ -4636,17 +4753,27 @@ def _render_ui() -> None:
             _cached_event = _voice_p2p_cache.get(_file_fingerprint)
             if _cached_event is None:
                 if st.session_state.get("quick_voice_mode") == "quick":
-                    pcm_bytes = _audio_input_to_pcm(audio_file)
-                    if pcm_bytes:
-                        if "voice_asr" not in st.session_state:
-                            st.session_state.voice_asr = LocalASR(vocabulary=VoiceVocabulary.load())
-                        try:
-                            raw_text = st.session_state.voice_asr.transcribe_chunk(pcm_bytes)
-                        except Exception:
-                            raw_text = ""
-                        if raw_text and raw_text.strip():
-                            _process_quick_voice_event(raw_text.strip())
-                    _cached_event = None
+                    # Quick Voice depends on the active transcript provider.
+                    # Do not silently process when ASR is not ready.
+                    if not _quick_voice_asr_ready():
+                        st.warning(
+                            "Quick Voice Scoring needs a working transcript "
+                            "provider. ASR is not ready — see Voice ASR Diagnostics. "
+                            "Manual scoring still works."
+                        )
+                        _cached_event = None
+                    else:
+                        pcm_bytes = _audio_input_to_pcm(audio_file)
+                        if pcm_bytes:
+                            if "voice_asr" not in st.session_state:
+                                st.session_state.voice_asr = LocalASR(vocabulary=VoiceVocabulary.load())
+                            try:
+                                raw_text = st.session_state.voice_asr.transcribe_chunk(pcm_bytes)
+                            except Exception:
+                                raw_text = ""
+                            if raw_text and raw_text.strip():
+                                _process_quick_voice_event(raw_text.strip())
+                        _cached_event = None
                 else:
                     _cached_event = _process_push_to_talk_audio(audio_file)
                     if _cached_event is not None:

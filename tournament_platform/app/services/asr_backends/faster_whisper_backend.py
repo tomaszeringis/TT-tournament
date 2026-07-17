@@ -72,8 +72,10 @@ class FasterWhisperBackend(ASRBackend):
                 "model_size": status.get("model_size"),
                 "device": status.get("device"),
                 "compute_type": status.get("compute_type"),
+                "state": status.get("state"),
+                "reason": status.get("reason"),
             },
-            load_error=status.get("load_error"),
+            load_error=status.get("reason") or status.get("load_error"),
             setup_instructions=asr.get_setup_instructions(),
         )
 
