@@ -25,9 +25,11 @@ def client(monkeypatch):
     monkeypatch.delenv("API_TOKEN", raising=False)
     monkeypatch.delenv("OLLAMA_BASE_URL", raising=False)
     monkeypatch.delenv("OLLAMA_MODEL", raising=False)
-    # Reload the server module so module-level token/URL are re-read from env.
+    # Reload the server and ollama router modules so module-level token/URL are re-read from env.
+    import tournament_platform.api.routers.ollama as ollama_router
     import tournament_platform.api.server as server
 
+    importlib.reload(ollama_router)
     importlib.reload(server)
     from fastapi.testclient import TestClient
 
@@ -75,7 +77,7 @@ def test_health_ok(client):
 def test_ollama_status_unavailable_when_down(client):
     """Ollama down -> available=false, HTTP 200 (never crash)."""
     test_client, server = client
-    with patch.object(server, "OLLAMA_BASE_URL", "http://127.0.0.1:39999"):
+    with patch("tournament_platform.api.routers.ollama.OLLAMA_BASE_URL", "http://127.0.0.1:39999"):
         resp = test_client.get("/ollama/status")
     assert resp.status_code == 200
     body = resp.json()
@@ -98,7 +100,7 @@ def test_ollama_status_available_when_up(client):
     assert resp.status_code == 200
     body = resp.json()
     assert body["available"] is True
-    assert "llama3.1:8b" in body["models"]
+    assert "llama3.1:8b" in body.get("model_names", [])
 
 
 def test_ollama_generate_works(client):
@@ -146,7 +148,9 @@ def test_ollama_endpoints_require_token_when_set(client, monkeypatch):
     import importlib as _il
 
     import tournament_platform.api.server as server
+    import tournament_platform.api.routers.ollama as ollama_router
 
+    _il.reload(ollama_router)
     _il.reload(server)
     from fastapi.testclient import TestClient
 

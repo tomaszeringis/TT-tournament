@@ -109,53 +109,15 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
-# ============================================================================
-# Ollama bridge (FastAPI -> local Ollama at OLLAMA_BASE_URL)
-# ============================================================================
-# These endpoints are the ONLY public path to local Ollama. Ollama itself is
-# never exposed through ngrok. When API_TOKEN is set, every /ollama/* endpoint
-# requires ``Authorization: Bearer <API_TOKEN>``. The token is read from the
-# environment and is never logged or returned in responses.
+# Ollama bridge routes live in `tournament_platform.api.routers.ollama` and are
+# included below (both `/ollama` and `/api/ollama` prefixes for compatibility).
+# They are the ONLY public path to local Ollama; raw Ollama is never exposed
+# through ngrok. Token protection lives in the router's `check_auth`.
 
-OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
-OLLAMA_DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "llama3.1:8b")
-_API_TOKEN = os.environ.get("API_TOKEN", "") or ""
+from tournament_platform.api.routers.ollama import router as ollama_router
 
-_bearer_scheme = HTTPBearer(auto_error=False)
-
-
-def _require_token(
-    credentials: Optional[HTTPAuthorizationCredentials] = Security(_bearer_scheme),
-) -> None:
-    """Require a valid bearer token when API_TOKEN is configured.
-
-    If API_TOKEN is unset, the endpoints are open (local development). When it
-    is set, requests without a correct bearer token receive HTTP 401. The token
-    is compared in constant-ish fashion and never logged.
-    """
-    if not _API_TOKEN:
-        return
-    if credentials is None or credentials.credentials != _API_TOKEN:
-        # Do not echo the token or the failure reason in the response.
-        raise HTTPException(status_code=401, detail="Unauthorized")
-
-
-class OllamaGenerateRequest(BaseModel):
-    prompt: str
-    model: Optional[str] = None
-    system: Optional[str] = None
-    temperature: float = 0.3
-
-
-class OllamaChatMessage(BaseModel):
-    role: str
-    content: str
-
-
-class OllamaChatRequest(BaseModel):
-    messages: List[OllamaChatMessage]
-    model: Optional[str] = None
-    temperature: float = 0.3
+app.include_router(ollama_router)
+app.include_router(ollama_router, prefix="/api")
 
 
 @app.exception_handler(Exception)
@@ -507,98 +469,9 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
-# ============================================================================
-# Ollama bridge endpoints (FastAPI -> local Ollama only; never exposed directly)
-# ============================================================================
-
-@app.get("/ollama/status")
-async def ollama_status(_auth: None = Depends(_require_token)):
-    """Report whether local Ollama is reachable.
-
-    Always returns HTTP 200. When Ollama is down, ``available`` is ``false`` and
-    the error is included so the Streamlit app can fall back gracefully.
-    """
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            resp = await client.get(f"{OLLAMA_BASE_URL}/api/tags")
-            resp.raise_for_status()
-            data = resp.json()
-            models = [m.get("name") for m in data.get("models", [])]
-            return {"available": True, "models": models}
-    except Exception as exc:
-        # Never raise: FastAPI must stay up even if Ollama is down.
-        return {"available": False, "error": str(exc)}
 
 
-@app.post("/ollama/generate")
-async def ollama_generate(
-    req: OllamaGenerateRequest,
-    _auth: None = Depends(_require_token),
-):
-    """Bridge to Ollama ``POST /api/generate``.
 
-    Returns a clean response to Streamlit. On error, returns ``ok=false`` with
-    the error message instead of raising.
-    """
-    model = req.model or OLLAMA_DEFAULT_MODEL
-    payload: Dict[str, Any] = {
-        "model": model,
-        "prompt": req.prompt,
-        "stream": False,
-        "options": {"temperature": req.temperature},
-    }
-    if req.system:
-        payload["system"] = req.system
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(f"{OLLAMA_BASE_URL}/api/generate", json=payload)
-            resp.raise_for_status()
-            raw = resp.json()
-            return {
-                "ok": True,
-                "model": raw.get("model", model),
-                "response": raw.get("response", ""),
-                "raw": raw,
-            }
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
-
-
-@app.post("/ollama/chat")
-async def ollama_chat(
-    req: OllamaChatRequest,
-    _auth: None = Depends(_require_token),
-):
-    """Bridge to Ollama ``POST /api/chat``.
-
-    Returns a clean response to Streamlit. On error, returns ``ok=false`` with
-    the error message instead of raising.
-    """
-    model = req.model or OLLAMA_DEFAULT_MODEL
-    payload: Dict[str, Any] = {
-        "model": model,
-        "messages": [m.model_dump() for m in req.messages],
-        "stream": False,
-        "options": {"temperature": req.temperature},
-    }
-    try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            resp = await client.post(f"{OLLAMA_BASE_URL}/api/chat", json=payload)
-            resp.raise_for_status()
-            raw = resp.json()
-            message = raw.get("message", {})
-            content = message.get("content", "") if isinstance(message, dict) else ""
-            return {
-                "ok": True,
-                "model": raw.get("model", model),
-                "message": content,
-                "raw": raw,
-            }
-    except Exception as exc:
-        return {"ok": False, "error": str(exc)}
-
-
-# ============================================================================
 # Public Board Endpoints
 # ============================================================================
 
