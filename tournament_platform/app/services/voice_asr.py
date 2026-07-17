@@ -13,6 +13,7 @@ import logging
 from typing import Optional
 
 from tournament_platform.app.services.voice_vocab import VoiceVocabulary
+from tournament_platform.app.services.voice.hf_token import apply_hf_token, get_hf_token
 from tournament_platform.services.settings import (
     VOICE_ASR_MODEL_SIZE,
     VOICE_ASR_DEVICE,
@@ -20,6 +21,11 @@ from tournament_platform.services.settings import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Ensure HF token is available in the environment before any HF library
+# attempts to download models. This prevents unauthenticated-request warnings
+# and rate-limit errors on Streamlit Cloud and local runs.
+apply_hf_token()
 
 # ---------------------------------------------------------------------------
 # Module-level model cache
@@ -134,10 +140,17 @@ class LocalASR:
                     self.compute_type,
                 )
                 
+                hf_token = get_hf_token()
+                kwargs = {
+                    "device": self.device,
+                    "compute_type": self.compute_type,
+                }
+                if hf_token:
+                    kwargs["token"] = hf_token
+                
                 model = WhisperModel(
                     self.model_size,
-                    device=self.device,
-                    compute_type=self.compute_type,
+                    **kwargs,
                 )
                 
                 # Store in module-level cache

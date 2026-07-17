@@ -264,6 +264,24 @@ cd tournament_platform
 python -m pip install -r requirements.txt
 ```
 
+## 📦 Deployment Secrets
+
+When deploying to **Streamlit Cloud** (or any cloud environment), use
+`.streamlit/secrets.toml` or the cloud secrets manager instead of committing
+credentials.
+
+```toml
+# Optional, recommended if using Hugging Face-hosted ASR models
+HF_TOKEN = "your-hugging-face-token"
+
+# Voice defaults for presentation
+VOICE_INPUT_MODE = "manual"
+TTS_DEFAULT_MODE = "Browser speech"
+```
+
+`HF_TOKEN` removes unauthenticated-request warnings from the Hugging Face Hub
+and enables higher rate limits for faster-whisper model downloads.
+
 ## 🔒 Production Deployment
 
 For production use:

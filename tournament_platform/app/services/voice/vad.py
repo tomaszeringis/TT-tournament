@@ -21,6 +21,35 @@ from tournament_platform.app.services.voice_audio import SAMPLE_FORMAT_FLOAT32, 
 logger = logging.getLogger(__name__)
 
 
+def safe_rms(audio: Optional[np.ndarray]) -> float:
+    """Compute RMS safely without int overflow or NaN propagation.
+
+    Args:
+        audio: Audio samples as a numpy array (any dtype), or None.
+
+    Returns:
+        Finite RMS float in [0, 1] for normalized audio, or 0.0 for empty/invalid input.
+    """
+    if audio is None:
+        return 0.0
+
+    arr = np.asarray(audio)
+
+    if arr.size == 0:
+        return 0.0
+
+    arr = arr.astype(np.float32, copy=False)
+
+    max_abs = float(np.nanmax(np.abs(arr), initial=0.0)) if arr.size else 0.0
+    if max_abs > 2.0:
+        arr = arr / 32768.0
+
+    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    arr = np.clip(arr, -1.0, 1.0)
+
+    return float(np.sqrt(np.mean(np.square(arr, dtype=np.float32), dtype=np.float32)))
+
+
 class VoiceActivityDetector(ABC):
     """Abstract base class for voice activity detectors."""
 
@@ -50,13 +79,11 @@ class AmplitudeVAD(VoiceActivityDetector):
                 audio = np.frombuffer(frame_bytes, dtype=np.int16)
                 if len(audio) == 0:
                     return False
-                float_audio = audio.astype(np.float32) / 32768.0
-                rms = float(np.sqrt(np.mean(float_audio ** 2)))
             else:
                 audio = np.frombuffer(frame_bytes, dtype=np.float32)
                 if len(audio) == 0:
                     return False
-                rms = float(np.sqrt(np.mean(audio ** 2)))
+            rms = safe_rms(audio)
             return rms > self.threshold
         except Exception:
             return False

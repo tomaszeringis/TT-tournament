@@ -8,6 +8,10 @@ Values are read from environment variables with safe defaults.
 import os
 from typing import Optional
 
+from tournament_platform.app.services.voice.hf_token import apply_hf_token
+
+apply_hf_token()
+
 
 def _get_env_str(name: str, default: str) -> str:
     """Read a string environment variable with a default."""

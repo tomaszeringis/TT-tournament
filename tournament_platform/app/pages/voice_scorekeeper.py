@@ -3078,11 +3078,69 @@ def fetch_active_tournaments() -> List[Dict]:
         db.close()
 
 
+def is_running_on_streamlit_cloud() -> bool:
+    """Detect Streamlit Cloud so we can degrade voice features gracefully.
+
+    Streamlit Cloud sets ``IS_STREAMLIT_CLOUD`` (and historically
+    ``STREAMLIT_SHARING_MODE``). Local microphone/audio backends and optional
+    ASR models are typically unavailable there, so callers can avoid showing
+    local-setup error text and instead show a cloud-friendly notice.
+    """
+    import os
+
+    return bool(
+        os.environ.get("IS_STREAMLIT_CLOUD")
+        or os.environ.get("STREAMLIT_SHARING_MODE")
+    )
+
+
 def _normalize_status(value) -> str:
     """Lowercase/trim a match status, handling None gracefully."""
     if value is None:
         return ""
     return str(value).strip().lower()
+
+
+def _normalize_status_dict(value, default_reason: str = "Status unavailable") -> Dict[str, Any]:
+    """Coerce any ASR/cloud status value into a safe, ``dict``-shaped object.
+
+    The Streamlit Cloud crash originated from ``_asr_status`` being a
+    ``BackendStatus`` dataclass, ``None``, a ``bool``, a ``str``, or an
+    exception object instead of a plain ``dict``. This helper guarantees the
+    returned value always supports ``.get(...)`` and carries the keys the UI
+    expects (``available``, ``reason``, ``provider``).
+    """
+    if is_dataclass(value):
+        value = asdict(value)
+
+    if isinstance(value, dict):
+        merged = dict(value)
+        merged["available"] = bool(value.get("available", False))
+        merged["reason"] = value.get("reason") or value.get("message") or value.get("load_error") or default_reason
+        if "provider" not in merged:
+            _prov = value.get("backend_name")
+            merged["provider"] = _prov if _prov else ("none" if not merged["available"] else "local")
+        return merged
+
+    if isinstance(value, bool):
+        return {
+            "available": value,
+            "reason": "Available" if value else default_reason,
+            "provider": "none" if not value else "local",
+        }
+
+    if value is None:
+        return {
+            "available": False,
+            "reason": default_reason,
+            "provider": "none",
+        }
+
+    return {
+        "available": False,
+        "reason": str(value),
+        "provider": "none",
+    }
 
 
 def fetch_active_matches(tournament_id: int, statuses: Optional[List[str]] = None) -> List[Dict]:
@@ -3951,13 +4009,17 @@ def _render_ui() -> None:
                             st.session_state.voice_asr_status = {"available": False, "load_error": str(e)}
     
                     # Show ASR status
-                    asr_status = st.session_state.voice_asr_status
-                    if is_dataclass(asr_status):
-                        asr_status = asdict(asr_status)
-                    if asr_status and not asr_status.get("available", False):
-                        error_msg = asr_status.get("load_error", "Unknown error")
-                        st.error(f"⚠️ Local ASR not available: {error_msg}")
-                        st.caption("Voice scoring requires faster-whisper. Install with: `pip install faster-whisper`")
+                    asr_status = _normalize_status_dict(st.session_state.voice_asr_status)
+                    if not asr_status.get("available", False):
+                        error_msg = asr_status.get("reason") or asr_status.get("load_error") or "Unknown error"
+                        if is_running_on_streamlit_cloud():
+                            logger.warning("ASR unavailable: %s", error_msg)
+                            st.warning(
+                                "Cloud ASR is not configured. Manual scoring is still available."
+                            )
+                        else:
+                            st.error(f"⚠️ Local ASR not available: {error_msg}")
+                            st.caption("Voice scoring requires faster-whisper. Install with: `pip install faster-whisper`")
                         st.session_state.voice_listening = False
                         st.rerun()
     
@@ -4027,8 +4089,11 @@ def _render_ui() -> None:
                     with st.expander("🩺 Voice diagnostics", expanded=False):
                         _hf_token = get_hf_token()
                         _hf_configured = "yes" if _hf_token else "no"
-                        _asr_status = st.session_state.get("voice_asr_status") or {}
-                        _asr_loaded = "yes" if _asr_status.get("available") else "no"
+                        _asr_status = _normalize_status_dict(
+                            st.session_state.get("voice_asr_status"),
+                            default_reason="ASR status unavailable",
+                        )
+                        _asr_loaded = "yes" if bool(_asr_status.get("available", False)) else "no"
                         _proc = st.session_state.get("voice_webrtc_ctx", {}).get("processor")
                         _q_size = proc._chunk_queue.qsize() if proc else 0
                         _dropped = getattr(proc, "_dropped_chunks", 0) if proc else 0
@@ -4093,7 +4158,7 @@ def _render_ui() -> None:
                     
                     st.markdown("**ASR Status**")
                     if st.session_state.voice_asr_status:
-                        status_display = asdict(st.session_state.voice_asr_status) if is_dataclass(st.session_state.voice_asr_status) else st.session_state.voice_asr_status
+                        status_display = _normalize_status_dict(st.session_state.voice_asr_status)
                         st.json(status_display)
                     else:
                         st.caption("ASR not initialized.")

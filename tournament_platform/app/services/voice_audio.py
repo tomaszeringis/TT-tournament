@@ -18,7 +18,7 @@ SAMPLE_FORMAT_FLOAT32 = "float32"
 SAMPLE_FORMAT_INT16 = "int16"
 
 if TYPE_CHECKING:
-    from tournament_platform.app.services.voice.vad import VoiceActivityDetector
+    from tournament_platform.app.services.voice.vad import VoiceActivityDetector, safe_rms
 
 logger = logging.getLogger(__name__)
 
@@ -112,8 +112,8 @@ class VoiceAudioBuffer:
         channels: int = 2,
         silence_threshold: float = 0.01,
         min_speech_duration_ms: float = 300.0,
-        max_chunk_duration_ms: float = 2000.0,
-        silence_duration_ms: float = 400.0,
+        max_chunk_duration_ms: float = 4000.0,
+        silence_duration_ms: float = 600.0,
         noise_gate_rms: float = 0.0,
         sample_format: str = SAMPLE_FORMAT_FLOAT32,
         vad: Optional["VoiceActivityDetector"] = None,
@@ -160,24 +160,18 @@ class VoiceAudioBuffer:
         self._silence_samples = int(self.silence_duration_ms * self._samples_per_ms)
     
     def _compute_rms(self, frame_bytes: bytes) -> float:
-        """Compute RMS amplitude of an audio frame."""
+        """Compute RMS amplitude of an audio frame using safe_rms."""
         if not frame_bytes:
             return 0.0
         try:
             if self.sample_format == SAMPLE_FORMAT_INT16:
-                # int16 audio: values range from -32768 to 32767
                 audio = np.frombuffer(frame_bytes, dtype=np.int16)
-                if len(audio) == 0:
-                    return 0.0
-                # Normalize to [-1, 1] for consistent RMS calculation
-                float_audio = audio.astype(np.float32) / 32768.0
-                return float(np.sqrt(np.mean(float_audio ** 2)))
             else:
-                # float32 audio: values range from -1.0 to 1.0
                 audio = np.frombuffer(frame_bytes, dtype=np.float32)
-                if len(audio) == 0:
-                    return 0.0
-                return float(np.sqrt(np.mean(audio ** 2)))
+            if len(audio) == 0:
+                return 0.0
+            from tournament_platform.app.services.voice.vad import safe_rms
+            return safe_rms(audio)
         except Exception:
             return 0.0
     

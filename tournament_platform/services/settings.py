@@ -96,6 +96,7 @@ VOICE_ENABLE_CONFIRMATION: bool = _get_env_bool("VOICE_ENABLE_CONFIRMATION", Tru
 VOICE_DATASET_OPT_IN: bool = _get_env_bool("VOICE_DATASET_OPT_IN", False)
 VOICE_ENABLE_WAKE_WORD: bool = _get_env_bool("VOICE_ENABLE_WAKE_WORD", False)
 VOICE_WAKE_WORD: str = _get_env_str("VOICE_WAKE_WORD", "")
+HF_TOKEN: str = _get_env_str("HF_TOKEN", "")
 
 # ---------------------------------------------------------------------------
 # Commentary Template System
