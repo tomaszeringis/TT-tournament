@@ -422,26 +422,17 @@ with admin_tabs[4]:
             diag = get_app_status()
             db_url = _settings.DATABASE_URL or "not configured"
             st.markdown(
-                "- **Mode:** `%s`\n"
-                "- **API required:** %s\n"
-                "- **API base URL configured:** %s\n"
-                "- **API status:** %s\n"
-                "- **Database URL configured:** %s\n"
-                "- **Current database path:** `%s`\n"
-                "- **Streamlit Cloud detected:** %s\n"
-                "- **streamlit-webrtc installed:** %s\n"
-                "- **Piper available:** %s"
-                % (
-                    diag["mode"],
-                    "yes" if rc.api_required else "no",
-                    "yes" if rc.api_base_url else "no",
-                    diag["state"],
-                    "yes" if db_url != "not configured" else "no",
-                    db_url,
-                    "yes" if rc.is_streamlit_cloud else "no",
-                    "yes" if _webrtc_installed() else "no",
-                    "yes" if _piper_available() else "no",
-                )
+                "\n".join([
+                    f"- **Mode:** `{diag['mode']}`",
+                    f"- **API required:** {'yes' if rc.api_required else 'no'}",
+                    f"- **API base URL configured:** {'yes' if rc.api_base_url else 'no'}",
+                    f"- **API status:** {diag['state']}",
+                    f"- **Database URL configured:** {'yes' if db_url != 'not configured' else 'no'}",
+                    f"- **Current database path:** `{db_url}`",
+                    f"- **Streamlit Cloud detected:** {'yes' if rc.is_streamlit_cloud else 'no'}",
+                    f"- **streamlit-webrtc installed:** {'yes' if _webrtc_installed() else 'no'}",
+                    f"- **Piper available:** {'yes' if _piper_available() else 'no'}",
+                ])
             )
         except Exception as exc:
             st.warning(f"Could not build runtime diagnostics: {exc}")

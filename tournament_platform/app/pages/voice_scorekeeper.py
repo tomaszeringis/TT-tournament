@@ -3234,18 +3234,17 @@ def render_commentary_settings() -> None:
                 "enabled" if _diag_engine in ("browser", "auto") or not _piper_ok
                 else "disabled"
             )
+            _debug_items = [
+                ("streamlit-webrtc", _diag_webrtc),
+                ("Piper local", _diag_piper),
+                ("selected TTS mode", _diag_engine),
+                ("selected voice input mode", _diag_voice_input),
+                ("browser speech fallback", _diag_browser_fallback),
+            ]
             st.markdown(
-                "- streamlit-webrtc: **%s**\n"
-                "- Piper local: **%s**\n"
-                "- selected TTS mode: **%s**\n"
-                "- selected voice input mode: **%s**\n"
-                "- browser speech fallback: **%s**"
-                % (
-                    _diag_webrtc,
-                    _diag_piper,
-                    _diag_engine,
-                    _diag_voice_input,
-                    _diag_browser_fallback,
+                "\n".join(
+                    f"- {label}: **{_debug_value(value)}**"
+                    for label, value in _debug_items
                 )
             )
 
@@ -3492,6 +3491,15 @@ def _safe_queue_size(queue_obj: object | None) -> int:
         return int(qsize())
     except Exception:
         return 0
+
+
+def _debug_value(value: Any, max_len: int = 300) -> str:
+    if value is None:
+        return "—"
+    text = str(value).replace("\n", " ").strip()
+    if len(text) > max_len:
+        return text[:max_len] + "…"
+    return text
 
 
 def get_asr_diagnostic() -> Dict[str, Any]:
@@ -4578,36 +4586,26 @@ def _render_ui() -> None:
                         _last_rejected_reason = st.session_state.get("last_voice_feedback", "")
                         _proc_status = getattr(proc, "_status", "n/a") if proc else "no processor"
                         _asr_ready = "yes" if (proc and getattr(proc, "_asr_ready", False)) else "no"
+                        _voice_diag_items = [
+                            ("WebRTC installed", "yes" if WEBRTC_AVAILABLE else "no"),
+                            ("voice scoring enabled", "yes" if st.session_state.get("voice_scoring_enabled") else "no"),
+                            ("HF_TOKEN configured", _hf_configured),
+                            ("ASR model loaded", _asr_loaded),
+                            ("processor active", _asr_ready),
+                            ("processor status", _proc_status),
+                            ("audio queue size", _q_size),
+                            ("event queue size", _evt_q),
+                            ("dropped audio frames", _dropped),
+                            ("VAD RMS latest", f"{_last_rms:.4f}"),
+                            ("current speech segment duration", f"{_seg_ms:.1f} ms" if _seg_ms else "0.0 ms"),
+                            ("last transcript", _last_transcript or "—"),
+                            ("last accepted command", _last_accepted or "—"),
+                            ("last rejected command reason", _last_rejected_reason or "—"),
+                        ]
                         st.markdown(
-                            "- WebRTC installed: **%s**\n"
-                            "- voice scoring enabled: **%s**\n"
-                            "- HF_TOKEN configured: **%s**\n"
-                            "- ASR model loaded: **%s**\n"
-                            "- processor active: **%s**\n"
-                            "- processor status: **%s**\n"
-                            "- audio queue size: **%d**\n"
-                            "- event queue size: **%d**\n"
-                            "- dropped audio frames: **%d**\n"
-                            "- VAD RMS latest: **%.4f**\n"
-                            "- current speech segment duration: **%.1f ms**\n"
-                            "- last transcript: **%s**\n"
-                            "- last accepted command: **%s**\n"
-                            "- last rejected command reason: **%s**"
-                            % (
-                                "yes" if WEBRTC_AVAILABLE else "no",
-                                "yes" if st.session_state.get("voice_scoring_enabled") else "no",
-                                _hf_configured,
-                                _asr_loaded,
-                                _asr_ready,
-                                _proc_status,
-                                _q_size,
-                                _evt_q,
-                                _dropped,
-                                _last_rms,
-                                _seg_ms,
-                                _last_transcript or "—",
-                                _last_accepted or "—",
-                                _last_rejected_reason or "—",
+                            "\n".join(
+                                f"- {label}: **{_debug_value(value)}**"
+                                for label, value in _voice_diag_items
                             )
                         )
 
@@ -4630,22 +4628,19 @@ def _render_ui() -> None:
                 with st.expander("🩺 Voice ASR Diagnostics", expanded=False):
                     _diag = get_asr_diagnostic()
                     _asr_state = _diag.get("state") or _diag.get("reason") or "not_configured"
+                    _asr_diag_items = [
+                        ("ASR provider", _diag.get("provider", "faster_whisper")),
+                        ("ASR ready", "yes" if _diag.get("available") else "no"),
+                        ("State", _asr_state),
+                        ("Model", _diag.get("model_size", "—")),
+                        ("Device", _diag.get("device", "—")),
+                        ("Compute type", _diag.get("compute_type", "—")),
+                        ("Last ASR error", _diag.get("reason") or "none"),
+                    ]
                     st.markdown(
-                        "**ASR provider:** %s  \n"
-                        "**ASR ready:** %s  \n"
-                        "**State:** %s  \n"
-                        "**Model:** %s  \n"
-                        "**Device:** %s  \n"
-                        "**Compute type:** %s  \n"
-                        "**Last ASR error:** %s"
-                        % (
-                            _diag.get("provider", "faster_whisper"),
-                            "yes" if _diag.get("available") else "no",
-                            _asr_state,
-                            _diag.get("model_size", "—"),
-                            _diag.get("device", "—"),
-                            _diag.get("compute_type", "—"),
-                            _diag.get("reason") or "none",
+                        "\n".join(
+                            f"**{label}:** {_debug_value(value)}"
+                            for label, value in _asr_diag_items
                         )
                     )
 
@@ -4705,45 +4700,50 @@ def _render_ui() -> None:
                 _q_last_player = st.session_state.get("quick_voice_last_player")
                 _q_last_ts = st.session_state.get("quick_voice_last_ts", 0.0)
                 _rerun_req = bool(st.session_state.get(_VOICE_RERUN_KEY))
-                st.markdown(
-                    "- voice mode: **%s**\n"
-                    "- voice enabled: **%s**\n"
-                    "- last transcript: **%s**\n"
-                    "- last parsed intent: **%s**\n"
-                    "- last accepted command: **%s**\n"
-                    "- last rejected reason: **%s**\n"
-                    "- current score: **%s**\n"
-                    "- games won: **%s – %s**\n"
-                    "- completed games: **%s**\n"
-                    "- game_won flag: **%s**\n"
-                    "- match_complete flag: **%s**\n"
-                    "- last applied event id: **%s**\n"
-                    "- quick voice last player/time: **%s / %s**\n"
-                    "- rerun requested: **%s**"
-                    % (
-                        _quick_mode,
-                        "yes" if st.session_state.get("voice_scoring_enabled") else "no",
-                        st.session_state.get("last_voice_transcript", "—") or "—",
+                _voice_debug_items = [
+                    ("voice mode", _quick_mode),
+                    ("voice enabled", "yes" if st.session_state.get("voice_scoring_enabled") else "no"),
+                    ("last transcript", st.session_state.get("last_voice_transcript", "—") or "—"),
+                    (
+                        "last parsed intent",
                         (
                             st.session_state.get("last_voice_event").intent
                             if st.session_state.get("last_voice_event") else "—"
                         ),
-                        _last_accepted or "—",
-                        _last_rejected or "—",
-                        (
-                            f"{_eng.score_a}-{_eng.score_b}"
-                            if _eng else "n/a"
-                        ),
-                        (
-                            f"{_eng.games_won_a}-{_eng.games_won_b}"
-                            if _eng else "n/a"
-                        ),
+                    ),
+                    ("last accepted command", _last_accepted or "—"),
+                    ("last rejected reason", _last_rejected or "—"),
+                    (
+                        "current score",
+                        f"{_eng.score_a}-{_eng.score_b}" if _eng else "n/a",
+                    ),
+                    (
+                        "games won",
+                        f"{_eng.games_won_a}-{_eng.games_won_b}" if _eng else "n/a",
+                    ),
+                    (
+                        "completed games",
                         len(_eng.round_scores) if _eng else 0,
+                    ),
+                    (
+                        "game_won flag",
                         _eng.match_status == "game_won" if _eng else "n/a",
+                    ),
+                    (
+                        "match_complete flag",
                         _eng.match_status == "match_won" if _eng else "n/a",
-                        _last_accepted or "—",
+                    ),
+                    ("last applied event id", _last_accepted or "—"),
+                    (
+                        "quick voice last player/time",
                         f"{_q_last_player} / {_q_last_ts:.0f}" if _q_last_player else "—",
-                        _rerun_req,
+                    ),
+                    ("rerun requested", _rerun_req),
+                ]
+                st.markdown(
+                    "\n".join(
+                        f"- {label}: **{_debug_value(value)}**"
+                        for label, value in _voice_debug_items
                     )
                 )
 
