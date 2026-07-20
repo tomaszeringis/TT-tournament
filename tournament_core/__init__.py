@@ -9,30 +9,40 @@ This package contains:
 - Scheduling and conflict detection
 """
 
-from tournament_platform.models import (
-    Player,
-    Match,
-    Tournament,
-    MatchStatus,
-    TournamentType,
-    Event,
-    EventType,
-    Stage,
-    Group,
-    Entry,
-    ScorerToken,
-    VenueTable,
-    RatingHistory,
-)
+try:
+    from tournament_platform.models import (
+        Player,
+        Match,
+        Tournament,
+        MatchStatus,
+        TournamentType,
+        Event,
+        EventType,
+        Stage,
+        Group,
+        Entry,
+        ScorerToken,
+        VenueTable,
+        RatingHistory,
+    )
+except Exception:  # pragma: no cover - depends on lab availability
+    Player = Match = Tournament = None
+    MatchStatus = TournamentType = Event = EventType = None
+    Stage = Group = Entry = ScorerToken = VenueTable = RatingHistory = None
 
-from tournament_platform.services.tournament_engine import (
-    TournamentStrategy,
-    KnockoutStrategy,
-    RoundRobinStrategy,
-    GroupsKnockoutStrategy,
-    SwissStrategy,
-    TournamentContext,
-)
+try:
+    from tournament_platform.services.tournament_engine import (
+        TournamentStrategy,
+        KnockoutStrategy,
+        RoundRobinStrategy,
+        GroupsKnockoutStrategy,
+        SwissStrategy,
+        TournamentContext,
+    )
+except Exception:  # pragma: no cover - depends on lab availability
+    TournamentStrategy = KnockoutStrategy = None
+    RoundRobinStrategy = GroupsKnockoutStrategy = None
+    SwissStrategy = TournamentContext = None
 
 __all__ = [
     # Models

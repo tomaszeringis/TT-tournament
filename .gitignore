@@ -49,6 +49,9 @@ tt_ai_data/
 # Build artifacts
 tournament_platform.egg-info/
 
+# Frontend component deps (keep committed build/ for Streamlit Cloud)
+**/browser_voice_frontend/node_modules/
+
 # Local planning notes (untracked, machine-local)
 .kilo/plans/
 
