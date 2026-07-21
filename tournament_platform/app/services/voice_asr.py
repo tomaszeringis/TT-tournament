@@ -300,6 +300,9 @@ class LocalASR:
         Returns:
             Setup instructions string.
         """
+        if self._model is not None:
+            return ""
+        
         if self._load_failed and self._load_error:
             if "not installed" in self._load_error:
                 return (

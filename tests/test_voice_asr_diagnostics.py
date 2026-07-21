@@ -16,6 +16,7 @@ from tournament_platform.app.services.voice.asr_diagnostics import (
     log_voice_asr_environment_once,
 )
 from tournament_platform.app.services.voice_asr import LocalASR
+from tournament_platform.app.pages.voice_scorekeeper import _normalize_status_dict, get_asr_diagnostic
 
 
 class TestGetVoiceSetting:
@@ -100,3 +101,32 @@ class TestEnvDiagnosticsLogOnce:
         # call repeatedly and never raises.
         assert log_voice_asr_environment_once() is None
         assert log_voice_asr_environment_once() is None
+
+
+class TestNormalizeStatusDict:
+    def test_success_state_does_not_fallback_to_load_error(self):
+        status = _normalize_status_dict({
+            "available": True,
+            "reason": "model_loaded",
+            "load_error": "model_loaded",
+            "backend_name": "faster_whisper",
+        })
+        assert status["available"] is True
+        assert status["reason"] == "model_loaded"
+
+    def test_failure_state_uses_load_error_when_reason_missing(self):
+        status = _normalize_status_dict({
+            "available": False,
+            "load_error": "faster-whisper is not installed",
+            "backend_name": "faster_whisper",
+        })
+        assert status["available"] is False
+        assert status["reason"] == "faster-whisper is not installed"
+
+
+class TestGetAsrDiagnostic:
+    def test_loaded_model_has_no_error_or_setup_instructions(self):
+        diag = get_asr_diagnostic()
+        if diag.get("available"):
+            assert diag.get("load_error") is None
+            assert not diag.get("setup_instructions")

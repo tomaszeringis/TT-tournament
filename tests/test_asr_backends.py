@@ -47,7 +47,48 @@ class TestFasterWhisperBackend:
         assert isinstance(status, BackendStatus)
         assert status.backend_name == "faster_whisper"
         assert status.available is True
-        assert status.setup_instructions == "instructions"
+        assert status.load_error is None
+        assert status.setup_instructions == ""
+
+    def test_get_status_when_unavailable_returns_error_and_instructions(self):
+        backend = FasterWhisperBackend()
+        mock_asr = MagicMock()
+        mock_asr.get_status.return_value = {
+            "available": False,
+            "model_size": "base.en",
+            "device": "cpu",
+            "compute_type": "int8",
+            "load_error": "faster-whisper is not installed",
+        }
+        mock_asr.get_setup_instructions.return_value = "Install faster-whisper"
+        backend._asr = mock_asr
+
+        status = backend.get_status()
+        assert status.available is False
+        assert status.load_error == "faster-whisper is not installed"
+        assert status.setup_instructions == "Install faster-whisper"
+
+    def test_get_status_does_not_pollute_load_error_with_success_reason(self):
+        backend = FasterWhisperBackend()
+        mock_asr = MagicMock()
+        mock_asr.get_status.return_value = {
+            "available": True,
+            "model_size": "tiny.en",
+            "device": "cpu",
+            "compute_type": "int8",
+            "state": "model_loaded",
+            "reason": "model_loaded",
+            "load_error": None,
+        }
+        mock_asr.get_setup_instructions.return_value = "should be hidden"
+        backend._asr = mock_asr
+
+        status = backend.get_status()
+        assert status.available is True
+        assert status.load_error is None
+        assert status.setup_instructions == ""
+        assert status.model_info["state"] == "model_loaded"
+        assert status.model_info["reason"] == "model_loaded"
 
     def test_is_available_returns_false_on_exception(self):
         backend = FasterWhisperBackend()

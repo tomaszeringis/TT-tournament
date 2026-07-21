@@ -59,3 +59,7 @@ tournament_platform.egg-info/
 tournament_platform/assets/tts/piper/voices/**/*.onnx
 tournament_platform/assets/tts/piper/voices/**/*.onnx.json
 tournament_platform/data/tts_cache/
+
+# Audio Rally Assistant models and artifacts
+tt_sounds_models/
+**/tt_sounds_*/

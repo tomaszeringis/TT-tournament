@@ -45,6 +45,12 @@ class TestLocalASRStatus:
         assert "faster-whisper" in instructions.lower()
         assert "VOICE_ASR_MODEL_SIZE" in instructions
 
+    def test_get_setup_instructions_returns_empty_when_model_loaded(self):
+        asr = LocalASR()
+        asr._model = MagicMock()
+        instructions = asr.get_setup_instructions()
+        assert instructions == ""
+
     def test_is_available_returns_false_on_missing_dependency(self):
         asr = LocalASR()
         asr._load_attempted = True

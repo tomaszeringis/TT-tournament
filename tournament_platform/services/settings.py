@@ -105,3 +105,17 @@ VOICE_ENABLE_COMMENTARY_TEMPLATES: bool = _get_env_bool("VOICE_ENABLE_COMMENTARY
 VOICE_ENABLE_COMMENTARY_OLLAMA_REWRITE: bool = _get_env_bool("VOICE_ENABLE_COMMENTARY_OLLAMA_REWRITE", False)
 VOICE_COMMENTARY_OLLAMA_MODEL: str = _get_env_str("VOICE_COMMENTARY_OLLAMA_MODEL", _app_settings.OLLAMA_MODEL)
 VOICE_COMMENTARY_OLLAMA_TIMEOUT: float = _get_env_float("VOICE_COMMENTARY_OLLAMA_TIMEOUT", 2.0)
+
+# ---------------------------------------------------------------------------
+# Audio Rally Assistant (TT Sounds)
+# ---------------------------------------------------------------------------
+TT_SOUNDS_ENABLED: bool = _get_env_bool("TT_SOUNDS_ENABLED", False)
+TT_SOUNDS_ABS_MIN_ENERGY: float = _get_env_float("TT_SOUNDS_ABS_MIN_ENERGY", 0.03)
+TT_SOUNDS_THRESHOLD_MULTIPLIER: float = _get_env_float("TT_SOUNDS_THRESHOLD_MULTIPLIER", 4.0)
+TT_SOUNDS_NOISE_FLOOR_DECAY: float = _get_env_float("TT_SOUNDS_NOISE_FLOOR_DECAY", 0.95)
+TT_SOUNDS_COOLDOWN_MS: float = _get_env_float("TT_SOUNDS_COOLDOWN_MS", 80.0)
+TT_SOUNDS_WINDOW_MS: float = _get_env_float("TT_SOUNDS_WINDOW_MS", 5.0)
+TT_SOUNDS_EVENT_WINDOW_MS: float = _get_env_float("TT_SOUNDS_EVENT_WINDOW_MS", 15.0)
+TT_SOUNDS_MIN_INTERVAL_MS: float = _get_env_float("TT_SOUNDS_MIN_INTERVAL_MS", 30.0)
+TT_SOUNDS_DEBUG: bool = _get_env_bool("TT_SOUNDS_DEBUG", False)
+TT_SOUNDS_MODEL_DIR: str = _get_env_str("TT_SOUNDS_MODEL_DIR", "")

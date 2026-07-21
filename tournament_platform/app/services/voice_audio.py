@@ -117,6 +117,7 @@ class VoiceAudioBuffer:
         noise_gate_rms: float = 0.0,
         sample_format: str = SAMPLE_FORMAT_FLOAT32,
         vad: Optional["VoiceActivityDetector"] = None,
+        max_speech_duration_ms: float = 8000.0,
     ):
         """
         Initialize the audio buffer.
@@ -134,6 +135,8 @@ class VoiceAudioBuffer:
                 WebRTC typically delivers int16; faster-whisper expects int16 PCM.
             vad: Optional VoiceActivityDetector. When provided, its is_speech()
                 result takes precedence over the amplitude-only decision.
+            max_speech_duration_ms: Maximum speech segment duration before forced
+                emission. Prevents segments from growing forever during silence.
         """
         self.sample_rate = sample_rate
         self.channels = channels
@@ -144,6 +147,7 @@ class VoiceAudioBuffer:
         self.noise_gate_rms = noise_gate_rms
         self.sample_format = sample_format
         self.vad = vad
+        self.max_speech_duration_ms = max_speech_duration_ms
 
         self._lock = threading.Lock()
         self._buffer: List[bytes] = []
@@ -152,6 +156,8 @@ class VoiceAudioBuffer:
         self._total_samples: int = 0
         self._rms_sum: float = 0.0  # accumulated frame RMS for current chunk
         self._rms_frames: int = 0  # frame count for current chunk
+        self._speech_segment_started_at: Optional[float] = None
+        self._segment_reset_reason: str = ""
         
         # Calculate samples per duration
         self._samples_per_ms = self.sample_rate / 1000.0
@@ -220,6 +226,8 @@ class VoiceAudioBuffer:
             if self._buffer_start_time is None:
                 self._buffer_start_time = now
                 self._last_speech_time = now if is_speech else None
+                self._speech_segment_started_at = now if is_speech else None
+                self._segment_reset_reason = ""
             
             # Add frame to buffer
             self._buffer.append(frame_bytes)
@@ -234,6 +242,8 @@ class VoiceAudioBuffer:
             # Update last speech time if this frame contains speech
             if is_speech:
                 self._last_speech_time = now
+                if self._speech_segment_started_at is None:
+                    self._speech_segment_started_at = now
             
             # Check if we should emit a chunk
             chunk = self._check_emit(now, is_speech)
@@ -258,9 +268,21 @@ class VoiceAudioBuffer:
         
         buffer_duration_ms = (now - self._buffer_start_time) * 1000.0
         
+        # Condition 0: Max speech duration exceeded (safety cutoff)
+        if self._speech_segment_started_at is not None:
+            speech_segment_duration_ms = (now - self._speech_segment_started_at) * 1000.0
+            if speech_segment_duration_ms >= self.max_speech_duration_ms:
+                logger.debug(
+                    "Emitting chunk: max speech duration exceeded (%.1f ms)",
+                    speech_segment_duration_ms,
+                )
+                self._segment_reset_reason = "max_speech_duration_exceeded"
+                return self._emit_chunk(now)
+        
         # Condition 1: Max chunk duration exceeded
         if buffer_duration_ms >= self.max_chunk_duration_ms:
             logger.debug("Emitting chunk: max duration exceeded (%.1f ms)", buffer_duration_ms)
+            self._segment_reset_reason = "max_chunk_duration_exceeded"
             return self._emit_chunk(now)
         
         # Condition 2: Silence after speech
@@ -273,6 +295,7 @@ class VoiceAudioBuffer:
                         "Emitting chunk: silence after speech (%.1f ms silence, %.1f ms total)",
                         silence_duration_ms, buffer_duration_ms,
                     )
+                    self._segment_reset_reason = "silence_after_speech"
                     return self._emit_chunk(now)
                 else:
                     logger.debug(
@@ -303,6 +326,8 @@ class VoiceAudioBuffer:
         self._total_samples = 0
         self._rms_sum = 0.0
         self._rms_frames = 0
+        self._speech_segment_started_at = None
+        self._segment_reset_reason = ""
         
         logger.debug(
             "Emitted audio chunk: %.1f ms, %d frames",
@@ -335,8 +360,27 @@ class VoiceAudioBuffer:
             self._total_samples = 0
             self._rms_sum = 0.0
             self._rms_frames = 0
-    
+            self._speech_segment_started_at = None
+            self._segment_reset_reason = ""
+
     def get_buffer_duration_ms(self) -> float:
+        """Get current buffer duration in milliseconds."""
+        with self._lock:
+            if self._buffer_start_time is None:
+                return 0.0
+            return (time.time() - self._buffer_start_time) * 1000.0
+
+    def get_speech_segment_duration_ms(self) -> float:
+        """Get current speech segment duration in milliseconds."""
+        with self._lock:
+            if self._speech_segment_started_at is None:
+                return 0.0
+            return (time.time() - self._speech_segment_started_at) * 1000.0
+
+    def get_segment_reset_reason(self) -> str:
+        """Get the reason the last segment was reset, or empty string."""
+        with self._lock:
+            return self._segment_reset_reason
         """Get current buffer duration in milliseconds."""
         with self._lock:
             if self._buffer_start_time is None:

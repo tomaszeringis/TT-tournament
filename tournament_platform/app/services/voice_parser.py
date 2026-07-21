@@ -30,7 +30,8 @@ class VoiceScoreEvent:
     # --- Extended metadata (Phase 1 hardening; all optional, non-breaking) ---
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: float = field(default_factory=time.time)
-    source: str = "asr"  # "asr" | "llm" | "manual"
+    source: str = "asr"  # "asr" | "llm" | "manual" | "debug" | "push_to_talk" | "continuous"
+    session_id: Optional[str] = None  # continuous listening session ID for stale event detection
     uncertainty: float = 0.0  # higher = less certain; convenience for observability
     speaker_label: Optional[str] = None  # Phase 2 (speaker identification)
     language: str = "en"  # reserved; multilingual not implemented per directive

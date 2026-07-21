@@ -140,6 +140,11 @@ class Settings(BaseSettings):
     TT_MULTIMODAL_CHROMA_DIR: str = "../tt_ai_data/indexes/chroma_multimodal"
 
     # -------------------------------------------------------------------------
+    # Audio Rally Assistant
+    # -------------------------------------------------------------------------
+    TT_SOUNDS_MODEL_DIR: str = ""
+
+    # -------------------------------------------------------------------------
     # Video Scorekeeper
     # -------------------------------------------------------------------------
     ENABLE_SWISS: bool = False

@@ -65,9 +65,10 @@ class FasterWhisperBackend(ASRBackend):
     def get_status(self) -> BackendStatus:
         asr = self._get_asr()
         status = asr.get_status()
+        available = bool(status.get("available", False))
         return BackendStatus(
             backend_name=self.backend_name,
-            available=status.get("available", False),
+            available=available,
             model_info={
                 "model_size": status.get("model_size"),
                 "device": status.get("device"),
@@ -75,8 +76,8 @@ class FasterWhisperBackend(ASRBackend):
                 "state": status.get("state"),
                 "reason": status.get("reason"),
             },
-            load_error=status.get("reason") or status.get("load_error"),
-            setup_instructions=asr.get_setup_instructions(),
+            load_error=status.get("load_error") if not available else None,
+            setup_instructions=asr.get_setup_instructions() if not available else "",
         )
 
     def get_setup_instructions(self) -> str:

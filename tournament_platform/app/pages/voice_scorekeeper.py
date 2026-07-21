@@ -40,6 +40,12 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     AudioProcessorBase = object  # type: ignore
 
+# PyAV is used for audio frame handling in the fallback callback.
+try:
+    import av
+except Exception:  # pragma: no cover - optional dependency
+    av = None  # type: ignore
+
 logger = logging.getLogger(__name__)
 
 # Reduce noisy streamlit-webrtc.process warnings after implementing bounded
@@ -142,8 +148,76 @@ from tournament_platform.app.services.commentary import (
     TTEventType,
     generate_match_summary,
 )
-from tournament_platform.app.services.commentary_voice.piper_voice import get_piper_engine, PiperTTSEngine, PiperTTSError
-from tournament_platform.app.services.commentary_voice.piper_runtime import find_piper_voices, PiperVoice, is_piper_available
+from tournament_platform.app.services.commentary_voice.piper_runtime import is_piper_available
+
+# Stabilized media stream constraints — identity must not change between reruns
+# or streamlit-webrtc treats it as a changed constraint and resets the component.
+_WEBRTC_AUDIO_CONSTRAINTS = {"audio": True, "video": False}
+
+# Module-level thread-safe factory/processor diagnostics.
+# Written from the factory thread (via _tracked_factory) and snapshotted
+# to st.session_state from the main thread after webrtc_streamer returns.
+_factory_diag_lock = threading.Lock()
+_factory_diag = {
+    "call_count": 0,
+    "last_error": None,
+    "last_processor_id": None,
+    "last_processor_class": None,
+    "callback_count": 0,
+    "last_exception": None,
+}
+
+# Module-level audio frame callback diagnostics (fallback path).
+# These are updated from the audio callback thread and snapshotted to
+# session_state from the main thread. Never access st.session_state here.
+_audio_callback_lock = threading.Lock()
+_audio_callback_count = 0
+_last_audio_frame_timestamp = 0.0
+_last_audio_frame_rms = 0.0
+_last_audio_frame_shape = ""
+_last_audio_frame_sample_rate = 0
+_last_audio_frame_method = ""
+# Tracks the last frame count for which we emitted a main-thread audit event.
+_last_main_thread_frame_audit_count = 0
+
+
+def _audio_frame_callback_func(frame):
+    """Fallback audio_frame_callback for streamlit-webrtc.
+
+    Receives each ``av.AudioFrame``, increments counters, updates metadata,
+    and returns the frame unchanged so the stream continues.
+    Does NOT access st.session_state or any UI APIs.
+    """
+    global _audio_callback_count, _last_audio_frame_timestamp
+    global _last_audio_frame_rms, _last_audio_frame_shape
+    global _last_audio_frame_sample_rate, _last_audio_frame_method
+
+    with _audio_callback_lock:
+        _audio_callback_count += 1
+        _last_audio_frame_timestamp = getattr(frame, 'pts', time.time())
+        _last_audio_frame_method = "audio_frame_callback"
+
+    try:
+        if hasattr(frame, 'to_ndarray'):
+            arr = np.asarray(frame.to_ndarray())
+            if arr.size > 0:
+                _last_audio_frame_shape = f"{arr.shape}"
+                if arr.dtype in (np.float32, np.float64):
+                    rms = float(np.sqrt(np.mean(arr.astype(np.float64) ** 2)))
+                else:
+                    rms = float(np.sqrt(np.mean(arr.astype(np.float64) ** 2))) / 32768.0
+                with _audio_callback_lock:
+                    _last_audio_frame_rms = rms
+    except Exception:
+        pass
+
+    try:
+        with _audio_callback_lock:
+            _last_audio_frame_sample_rate = getattr(frame, 'sample_rate', 0)
+    except Exception:
+        pass
+
+    return frame
 
 
 def is_streamlit_cloud() -> bool:
@@ -263,14 +337,28 @@ if 'voice_scoring_enabled' not in st.session_state:
     st.session_state.voice_scoring_enabled = False
 if 'voice_listening' not in st.session_state:
     st.session_state.voice_listening = False
+if 'voice_capture_requested' not in st.session_state:
+    st.session_state.voice_capture_requested = False
+if 'voice_stop_requested' not in st.session_state:
+    st.session_state.voice_stop_requested = False
+if 'voice_events_enabled' not in st.session_state:
+    st.session_state.voice_events_enabled = False
 if 'last_voice_transcript' not in st.session_state:
     st.session_state.last_voice_transcript = ""
 if 'last_voice_event' not in st.session_state:
     st.session_state.last_voice_event = None
 if 'last_voice_feedback' not in st.session_state:
     st.session_state.last_voice_feedback = ""
+if 'last_voice_rejection_reason' not in st.session_state:
+    st.session_state.last_voice_rejection_reason = ""
+if 'last_voice_success_message' not in st.session_state:
+    st.session_state.last_voice_success_message = ""
+if 'last_voice_action_taken' not in st.session_state:
+    st.session_state.last_voice_action_taken = ""
 if 'voice_event_log' not in st.session_state:
     st.session_state.voice_event_log = []
+if 'voice_audit_events' not in st.session_state:
+    st.session_state.voice_audit_events = []
 
 # Hardened, structured voice event logger (Phase 1 / observability).
 # Bounded in-memory ring; recording is gated by VOICE_DEBUG_EVENTS.
@@ -292,6 +380,30 @@ if 'voice_asr_status' not in st.session_state:
     st.session_state.voice_asr_status = None
 if 'voice_webrtc_ctx' not in st.session_state:
     st.session_state.voice_webrtc_ctx = None
+if 'voice_webrtc_streamer_state' not in st.session_state:
+    st.session_state.voice_webrtc_streamer_state = {"playing": False, "signalling": False}
+if '_voice_prev_webrtc_playing' not in st.session_state:
+    st.session_state._voice_prev_webrtc_playing = False
+if 'voice_continuous_session_id' not in st.session_state:
+    st.session_state.voice_continuous_session_id = None
+if 'voice_continuous_session_start' not in st.session_state:
+    st.session_state.voice_continuous_session_start = 0.0
+if 'voice_stale_events_ignored' not in st.session_state:
+    st.session_state.voice_stale_events_ignored = 0
+if 'voice_continuous_requested' not in st.session_state:
+    st.session_state.voice_continuous_requested = False
+
+# Audio Rally Assistant (TT Sounds) state
+if 'tt_sounds_enabled' not in st.session_state:
+    st.session_state.tt_sounds_enabled = False
+if 'tt_sounds_recent_events' not in st.session_state:
+    st.session_state.tt_sounds_recent_events = []
+if 'tt_sounds_rally_context' not in st.session_state:
+    st.session_state.tt_sounds_rally_context = None
+if 'tt_sounds_audio_summaries' not in st.session_state:
+    st.session_state.tt_sounds_audio_summaries = []
+if 'tt_sounds_unavailable_notice_shown' not in st.session_state:
+    st.session_state.tt_sounds_unavailable_notice_shown = False
 
 # Speaker identification (Phase 2)
 if 'voice_speaker_tagger' not in st.session_state:
@@ -455,6 +567,80 @@ def _maybe_voice_rerun() -> None:
         st.rerun()
 
 
+def _get_webrtc_playing_state() -> bool:
+    """Return True if the WebRTC streamer is actively playing (mic stream active)."""
+    state = st.session_state.get("voice_webrtc_streamer_state", {})
+    return bool(state.get("playing", False))
+
+
+def _is_continuous_mic_active() -> bool:
+    """Return True only when user requested listening AND WebRTC mic is playing."""
+    return bool(st.session_state.get("voice_listening")) and _get_webrtc_playing_state()
+
+
+def _append_voice_audit(
+    event: VoiceScoreEvent,
+    *,
+    source: str,
+    accepted: bool,
+    previous_score: str = "",
+    new_score: str = "",
+    note: str = "",
+    stage: str = "",
+) -> None:
+    """Append a structured audit entry to the unified voice_audit_events list."""
+    entry = {
+        "timestamp": getattr(event, "timestamp", time.time()),
+        "event_id": getattr(event, "event_id", ""),
+        "source": source,
+        "stage": stage,
+        "event_type": getattr(event, "type", "unknown"),
+        "transcript": getattr(event, "raw_transcript", ""),
+        "player": getattr(event, "player", None),
+        "score_a": getattr(event, "score_a", None),
+        "score_b": getattr(event, "score_b", None),
+        "confidence": getattr(event, "confidence", 0.0),
+        "accepted": accepted,
+        "previous_score": previous_score,
+        "new_score": new_score,
+        "note": note,
+        "speaker_label": getattr(event, "speaker_label", None),
+        "language": getattr(event, "language", "en"),
+        "asr_latency_ms": getattr(event, "asr_latency_ms", None),
+        "noise_rms": getattr(event, "noise_rms", None),
+    }
+    st.session_state.setdefault("voice_audit_events", []).append(entry)
+    if len(st.session_state.voice_audit_events) > 1000:
+        st.session_state.voice_audit_events = st.session_state.voice_audit_events[-1000:]
+    if VOICE_DEBUG_EVENTS:
+        st.session_state.voice_event_logger.record(
+            event,
+            accepted=accepted,
+            previous_score=previous_score,
+            new_score=new_score,
+            note=note,
+        )
+
+
+def _append_continuous_trace(stage: str, note: str = "") -> None:
+    """Append a continuous listening trace event to the audit log."""
+    _trace_event = VoiceScoreEvent(
+        type="trace",
+        raw_text="",
+        confidence=0.0,
+        timestamp=time.time(),
+    )
+    _append_voice_audit(
+        _trace_event,
+        source="continuous",
+        accepted=False,
+        previous_score="",
+        new_score="",
+        note=note,
+        stage=stage,
+    )
+
+
 def _reset_voice_game_boundary_state() -> None:
     """Clear voice dedupe/cooldown state at a game boundary.
 
@@ -526,40 +712,12 @@ def _increment_voice_session_epoch() -> None:
 
 def disable_voice_scoring_and_clear_pending_state(reason: str = "voice_toggle_off") -> None:
     """Disable voice scoring and clear all pending voice state."""
-    # Stop continuous listening if active
     if st.session_state.get("voice_listening"):
-        st.session_state.voice_listening = False
-        ctx = st.session_state.get("voice_webrtc_ctx")
-        if ctx and ctx.get("processor"):
-            try:
-                ctx["processor"].stop()
-            except Exception:
-                pass
+        _disable_continuous_listening()
+    else:
+        _increment_voice_session_epoch()
     
-    # Clear processor queues explicitly
-    if ctx and ctx.get("processor"):
-        try:
-            proc = ctx["processor"]
-            with proc._lock:
-                while not proc._chunk_queue.empty():
-                    try:
-                        proc._chunk_queue.get_nowait()
-                    except queue.Empty:
-                        break
-                while not proc.event_queue.empty():
-                    try:
-                        proc.event_queue.get_nowait()
-                    except queue.Empty:
-                        break
-        except Exception:
-            pass
-    
-    # Clear all pending voice state
     st.session_state.pending_confirmations = []
-    st.session_state.last_voice_transcript = ""
-    st.session_state.last_voice_event = None
-    st.session_state.last_voice_feedback = ""
-    st.session_state.voice_event_log = []
     st.session_state.voice_scoreboard_rerun_requested = False
     st.session_state.voice_scoreboard_rerun_reason = ""
     st.session_state.voice_scoreboard_rerun_event_id = None
@@ -569,10 +727,6 @@ def disable_voice_scoring_and_clear_pending_state(reason: str = "voice_toggle_of
     st.session_state.voice_last_applied_event_ts = 0.0
     st.session_state.voice_last_heartbeat = 0.0
     
-    # Increment epoch to invalidate any queued events
-    _increment_voice_session_epoch()
-    
-    # Reset confirmation machine
     machine = st.session_state.get("voice_confirmation_machine")
     if machine:
         machine.reset()
@@ -610,6 +764,11 @@ def _apply_quick_voice_point(player: str, transcript: str) -> None:
         play_cue("point")
         _maybe_speak_tts(msg, "increment")
         _build_and_store_commentary("point_a" if player == "A" else "point_b", mm.state, prev_state)
+        if st.session_state.get("tt_sounds_enabled"):
+            audio_summary = finalize_current_audio_rally(reason="point_scored")
+            st.session_state["_pending_audio_summary_for_commentary"] = audio_summary
+            if audio_summary and audio_summary.confidence >= 0.55:
+                _append_audio_commentary_line(audio_summary)
         _request_voice_rerun("quick_voice_accepted")
 
 
@@ -665,8 +824,8 @@ def _maybe_voice_heartbeat() -> None:
     has_pending = False
     if ctx and ctx.get("processor"):
         processor = ctx["processor"]
-        if hasattr(processor, 'get_events'):
-            has_pending = len(processor.get_events()) > 0
+        if hasattr(processor, 'has_pending_events'):
+            has_pending = processor.has_pending_events()
     
     # Adaptive interval: faster when draining events, slower when idle
     interval = 0.25 if has_pending else 1.0
@@ -680,6 +839,227 @@ def _maybe_voice_heartbeat() -> None:
     st.session_state.voice_last_heartbeat = now
     time.sleep(0.1)  # Brief pause to avoid tight loop
     st.rerun()
+
+
+def _enable_continuous_listening() -> None:
+    """Arm continuous listening mode and request WebRTC microphone capture."""
+    import uuid
+    st.session_state.voice_listening = True
+    st.session_state.voice_capture_requested = True
+    st.session_state.voice_stop_requested = False
+    st.session_state.voice_events_enabled = True
+    st.session_state.voice_continuous_session_id = str(uuid.uuid4())
+    st.session_state.voice_continuous_session_start = time.time()
+    st.session_state.voice_stale_events_ignored = 0
+    
+    st.session_state.last_voice_transcript = ""
+    st.session_state.last_voice_event = None
+    st.session_state.last_voice_feedback = ""
+    st.session_state.last_voice_rejection_reason = ""
+    st.session_state.last_voice_success_message = ""
+    st.session_state.last_voice_action_taken = ""
+    st.session_state.last_voice_continuous_transcript = ""
+    st.session_state.last_voice_push_to_talk_transcript = ""
+    st.session_state.last_voice_debug_transcript = ""
+    _append_continuous_trace("continuous_requested", f"session={st.session_state.voice_continuous_session_id[:8]}")
+    
+    # Reset VAD buffer to clear stale speech segment state
+    ctx = st.session_state.get("voice_webrtc_ctx")
+    if ctx and ctx.get("processor"):
+        try:
+            proc = ctx["processor"]
+            if hasattr(proc, 'audio_buffer') and proc.audio_buffer is not None:
+                proc.audio_buffer.reset()
+        except Exception:
+            pass
+
+
+def _disable_continuous_listening() -> None:
+    """Stop continuous listening, clear queues, and deactivate the WebRTC component."""
+    st.session_state.voice_listening = False
+    st.session_state.voice_capture_requested = False
+    st.session_state.voice_events_enabled = False
+    st.session_state.voice_continuous_session_id = None
+    st.session_state.voice_continuous_session_start = 0.0
+    
+    ctx = st.session_state.get("voice_webrtc_ctx")
+    if ctx and ctx.get("processor"):
+        try:
+            proc = ctx["processor"]
+            proc.stop()
+            with proc._lock:
+                while not proc._chunk_queue.empty():
+                    try:
+                        proc._chunk_queue.get_nowait()
+                    except queue.Empty:
+                        break
+                while not proc.event_queue.empty():
+                    try:
+                        proc.event_queue.get_nowait()
+                    except queue.Empty:
+                        break
+        except Exception:
+            pass
+    
+    st.session_state.pending_confirmations = []
+    st.session_state.last_voice_transcript = ""
+    st.session_state.last_voice_event = None
+    st.session_state.last_voice_feedback = ""
+    st.session_state.last_voice_rejection_reason = ""
+    st.session_state.last_voice_success_message = ""
+    st.session_state.last_voice_action_taken = ""
+    st.session_state.last_voice_continuous_transcript = ""
+    st.session_state.last_voice_push_to_talk_transcript = ""
+    st.session_state.last_voice_debug_transcript = ""
+    st.session_state.voice_event_log = []
+    st.session_state.voice_audit_events = []
+    st.session_state.voice_scoreboard_rerun_requested = False
+    st.session_state.voice_scoreboard_rerun_reason = ""
+    st.session_state.voice_scoreboard_rerun_event_id = None
+    st.session_state.voice_scoreboard_rerun_consumed_at = 0.0
+    st.session_state.last_applied_voice_event_ids = []
+    st.session_state.voice_last_applied_event_key = None
+    st.session_state.voice_last_applied_event_ts = 0.0
+    _increment_voice_session_epoch()
+    
+    machine = st.session_state.get("voice_confirmation_machine")
+    if machine:
+        machine.reset()
+
+
+# ============================================================================
+# Audio Rally Assistant (TT Sounds) Helpers
+# ============================================================================
+
+def _clear_tt_sounds_state() -> None:
+    """Disable audio rally assistant and clear all pending tt_sounds state."""
+    st.session_state.tt_sounds_enabled = False
+    st.session_state.tt_sounds_recent_events = []
+    st.session_state.tt_sounds_rally_context = None
+    st.session_state.tt_sounds_audio_summaries = []
+    st.session_state.tt_sounds_unavailable_notice_shown = False
+    ctx = st.session_state.get("voice_webrtc_ctx")
+    if ctx and ctx.get("processor"):
+        try:
+            proc = ctx["processor"]
+            tt_proc = getattr(proc, "tt_sounds_processor", None)
+            if tt_proc is not None:
+                tt_proc.stop()
+        except Exception:
+            pass
+
+
+def _process_tt_sounds_events() -> None:
+    """Drain audio events even when voice scoring is disabled."""
+    if not st.session_state.get("tt_sounds_enabled"):
+        return
+    ctx = st.session_state.get("voice_webrtc_ctx")
+    proc = ctx.get("tt_sounds_processor") if ctx else None
+    if proc is None:
+        return
+    for event in proc.get_events():
+        _handle_tt_sounds_event(event)
+
+
+def _handle_tt_sounds_event(event: Any) -> None:
+    """Process a single TTAudioEvent: update rally context and recent events."""
+    from tournament_platform.app.services.tt_sounds import RallyManager
+    
+    if "tt_sounds_rally_manager" not in st.session_state:
+        st.session_state.tt_sounds_rally_manager = RallyManager()
+    
+    manager = st.session_state.tt_sounds_rally_manager
+    summary = manager.add_event(event)
+    if summary is not None:
+        st.session_state.tt_sounds_audio_summaries.append(summary)
+    
+    st.session_state.tt_sounds_rally_context = manager.current_context()
+    
+    recent = st.session_state.get("tt_sounds_recent_events", [])
+    recent.append(event)
+    if len(recent) > 200:
+        st.session_state.tt_sounds_recent_events = recent[-200:]
+    else:
+        st.session_state.tt_sounds_recent_events = recent
+
+
+def _maybe_tt_sounds_heartbeat() -> None:
+    """Rerun UI to update debug panel and rally summary when audio events pending."""
+    if not st.session_state.get("tt_sounds_enabled"):
+        return
+    ctx = st.session_state.get("voice_webrtc_ctx")
+    proc = ctx.get("tt_sounds_processor") if ctx else None
+    if proc is None:
+        return
+    has_pending = len(proc.get_events()) > 0
+    interval = 0.5 if has_pending else 1.0
+    now = time.time()
+    last = st.session_state.get("tt_sounds_last_heartbeat", 0.0)
+    if now - last < interval:
+        return
+    st.session_state.tt_sounds_last_heartbeat = now
+    time.sleep(0.1)
+    st.rerun()
+
+
+def finalize_current_audio_rally(reason: str = "gap") -> Optional[Any]:
+    """Finalize the current audio rally and store the summary."""
+    manager = st.session_state.get("tt_sounds_rally_manager")
+    if manager is None:
+        return None
+    summary = manager.finalize_current_rally(last_action=reason)
+    if summary is not None:
+        st.session_state.tt_sounds_rally_context = manager.current_context()
+    return summary
+
+
+def _mark_last_audio_summary_action(last_action: str) -> None:
+    """Mark the most recent audio summary with the given action."""
+    summaries = st.session_state.get("tt_sounds_audio_summaries", [])
+    if summaries:
+        summaries[-1].last_action = last_action
+
+
+def _append_audio_commentary_line(audio_summary: Any) -> None:
+    """Append a conservative audio commentary line after score commentary."""
+    if audio_summary is None:
+        return
+    n = audio_summary.impact_count
+    lang = st.session_state.get("commentary_language", "en")
+    if lang == "lt":
+        text = f"Garso sistema aptiko galimus {n} smūgius prieš tašką."
+    else:
+        text = f"Possible rally of {n} impacts detected before the point."
+    st.session_state.pending_commentary = text
+
+
+def _render_audio_rally_insights(summaries: List[Any]) -> None:
+    """Render lightweight audio rally analytics from session-state summaries."""
+    if not summaries:
+        st.caption("No audio rallies recorded yet.")
+        return
+    
+    total_impacts = sum(s.impact_count for s in summaries)
+    total_rallies = len(summaries)
+    longest = max(summaries, key=lambda s: s.impact_count) if summaries else None
+    fastest = min(summaries, key=lambda s: s.avg_interval_ms) if summaries else None
+    strongest = max(summaries, key=lambda s: s.strongest_impact_energy) if summaries else None
+    
+    st.markdown("**Audio Rally Insights (experimental)**")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Total impacts", total_impacts)
+        st.caption(f"Across {total_rallies} rallies")
+    with c2:
+        if longest:
+            st.metric("Longest rally", f"{longest.impact_count} impacts")
+            st.caption(f"{longest.end_ts - longest.start_ts:.1f}s")
+    with c3:
+        if strongest:
+            st.metric("Strongest impact", f"{strongest.strongest_impact_energy:.3f}")
+    if fastest:
+        st.caption(f"Fastest tempo: {fastest.avg_interval_ms:.0f} ms avg interval")
+    st.caption("⚠️ Experimental — not official scoring data.")
 
 
 # ============================================================================
@@ -769,6 +1149,10 @@ def apply_score_event_and_refresh_ui(
 
     # REJECT
     if route_result.decision == RouteDecision.REJECT:
+        st.session_state.last_voice_feedback = route_result.reason
+        st.session_state.last_voice_rejection_reason = route_result.reason
+        st.session_state.last_voice_success_message = ""
+        st.session_state.last_voice_action_taken = "rejected"
         return ScoreApplyResult(
             success=False,
             reason=route_result.reason,
@@ -780,6 +1164,10 @@ def apply_score_event_and_refresh_ui(
 
     # IGNORE (duplicate suppressed)
     if route_result.decision == RouteDecision.IGNORE:
+        st.session_state.last_voice_feedback = "duplicate_suppressed"
+        st.session_state.last_voice_rejection_reason = "duplicate_suppressed"
+        st.session_state.last_voice_success_message = ""
+        st.session_state.last_voice_action_taken = "duplicate_suppressed"
         return ScoreApplyResult(
             success=False,
             reason="duplicate_suppressed",
@@ -812,8 +1200,14 @@ def apply_score_event_and_refresh_ui(
             st.session_state.last_voice_transcript = parsed.raw_transcript
             st.session_state.last_voice_event = parsed.to_score_event()
             st.session_state.last_voice_feedback = "Awaiting confirmation"
+            st.session_state.last_voice_rejection_reason = ""
+            st.session_state.last_voice_success_message = ""
+            st.session_state.last_voice_action_taken = "confirmation_required"
         else:
             st.session_state.last_voice_feedback = "Confirmation busy — try again"
+            st.session_state.last_voice_rejection_reason = "confirmation_busy"
+            st.session_state.last_voice_success_message = ""
+            st.session_state.last_voice_action_taken = "rejected"
         return ScoreApplyResult(
             success=False,
             reason="pending",
@@ -833,15 +1227,18 @@ def apply_score_event_and_refresh_ui(
         st.session_state.last_voice_transcript = parsed.raw_transcript
         st.session_state.last_voice_event = _score_event
         st.session_state.last_voice_feedback = _phase3_result.get("message", "")
+        st.session_state.last_voice_success_message = _phase3_result.get("message", "")
+        st.session_state.last_voice_rejection_reason = ""
+        st.session_state.last_voice_action_taken = _phase3_result.get("action", "phase3_applied")
         st.toast(f"🎤 {_phase3_result.get('message', '')}", icon="✅")
-        if VOICE_DEBUG_EVENTS:
-            st.session_state.voice_event_logger.record(
-                _score_event,
-                accepted=True,
-                previous_score=prev_score,
-                new_score=prev_score,
-                note=_phase3_result.get("action", "phase3"),
-            )
+        _append_voice_audit(
+            _score_event,
+            source=source,
+            accepted=True,
+            previous_score=prev_score,
+            new_score=prev_score,
+            note=_phase3_result.get("action", "phase3"),
+        )
         _request_voice_rerun("phase3")
         return ScoreApplyResult(
             success=True,
@@ -890,6 +1287,16 @@ def apply_score_event_and_refresh_ui(
                 _reset_voice_game_boundary_state()
 
             st.session_state.last_voice_feedback = msg
+            st.session_state.last_voice_success_message = msg
+            st.session_state.last_voice_rejection_reason = ""
+            if _score_event.type == "increment":
+                st.session_state.last_voice_action_taken = "score_update_success"
+            elif _score_event.type == "undo":
+                st.session_state.last_voice_action_taken = "undo_success"
+            elif _score_event.type == "set_score":
+                st.session_state.last_voice_action_taken = "set_score_success"
+            else:
+                st.session_state.last_voice_action_taken = "applied"
             st.session_state.last_voice_transcript = parsed.raw_transcript
             st.session_state.last_voice_event = _score_event
             st.toast(f"🎤 {msg}", icon="✅")
@@ -914,7 +1321,13 @@ def apply_score_event_and_refresh_ui(
             )
 
             if st.session_state.get("commentary_engine") == "local":
-                _build_local_commentary("voice_score_confirmed", state, None, settings, str(uuid.uuid4()))
+                _build_local_commentary(
+                    "voice_score_confirmed",
+                    mm.state,
+                    None,
+                    _get_commentary_settings(),
+                    str(uuid.uuid4()),
+                )
 
             # Immediately re-derive UI state so it's available on next render.
             # This ensures completed_games and match_complete are never stale.
@@ -923,9 +1336,22 @@ def apply_score_event_and_refresh_ui(
             if mm.engine.match_status == "match_won":
                 st.session_state.pending_result_submission = True
 
+            # Audio Rally Assistant: finalize or mark rally on score change
+            if st.session_state.get("tt_sounds_enabled"):
+                if _score_event.type == "undo":
+                    _mark_last_audio_summary_action("undo")
+                else:
+                    audio_summary = finalize_current_audio_rally(reason="point_scored")
+                    st.session_state["_pending_audio_summary_for_commentary"] = audio_summary
+                    if audio_summary and audio_summary.confidence >= 0.55:
+                        _append_audio_commentary_line(audio_summary)
+
             _request_voice_rerun("applied")
         else:
             st.session_state.last_voice_feedback = msg
+            st.session_state.last_voice_rejection_reason = msg
+            st.session_state.last_voice_success_message = ""
+            st.session_state.last_voice_action_taken = "rejected"
             st.warning(f"🎤 Voice: {msg}")
             play_cue("reject")
             if st.session_state.get("commentary_engine") == "local":
@@ -934,41 +1360,21 @@ def apply_score_event_and_refresh_ui(
         success = False
         msg = "Unknown command"
         st.session_state.last_voice_feedback = msg
+        st.session_state.last_voice_rejection_reason = msg
+        st.session_state.last_voice_success_message = ""
+        st.session_state.last_voice_action_taken = "unknown_command"
         new_score = prev_score
         note = "unrecognized transcript"
 
-    # Structured event logging
-    if VOICE_DEBUG_EVENTS:
-        st.session_state.voice_event_logger.record(
-            _score_event,
-            accepted=success,
-            previous_score=prev_score,
-            new_score=new_score,
-            note=note,
-        )
-
-    # Backward-compatible UI log entry
-    log_entry = {
-        "timestamp": getattr(_score_event, 'timestamp', time.time()),
-        "event_id": getattr(_score_event, 'event_id', ''),
-        "transcript": transcript,
-        "event_type": _score_event.type if hasattr(_score_event, 'type') else 'unknown',
-        "score_a": getattr(_score_event, 'score_a', None),
-        "score_b": getattr(_score_event, 'score_b', None),
-        "player": getattr(_score_event, 'player', None),
-        "confidence": getattr(_score_event, 'confidence', 0.0),
-        "source": source,
-        "speaker_label": getattr(_score_event, 'speaker_label', None),
-        "language": getattr(_score_event, 'language', 'en'),
-        "asr_latency_ms": getattr(_score_event, 'asr_latency_ms', None),
-        "noise_rms": getattr(_score_event, 'noise_rms', None),
-        "accepted": success,
-        "previous_score": prev_score,
-        "new_score": new_score,
-    }
-    st.session_state.voice_event_log.append(log_entry)
-    if len(st.session_state.voice_event_log) > 50:
-        st.session_state.voice_event_log = st.session_state.voice_event_log[-50:]
+    # Unified structured event logging (replaces separate voice_event_log + voice_event_logger)
+    _append_voice_audit(
+        _score_event,
+        source=source,
+        accepted=success,
+        previous_score=prev_score,
+        new_score=new_score,
+        note=note,
+    )
 
     # Dataset recorder
     if VOICE_DATASET_OPT_IN:
@@ -1007,15 +1413,87 @@ def _process_voice_transcript(
     transcript: str,
     source: str = "debug",
     enable_confirmation: bool = VOICE_ENABLE_CONFIRMATION,
+    selected_match_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Shared transcript processing for push-to-talk, continuous, and debug.
 
-    Delegates to the canonical ``apply_score_event_and_refresh_ui`` and wraps
-    the result in the legacy dict format for backward compatibility.
+    Central voice command processor:
+    1. Validate match context (voice_selected_match_id == active match).
+    2. Normalize transcript.
+    3. Parse with VoiceCommandGrammar.
+    4. Route with CommandRouter.
+    5. If APPLY, call MatchManager.apply_voice_event().
+    6. Return structured result for UI display.
 
     Returns a dict with keys:
         success, reason, previous_score, new_score, parsed, route_result
     """
+    mm = st.session_state.match_manager
+
+    # Track source-specific transcript
+    if source == "debug":
+        st.session_state.last_voice_debug_transcript = transcript
+    elif source == "push_to_talk":
+        st.session_state.last_voice_push_to_talk_transcript = transcript
+    elif source == "continuous":
+        st.session_state.last_voice_continuous_transcript = transcript
+
+    # Resolve selected match ID: prefer explicit arg, fall back to session state.
+    if selected_match_id is None:
+        selected_match_id = st.session_state.get("voice_selected_match_id")
+
+    # Match-context validation: voice scoring requires an active match selection.
+    if not selected_match_id:
+        st.session_state.last_voice_feedback = "no_match_selected"
+        st.session_state.last_voice_rejection_reason = "no_match_selected"
+        st.session_state.last_voice_success_message = ""
+        st.session_state.last_voice_action_taken = "rejected"
+        _append_voice_audit(
+            VoiceScoreEvent(type="unknown", raw_text=transcript, confidence=0.0),
+            source=source,
+            accepted=False,
+            previous_score=mm.state.get_score_string(),
+            new_score=mm.state.get_score_string(),
+            note="no_match_selected",
+        )
+        return {
+            "success": False,
+            "reason": "no_match_selected",
+            "previous_score": mm.state.get_score_string(),
+            "new_score": mm.state.get_score_string(),
+            "parsed": None,
+            "route_result": None,
+        }
+
+    # Match-context validation: ensure MatchManager players match the selected match.
+    _selected_p1_id = st.session_state.get("voice_selected_player1_id")
+    _selected_p2_id = st.session_state.get("voice_selected_player2_id")
+    if _selected_p1_id is not None and _selected_p2_id is not None:
+        if (
+            mm.state.player_a_id != _selected_p1_id
+            or mm.state.player_b_id != _selected_p2_id
+        ):
+            st.session_state.last_voice_feedback = "voice_match_context_mismatch"
+            st.session_state.last_voice_rejection_reason = "voice_match_context_mismatch"
+            st.session_state.last_voice_success_message = ""
+            st.session_state.last_voice_action_taken = "rejected"
+            _append_voice_audit(
+                VoiceScoreEvent(type="unknown", raw_text=transcript, confidence=0.0),
+                source=source,
+                accepted=False,
+                previous_score=mm.state.get_score_string(),
+                new_score=mm.state.get_score_string(),
+                note="voice_match_context_mismatch",
+            )
+            return {
+                "success": False,
+                "reason": "voice_match_context_mismatch",
+                "previous_score": mm.state.get_score_string(),
+                "new_score": mm.state.get_score_string(),
+                "parsed": None,
+                "route_result": None,
+            }
+
     result = apply_score_event_and_refresh_ui(
         transcript=transcript,
         source=source,
@@ -1138,6 +1616,7 @@ class VoiceAudioProcessor(AudioProcessorBase):
         voice_strict_mode: bool = False,
         vad: Optional[VoiceActivityDetector] = None,
         asr: object = None,
+        tt_sounds_processor: object = None,
     ):
         """
         Initialize the audio processor.
@@ -1150,6 +1629,7 @@ class VoiceAudioProcessor(AudioProcessorBase):
             asr: Optional pre-built ASR backend. When ``None`` (default), the
                 backend is lazily loaded via ``_get_asr()`` and the processor
                 degrades gracefully if ASR is unavailable.
+            tt_sounds_processor: Optional TTRallyProcessor for impact detection.
         """
         # Detect sample format from WebRTC frames (default to float32 for safety)
         self._sample_format = getattr(self, '_sample_format', sample_format)
@@ -1173,6 +1653,12 @@ class VoiceAudioProcessor(AudioProcessorBase):
         self._chunk_queue: queue.Queue = queue.Queue(maxsize=20)
         self._stop_worker = threading.Event()
         self._dropped_chunks = 0
+        # Audio frame and chunk diagnostics
+        self._audio_frames_received = 0
+        self._chunks_created = 0
+        self._asr_events_enqueued = 0
+        self._last_frame_timestamp: float = 0.0
+        self._last_chunk_timestamp: float = 0.0
         # Always initialize _asr so _get_asr() never raises AttributeError
         # when ASR loading is deferred or fails. Standardize all ASR access
         # through _get_asr() instead of reading self._asr directly.
@@ -1183,6 +1669,10 @@ class VoiceAudioProcessor(AudioProcessorBase):
         # Rate-limited logging state to avoid flooding Streamlit Cloud logs.
         self._last_audio_error_log_ts: float = 0.0
         self._audio_error_count: int = 0
+        self._callback_count: int = 0
+        self.tt_sounds_processor = tt_sounds_processor
+        if tt_sounds_processor is not None:
+            tt_sounds_processor.start()
 
     def _get_asr(self):
         """Lazy-load the ASR backend to keep processor initialization lightweight.
@@ -1365,9 +1855,17 @@ class VoiceAudioProcessor(AudioProcessorBase):
             )
             self._enqueue_chunk(chunk)
 
+        if self.tt_sounds_processor is not None:
+            try:
+                self.tt_sounds_processor.ingest_frame(frame)
+            except Exception:
+                pass
+
     def _enqueue_chunk(self, chunk: AudioChunk) -> None:
         """Enqueue a chunk with bounded queue and drop-oldest policy."""
         self._start_worker()
+        self._chunks_created += 1
+        self._last_chunk_timestamp = time.time()
         try:
             self._chunk_queue.put_nowait(chunk)
         except queue.Full:
@@ -1389,7 +1887,13 @@ class VoiceAudioProcessor(AudioProcessorBase):
         Receives a single audio frame, buffers it, and returns it unchanged so
         the audio stream continues to flow in SENDONLY mode.
         """
+        self._audio_frames_received += 1
+        self._last_frame_timestamp = getattr(frame, 'pts', time.time())
         self._ingest_frame(frame)
+        self._maybe_log_first_frame()
+        self._callback_count += 1
+        with _factory_diag_lock:
+            _factory_diag["callback_count"] = self._callback_count
         return frame
 
     async def recv_queued(self, frames):
@@ -1400,8 +1904,40 @@ class VoiceAudioProcessor(AudioProcessorBase):
         batch so the audio stream continues to flow in SENDONLY mode.
         """
         for frame in frames:
+            self._audio_frames_received += 1
+            self._last_frame_timestamp = getattr(frame, 'pts', time.time())
             self._ingest_frame(frame)
+        self._maybe_log_first_frame()
+        self._callback_count += 1
+        with _factory_diag_lock:
+            _factory_diag["callback_count"] = self._callback_count
         return frames
+
+    def _maybe_log_first_frame(self) -> None:
+        """No-op in callback threads.
+
+        Frame-arrival audit events are emitted from the main Streamlit thread
+        based on the monotonic ``_audio_frames_received`` counter, not from
+        this background callback.
+        """
+        return
+
+    def get_diagnostics(self) -> Dict[str, Any]:
+        """Return processor diagnostics for the UI panel."""
+        return {
+            "audio_frames_received": self._audio_frames_received,
+            "chunks_created": self._chunks_created,
+            "asr_events_enqueued": self._asr_events_enqueued,
+            "dropped_chunks": self._dropped_chunks,
+            "last_frame_timestamp": self._last_frame_timestamp,
+            "last_chunk_timestamp": self._last_chunk_timestamp,
+            "asr_ready": self._asr_ready,
+            "asr_error": self._asr_error,
+            "status": self._status,
+            "processor_class": type(self).__name__,
+            "processor_id": id(self),
+            "callback_count": self._callback_count,
+        }
 
     def _transcribe_chunk(self, chunk: AudioChunk) -> None:
         """Transcribe an audio chunk in the background worker thread.
@@ -1454,6 +1990,7 @@ class VoiceAudioProcessor(AudioProcessorBase):
             event = self.parser.parse(text)
             event.noise_rms = chunk.rms
             event.asr_latency_ms = latency_ms
+            event.session_id = getattr(self, '_session_id', None)
             # Strict mode (Phase 5): flag score events for confirmation.
             # NOTE: We read voice_strict_mode from the instance attribute that
             # the main thread updates, not from st.session_state directly.
@@ -1483,6 +2020,38 @@ class VoiceAudioProcessor(AudioProcessorBase):
                 break
         return events
 
+    def has_pending_events(self) -> bool:
+        """Return True if the event queue has pending events (non-draining)."""
+        with self._lock:
+            return not self.event_queue.empty()
+
+    def peek_events(self, max_items: int = 5) -> List[Tuple[str, str, Any]]:
+        """Return a snapshot of pending events without draining the queue."""
+        items = []
+        with self._lock:
+            q = list(self.event_queue.queue)[:max_items]
+            for raw_text, text, event in q:
+                items.append((
+                    raw_text[:80],
+                    text[:80],
+                    getattr(event, 'event_id', '')[:16],
+                ))
+        return items
+
+    def peek_chunks(self, max_items: int = 5) -> List[Dict[str, Any]]:
+        """Return a snapshot of queued chunks without draining."""
+        items = []
+        with self._lock:
+            q = list(self._chunk_queue.queue)[:max_items]
+            for chunk in q:
+                items.append({
+                    "duration_ms": getattr(chunk, 'duration_ms', 0.0),
+                    "frames": len(getattr(chunk, 'frames', [])),
+                    "rms": getattr(chunk, 'rms', 0.0),
+                    "timestamp": getattr(chunk, 'timestamp', 0.0),
+                })
+        return items
+
     def stop(self) -> None:
         """Stop processing and flush remaining audio."""
         self._stop_worker.set()
@@ -1502,6 +2071,9 @@ class VoiceAudioProcessor(AudioProcessorBase):
                     self.event_queue.get_nowait()
                 except queue.Empty:
                     break
+        # NOTE: We intentionally do NOT stop self.tt_sounds_processor here.
+        # The main loop / toggle-off cleanup is responsible for stopping the
+        # rally processor so audio-only mode is not interrupted by voice actions.
 
 
 def persist_voice_match_to_db(match_id: int, engine) -> None:
@@ -1823,23 +2395,6 @@ def _process_push_to_talk_audio(audio_file: Any) -> Optional[VoiceScoreEvent]:
 
     result = _process_voice_transcript(raw_text, source="push_to_talk")
 
-    if VOICE_DEBUG_EVENTS:
-        try:
-            _e = VoiceParser().parse(
-                TranscriptPostProcessor(VoiceVocabulary.load()).process(raw_text),
-                current_score_a=st.session_state.match_manager.state.score_a,
-                current_score_b=st.session_state.match_manager.state.score_b,
-            )
-            st.session_state.voice_event_logger.record(
-                _e,
-                accepted=result.get("success", False),
-                previous_score=result.get("previous_score", ""),
-                new_score=result.get("new_score", ""),
-                note="push_to_talk",
-            )
-        except Exception:
-            pass
-
     if VOICE_DATASET_OPT_IN:
         try:
             recorder = st.session_state.get("voice_dataset_recorder")
@@ -2023,14 +2578,17 @@ def _apply_pending(idx: int) -> None:
         action = handler.execute(intent_enum, item.get("slots", {}))
         st.toast(f"🎤 Admin: {action.message}", icon="⚙️")
         st.session_state.last_voice_feedback = action.message
-        if VOICE_DEBUG_EVENTS:
-            st.session_state.voice_event_logger.record(
-                VoiceScoreEvent(type=intent_str, raw_text=raw, confidence=item.get("confidence", 0.0)),
-                accepted=True,
-                previous_score=st.session_state.match_manager.state.get_score_string(),
-                new_score=st.session_state.match_manager.state.get_score_string(),
-                note="admin_confirmed",
-            )
+        st.session_state.last_voice_success_message = action.message
+        st.session_state.last_voice_rejection_reason = ""
+        st.session_state.last_voice_action_taken = "admin_applied"
+        _append_voice_audit(
+            VoiceScoreEvent(type=intent_str, raw_text=raw, confidence=item.get("confidence", 0.0)),
+            source=source,
+            accepted=True,
+            previous_score=st.session_state.match_manager.state.get_score_string(),
+            new_score=st.session_state.match_manager.state.get_score_string(),
+            note="admin_confirmed",
+        )
         _request_voice_rerun("admin_confirmed")
         return
 
@@ -2056,7 +2614,7 @@ def _process_voice_events() -> None:
     The continuous listening loop calls ``st.rerun()`` at the end to drain
     queued events promptly (streamlit-webrtc does not rerun on audio data).
     """
-    if not st.session_state.voice_listening:
+    if not st.session_state.get("voice_listening") or not st.session_state.get("voice_events_enabled"):
         return
 
     # Clear any one-shot rerun request from the previous run; the continuous
@@ -2077,7 +2635,10 @@ def _process_voice_events() -> None:
     events = processor.get_events()
     if not events:
         logger.debug("_process_voice_events: no events in queue")
+        _append_continuous_trace("queue_empty", "no_pending_events")
         return
+
+    _append_continuous_trace("continuous_event_consumed", f"{len(events)}_events")
 
     # If the match is already won, stop listening and disable voice updates.
     _engine = st.session_state.match_manager.engine
@@ -2086,47 +2647,89 @@ def _process_voice_events() -> None:
         st.session_state.last_voice_feedback = "Match complete — voice listening stopped"
         if ctx and ctx.get("processor"):
             ctx["processor"].stop()
+        _append_continuous_trace("continuous_stopped", "match_won")
         return
 
-    _current_score_a = st.session_state.match_manager.state.score_a
-    _current_score_b = st.session_state.match_manager.state.score_b
-
-    # Expire stale pending confirmations (> 8 s old).
-    _now = time.time()
-    _stale_idx = []
-    for _idx, _pending in enumerate(st.session_state.pending_confirmations):
-        if _now - _pending.get("received_at", _now) > 8.0:
-            _stale_idx.append(_idx)
-    for _idx in reversed(_stale_idx):
-        st.session_state.pending_confirmations.pop(_idx)
-
     logger.info("_process_voice_events: processing %d events", len(events))
+    _append_continuous_trace("continuous_event_enqueued", f"{len(events)}_events")
+    _current_session_id = st.session_state.get("voice_continuous_session_id")
+    _session_start = st.session_state.get("voice_continuous_session_start", 0.0)
+    _applied_ids = st.session_state.get("last_applied_voice_event_ids", [])
+    _webrtc_playing = _get_webrtc_playing_state()
     for raw_text, text, event in events:
         if st.session_state.get("quick_voice_mode") == "quick":
             _process_quick_voice_event(text)
         else:
-            # Preserve noise/latency metadata on the text for the canonical function
-            metadata_prefix = ""
-            if getattr(event, 'noise_rms', None) is not None:
-                metadata_prefix = f"[noise_rms={event.noise_rms}]"
-            if getattr(event, 'asr_latency_ms', None) is not None:
-                metadata_prefix += f"[latency={event.asr_latency_ms}]"
+            _event_id = getattr(event, 'event_id', '')
+            _event_ts = getattr(event, 'timestamp', 0.0)
+            _event_session_id = getattr(event, 'session_id', None)
+            _stale_reason = None
 
-            # Use the canonical function for ALL scoring logic
-            result = apply_score_event_and_refresh_ui(
-                transcript=text,
-                source="webrtc",
+            if _event_session_id and _current_session_id and _event_session_id != _current_session_id:
+                _stale_reason = "stale_event_old_session"
+            elif _event_ts < _session_start:
+                _stale_reason = "stale_event_after_stop"
+            elif _event_id in _applied_ids:
+                _stale_reason = "duplicate_event"
+            elif not _webrtc_playing and getattr(event, 'source', '') == "continuous":
+                _stale_reason = "webrtc_not_playing"
+
+            if _stale_reason:
+                st.session_state.voice_stale_events_ignored = st.session_state.get("voice_stale_events_ignored", 0) + 1
+                _append_continuous_trace("stale_event_ignored", f"{_stale_reason}:{_event_id[:8]}")
+                logger.debug("Ignoring stale continuous event: %s (id=%s)", _stale_reason, _event_id[:8])
+                continue
+
+            _current_score_a = st.session_state.match_manager.state.score_a
+            _current_score_b = st.session_state.match_manager.state.score_b
+
+            result = _process_voice_transcript(
+                text,
+                source="continuous",
                 enable_confirmation=VOICE_ENABLE_CONFIRMATION,
-                current_score_a=_current_score_a,
-                current_score_b=_current_score_b,
             )
+
+            if result.get("success") and _event_id:
+                _applied_ids.append(_event_id)
+                if len(_applied_ids) > 100:
+                    _applied_ids = _applied_ids[-100:]
+                st.session_state.last_applied_voice_event_ids = _applied_ids
+
+            _append_continuous_trace(
+                "continuous_event_processed",
+                f"success={result.get('success')},reason={result.get('reason')}",
+            )
+
+            # Update structured fields (success/rejection separation)
+            if not result.get("success") and result.get("reason"):
+                st.session_state.last_voice_feedback = result.get("reason")
+                st.session_state.last_voice_rejection_reason = result.get("reason")
+                st.session_state.last_voice_success_message = ""
+                st.session_state.last_voice_action_taken = "rejected"
+            elif result.get("success"):
+                st.session_state.last_voice_feedback = result.get("reason")
+                st.session_state.last_voice_success_message = result.get("reason")
+                st.session_state.last_voice_rejection_reason = ""
+                _parsed = result.get("parsed")
+                if _parsed and hasattr(_parsed, 'type'):
+                    _etype = _parsed.type
+                    if _etype == "increment":
+                        st.session_state.last_voice_action_taken = "score_update_success"
+                    elif _etype == "undo":
+                        st.session_state.last_voice_action_taken = "undo_success"
+                    elif _etype == "set_score":
+                        st.session_state.last_voice_action_taken = "set_score_success"
+                    else:
+                        st.session_state.last_voice_action_taken = "applied"
+                else:
+                    st.session_state.last_voice_action_taken = "applied"
 
             # Log result for observability
             logger.debug(
                 "Voice event processed: transcript='%s', success=%s, reason='%s', "
                 "prev='%s' -> new='%s'",
-                text, result.success, result.reason,
-                result.previous_score, result.new_score,
+                text, result.get("success"), result.get("reason"),
+                result.get("previous_score"), result.get("new_score"),
             )
 
     # Note: We do NOT call st.rerun() here anymore. The heartbeat at the end
@@ -3962,6 +4565,15 @@ def _render_ui() -> None:
         st.info("Select both players to start the match.")
     
     # ============================================================================
+    # Process voice events BEFORE rendering scoreboard (drain queue early)
+    # ============================================================================
+    # Drain pending continuous voice events BEFORE rendering the live scoreboard.
+    # This ensures accepted commands from background audio callbacks are applied
+    # and reflected in the UI on the same render cycle.
+    _process_voice_events()
+    _process_tt_sounds_events()
+    
+    # ============================================================================
     # PingScore-inspired live scoreboard
     # ============================================================================
     st.divider()
@@ -4002,6 +4614,11 @@ def _render_ui() -> None:
                 play_cue("point")
                 _maybe_speak_tts(msg, "increment")
                 _build_and_store_commentary("point_a", st.session_state.match_manager.state, prev_state)
+                if st.session_state.get("tt_sounds_enabled"):
+                    audio_summary = finalize_current_audio_rally(reason="point_scored")
+                    st.session_state["_pending_audio_summary_for_commentary"] = audio_summary
+                    if audio_summary and audio_summary.confidence >= 0.55:
+                        _append_audio_commentary_line(audio_summary)
                 st.rerun()
         with _b2:
             if st.button("➖ A", key="sub_point_a", use_container_width=True):
@@ -4015,6 +4632,8 @@ def _render_ui() -> None:
                         st.toast(st.session_state.last_feedback, icon="↩️")
                         _maybe_speak_tts(st.session_state.last_feedback, "undo")
                         _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
+                        if st.session_state.get("tt_sounds_enabled"):
+                            _mark_last_audio_summary_action("undo")
                 st.rerun()
     
     with score_colc:
@@ -4049,6 +4668,8 @@ def _render_ui() -> None:
                 play_cue("undo")
                 _maybe_speak_tts(msg, "undo")
                 _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
+                if st.session_state.get("tt_sounds_enabled"):
+                    _mark_last_audio_summary_action("undo")
                 st.rerun()
         with _cor2:
             if st.button("↩️ Undo Game", key="undo_game_center", use_container_width=True):
@@ -4057,6 +4678,8 @@ def _render_ui() -> None:
                     st.session_state.last_feedback = msg
                     st.toast(msg, icon="↩️")
                     play_cue("undo")
+                    if st.session_state.get("tt_sounds_enabled"):
+                        _mark_last_audio_summary_action("undo")
                     st.rerun()
                 else:
                     st.warning("No completed games to undo")
@@ -4070,6 +4693,8 @@ def _render_ui() -> None:
                 st.toast(msg, icon="🔄")
                 play_cue("undo")
                 _build_and_store_commentary("reset", st.session_state.match_manager.state, prev_state)
+                if st.session_state.get("tt_sounds_enabled"):
+                    _mark_last_audio_summary_action("reset")
                 st.rerun()
         with _rst2:
             if st.button("🗑️ Reset Match", key="reset_match_center", use_container_width=True):
@@ -4080,6 +4705,8 @@ def _render_ui() -> None:
                 st.toast(msg, icon="🔄")
                 play_cue("undo")
                 _build_and_store_commentary("reset", st.session_state.match_manager.state, prev_state)
+                if st.session_state.get("tt_sounds_enabled"):
+                    _mark_last_audio_summary_action("reset")
                 st.rerun()
         # Voice status
         if st.session_state.get("last_voice_feedback"):
@@ -4124,6 +4751,11 @@ def _render_ui() -> None:
                 play_cue("point")
                 _maybe_speak_tts(msg, "increment")
                 _build_and_store_commentary("point_b", st.session_state.match_manager.state, prev_state)
+                if st.session_state.get("tt_sounds_enabled"):
+                    audio_summary = finalize_current_audio_rally(reason="point_scored")
+                    st.session_state["_pending_audio_summary_for_commentary"] = audio_summary
+                    if audio_summary and audio_summary.confidence >= 0.55:
+                        _append_audio_commentary_line(audio_summary)
                 st.rerun()
         with _b2:
             if st.button("➖ B", key="sub_point_b", use_container_width=True):
@@ -4137,6 +4769,8 @@ def _render_ui() -> None:
                         st.toast(st.session_state.last_feedback, icon="↩️")
                         _maybe_speak_tts(st.session_state.last_feedback, "undo")
                         _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
+                        if st.session_state.get("tt_sounds_enabled"):
+                            _mark_last_audio_summary_action("undo")
                 st.rerun()
     
     # ============================================================================
@@ -4380,13 +5014,30 @@ def _render_ui() -> None:
             _increment_voice_session_epoch()
             st.toast("🎤 Voice scoring enabled — new session started.", icon="✅")
     with col_status:
-        if st.session_state.voice_scoring_enabled:
-            if st.session_state.voice_listening:
-                st.markdown("🟢 **Listening**")
-            else:
-                st.markdown("🟡 **Ready**")
-        else:
+        if not st.session_state.voice_scoring_enabled:
             st.markdown("⚪ **Disabled**")
+        elif not WEBRTC_AVAILABLE:
+            st.markdown("🔴 **WebRTC unavailable**")
+        elif _get_webrtc_playing_state():
+            st.markdown("🟢 **Continuous microphone active**")
+        elif st.session_state.get("voice_listening"):
+            st.markdown("🟡 **Continuous mode is prepared, but browser microphone is not started. Click START on the microphone component.**")
+        else:
+            st.markdown("🟡 **Ready**")
+        
+        # Audio Rally Assistant toggle
+        _prev_audio = st.session_state.get("tt_sounds_enabled", False)
+        st.session_state.tt_sounds_enabled = st.toggle(
+            "Audio Rally Assistant",
+            value=st.session_state.get("tt_sounds_enabled", False),
+            help="Detects table-tennis impact sounds for commentary enrichment only. "
+                 "Does NOT update the score. Disabled by default.",
+        )
+        if st.session_state.tt_sounds_enabled and not WEBRTC_AVAILABLE:
+            st.info("Audio Rally Assistant requires streamlit-webrtc (unavailable in this environment).")
+        if _prev_audio and not st.session_state.tt_sounds_enabled:
+            _clear_tt_sounds_state()
+            st.toast("Audio Rally Assistant disabled.", icon="ℹ️")
     
         # Noise robustness & calibration (Phase 5)
         with st.expander("🎚️ Noise Robustness & Calibration", expanded=False):
@@ -4427,12 +5078,13 @@ def _render_ui() -> None:
             st.caption("Tip: sample ambient hall noise, then set the threshold a bit above it. "
                        "Directional/close microphones improve accuracy.")
     
-    if st.session_state.voice_scoring_enabled:
-        st.markdown("**Push-to-Talk** (recommended)")
-        st.caption("Click the microphone, speak your command, and release to send.")
-    
+    if st.session_state.voice_scoring_enabled or st.session_state.get("tt_sounds_enabled", False):
+        if st.session_state.voice_scoring_enabled:
+            st.markdown("**Push-to-Talk** (recommended)")
+            st.caption("Click the microphone, speak your command, and release to send.")
+        
         # Continuous listening is optional and experimental.
-        with st.expander("🔬 Experimental: Continuous Listening", expanded=False):
+        with st.expander("🔬 Experimental: Continuous Listening", expanded=True):
             st.caption(
                 "Uses streamlit-webrtc for hands-free continuous voice capture. "
                 "This mode is experimental and may miss commands in noisy environments. "
@@ -4441,173 +5093,427 @@ def _render_ui() -> None:
             # Safely reflect WebRTC availability (computed once at import).
             ensure_webrtc_diag_state()
             webrtc_available = WEBRTC_AVAILABLE
+            ctx = None
 
             if not webrtc_available:
-                # Show a friendly, once-per-session notice inside the voice
-                # settings area only. Never warn globally or on every rerun.
-                if not st.session_state.get("shown_webrtc_missing_warning"):
-                    st.info(
-                        "Live microphone mode is unavailable because "
-                        "`streamlit-webrtc` is not installed. Manual scoring and "
-                        "browser speech still work."
-                    )
-                    st.session_state.shown_webrtc_missing_warning = True
+                st.info("Continuous listening requires streamlit-webrtc. Use Push-to-Talk instead.")
                 st.caption("You can still use the push-to-talk voice input below.")
             else:
-                # Start/Stop listening controls
-                col_start, col_stop = st.columns(2)
-                with col_start:
-                    if st.button("🎙️ Start Listening", type="primary", use_container_width=True):
-                        if not st.session_state.voice_listening:
-                            st.session_state.voice_listening = True
-                            st.session_state.voice_event_log = []
-                            st.session_state.last_voice_transcript = ""
-                            st.session_state.last_voice_event = None
-                            st.session_state.last_voice_feedback = ""
-                            st.session_state.voice_asr_status = None
-                            st.rerun()
-                with col_stop:
-                    if st.button("⏹️ Stop Listening", use_container_width=True):
-                        if st.session_state.voice_listening:
-                            st.session_state.voice_listening = False
-                            ctx = st.session_state.get("voice_webrtc_ctx")
-                            if ctx and ctx.get("processor"):
-                                ctx["processor"].stop()
-                            st.rerun()
-    
-                if st.session_state.voice_listening:
-                    st.caption("Listening for score commands... Speak clearly into your microphone.")
-    
-                    # Initialize ASR status on first listen
-                    if st.session_state.voice_asr_status is None:
+                st.caption(
+                    "Click **START** in the microphone component below and allow browser microphone permission. "
+                    "Use the component's own STOP control to end the session. "
+                    "Voice commands are processed only while the microphone is active."
+                )
+                
+                # WebRTC streamer — always rendered when expander is open so the
+                # built-in START/STOP control is visible and stable.
+                from streamlit_webrtc import webrtc_streamer, WebRtcMode
+            
+                # Ensure webrtc_streamer uses our VoiceAudioProcessor factory, not a
+                # stale CallbackAttachableProcessor cached from a previous mode.
+                # The processor track cache keys are "__PROCESSOR_TRACK_CACHE__<track_id>".
+                if not st.session_state.get("_voice_processor_cache_cleared"):
+                    for _cache_key in list(st.session_state.keys()):
+                        if str(_cache_key).startswith("__PROCESSOR_TRACK_CACHE__"):
+                            del st.session_state[_cache_key]
+                    st.session_state._voice_processor_cache_cleared = True
+            
+                # Stable processor factory — defined once per session, not recreated on rerun.
+                if "voice_webrtc_processor_factory" not in st.session_state:
+                    _filtering = st.session_state.get("voice_noise_filtering", False)
+                    _threshold = st.session_state.get("voice_noise_threshold", 0.0)
+                    _strict = st.session_state.get("voice_strict_mode", False)
+                    _vad = create_vad()
+                    
+                    def _make_processor():
+                        _tt_proc = None
+                        if st.session_state.get("tt_sounds_enabled", False):
+                            try:
+                                from tournament_platform.app.services.tt_sounds import (
+                                    ImpactDetector,
+                                    TTRallyProcessor,
+                                    TT_SOUNDS_ABS_MIN_ENERGY,
+                                    TT_SOUNDS_THRESHOLD_MULTIPLIER,
+                                    TT_SOUNDS_NOISE_FLOOR_DECAY,
+                                    TT_SOUNDS_COOLDOWN_MS,
+                                    TT_SOUNDS_WINDOW_MS,
+                                )
+                                _detector = ImpactDetector(
+                                    abs_min_energy=TT_SOUNDS_ABS_MIN_ENERGY,
+                                    threshold_multiplier=TT_SOUNDS_THRESHOLD_MULTIPLIER,
+                                    noise_floor_decay=TT_SOUNDS_NOISE_FLOOR_DECAY,
+                                    cooldown_ms=TT_SOUNDS_COOLDOWN_MS,
+                                    window_ms=TT_SOUNDS_WINDOW_MS,
+                                    sample_rate=48000,
+                                )
+                                _tt_proc = TTRallyProcessor(detector=_detector, sample_rate=48000)
+                            except Exception:
+                                _tt_proc = None
                         try:
-                            st.session_state.voice_asr_status = ASRBackendFactory.backend_status()
-                        except Exception as e:
-                            st.session_state.voice_asr_status = {"available": False, "load_error": str(e)}
-
-                    # Show precise ASR status (never a vague "Status unavailable")
-                    asr_status = _normalize_status_dict(st.session_state.voice_asr_status)
-                    asr_state = asr_status.get("state") or asr_status.get("reason") or "not_configured"
-                    if not asr_status.get("available", False):
-                        error_msg = asr_status.get("reason") or asr_status.get("load_error") or "not_configured"
-                        if is_running_on_streamlit_cloud():
-                            logger.warning("ASR unavailable (state=%s): %s", asr_state, error_msg)
-                            st.warning(
-                                f"Voice ASR not ready ({asr_state}). "
-                                "Manual scoring is still available. See Voice ASR Diagnostics below."
-                            )
-                        else:
-                            st.error(f"⚠️ Local ASR not available ({asr_state}): {error_msg}")
-                            st.caption("Voice scoring requires faster-whisper. Install with: `pip install faster-whisper`")
-                        st.session_state.voice_listening = False
-                        st.rerun()
-    
-                    # WebRTC streamer
-                    from streamlit_webrtc import webrtc_streamer, WebRtcMode
-    
-                    # Stable processor factory — defined once per session, not recreated on rerun.
-                    if "voice_webrtc_processor_factory" not in st.session_state:
-                        _filtering = st.session_state.get("voice_noise_filtering", False)
-                        _threshold = st.session_state.get("voice_noise_threshold", 0.0)
-                        _strict = st.session_state.get("voice_strict_mode", False)
-                        _vad = create_vad()
-                        def _make_processor():
-                            return VoiceAudioProcessor(
+                            processor = VoiceAudioProcessor(
                                 noise_gate_rms=_threshold if _filtering else 0.01,
                                 sample_format=SAMPLE_FORMAT_FLOAT32,
                                 voice_strict_mode=_strict,
                                 vad=_vad,
+                                tt_sounds_processor=_tt_proc,
                             )
-                        st.session_state.voice_webrtc_processor_factory = _make_processor
-    
+                            return processor
+                        except Exception as exc:
+                            logger.error("VoiceAudioProcessor factory failed: %s", exc, exc_info=True)
+                            raise
+                    
+                    st.session_state.voice_webrtc_processor_factory = _make_processor
+                    st.session_state._voice_factory_call_count = 0
+                    st.session_state._voice_factory_last_error = None
+                    st.session_state._voice_last_processor_id = None
+                    st.session_state._voice_last_processor_class = None
+                    st.session_state._voice_processor_callback_count = 0
+                    st.session_state._voice_last_processor_exception = None
+     
+                ctx = None
+                mount_error = None
+                _raw_factory = st.session_state.voice_webrtc_processor_factory
+                
+                def _tracked_factory():
+                    with _factory_diag_lock:
+                        _factory_diag["call_count"] += 1
+                        # Persist factory metrics to session_state so they survive
+                        # script reruns even if the module-level dict resets.
+                        st.session_state._voice_factory_call_count = _factory_diag["call_count"]
+                    try:
+                        processor = _raw_factory()
+                        with _factory_diag_lock:
+                            _factory_diag["last_error"] = None
+                            _factory_diag["last_processor_id"] = id(processor)
+                            _factory_diag["last_processor_class"] = type(processor).__name__
+                            st.session_state._voice_last_processor_id = _factory_diag["last_processor_id"]
+                            st.session_state._voice_last_processor_class = _factory_diag["last_processor_class"]
+                        return processor
+                    except Exception as exc:
+                        with _factory_diag_lock:
+                            _factory_diag["last_error"] = f"{type(exc).__name__}: {exc}"
+                            _factory_diag["last_exception"] = exc
+                            st.session_state._voice_factory_last_error = _factory_diag["last_error"]
+                            st.session_state._voice_last_processor_exception = _factory_diag["last_exception"]
+                        raise
+                
+                try:
                     ctx = webrtc_streamer(
-                        key="voice-scorekeeper-webrtc",
+                        key="voice_scorekeeper_continuous_webrtc",
                         mode=WebRtcMode.SENDONLY,
-                        audio_processor_factory=st.session_state.voice_webrtc_processor_factory,
+                        audio_processor_factory=_tracked_factory,
                         rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-                        media_stream_constraints={"audio": True, "video": False},
+                        media_stream_constraints=_WEBRTC_AUDIO_CONSTRAINTS,
                         async_processing=True,
                     )
+                    st.session_state["voice_webrtc_mount_error"] = None
+                except Exception as exc:
+                    mount_error = f"{type(exc).__name__}: {exc}"
+                    st.session_state["voice_webrtc_mount_error"] = mount_error
+                    logger.error("WebRTC mount failed: %s", mount_error, exc_info=True)
+                    try:
+                        ctx = webrtc_streamer(
+                            key="voice_scorekeeper_continuous_webrtc",
+                            mode=WebRtcMode.SENDONLY,
+                            audio_processor_factory=_tracked_factory,
+                            rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+                            media_stream_constraints=_WEBRTC_AUDIO_CONSTRAINTS,
+                            async_processing=True,
+                        )
+                        mount_error = None
+                        st.session_state["voice_webrtc_mount_error"] = None
+                    except Exception as exc2:
+                        mount_error = f"{type(exc2).__name__}: {exc2}"
+                        st.session_state["voice_webrtc_mount_error"] = mount_error
+                        logger.error("WebRTC fallback mount also failed: %s", mount_error, exc_info=True)
+            
+                # Snapshot factory diagnostics to session_state from the main thread.
+                # Prefer existing session_state values if module-level dict was reset.
+                with _factory_diag_lock:
+                    _ss = st.session_state
+                    if _factory_diag["call_count"] > 0:
+                        _ss._voice_factory_call_count = _factory_diag["call_count"]
+                    if _factory_diag["callback_count"] > 0:
+                        _ss._voice_processor_callback_count = _factory_diag["callback_count"]
+                    if _factory_diag["last_error"] is not None:
+                        _ss._voice_factory_last_error = _factory_diag["last_error"]
+                    if _factory_diag["last_processor_id"] is not None:
+                        _ss._voice_last_processor_id = _factory_diag["last_processor_id"]
+                    if _factory_diag["last_processor_class"] is not None:
+                        _ss._voice_last_processor_class = _factory_diag["last_processor_class"]
+                    if _factory_diag["last_exception"] is not None:
+                        _ss._voice_last_processor_exception = _factory_diag["last_exception"]
+                
+                # Snapshot audio callback diagnostics (fallback path).
+                with _audio_callback_lock:
+                    _ss._voice_audio_callback_count = _audio_callback_count
+                    _ss._voice_last_audio_frame_timestamp = _last_audio_frame_timestamp
+                    _ss._voice_last_audio_frame_rms = _last_audio_frame_rms
+                    _ss._voice_last_audio_frame_shape = _last_audio_frame_shape
+                    _ss._voice_last_audio_frame_sample_rate = _last_audio_frame_sample_rate
+                    _ss._voice_last_audio_frame_method = _last_audio_frame_method
+                
+                # Main-thread frame audit: emit trace events for first frame and
+                # every 100th frame without flooding the audit log.
+                _audit_proc = _get_voice_webrtc_processor(st.session_state.get("voice_webrtc_ctx"))
+                if _audit_proc is not None:
+                    _frames = getattr(_audit_proc, "_audio_frames_received", 0)
+                    _last_audit = st.session_state.get("_voice_main_thread_frame_audit_count", 0)
+                    if _frames > 0 and _last_audit != _frames:
+                        if _last_audit == 0:
+                            _append_continuous_trace("continuous_audio_frame_received", "first_frame")
+                        elif _frames - _last_audit >= 100:
+                            _append_continuous_trace("continuous_audio_frame_received", f"frame_{_frames}")
+                        st.session_state._voice_main_thread_frame_audit_count = _frames
     
-                    logger.info(
-                        "WebRTC ctx: state=%s, audio_processor=%s",
-                        ctx.state if ctx else "None",
-                        "yes" if ctx and ctx.audio_processor else "no",
-                    )
+                logger.info(
+                    "WebRTC ctx: state=%s, audio_processor=%s",
+                    ctx.state if ctx else "None",
+                    "yes" if ctx and ctx.audio_processor else "no",
+                )
     
-                    # Store processor reference in session state
-                    if ctx and ctx.audio_processor:
-                        if st.session_state.voice_webrtc_ctx is None:
-                            st.session_state.voice_webrtc_ctx = {}
-                        st.session_state.voice_webrtc_ctx["processor"] = ctx.audio_processor
-                        logger.info("Stored audio processor in session state")
+                # Store WebRTC streamer state in session so status badge can read it
+                if ctx is not None:
+                    st.session_state.voice_webrtc_streamer_state = {
+                        "playing": getattr(ctx.state, "playing", False),
+                        "signalling": getattr(ctx.state, "signalling", False),
+                    }
+                else:
+                    st.session_state.voice_webrtc_streamer_state = {
+                        "playing": False,
+                        "signalling": False,
+                    }
+    
+                # Detect WebRTC state transitions for trace events
+                _current_playing = st.session_state.voice_webrtc_streamer_state.get("playing", False)
+                _prev_playing = st.session_state.get("_voice_prev_webrtc_playing", False)
+                if _current_playing and not _prev_playing:
+                    _append_continuous_trace("webrtc_playing", "microphone_stream_started")
+                    # Auto-create continuous session on WebRTC play transition
+                    st.session_state.voice_continuous_session_id = str(uuid.uuid4())
+                    st.session_state.voice_continuous_session_start = time.time()
+                    st.session_state.voice_continuous_requested = True
+                    st.session_state.voice_events_enabled = True
+                    st.session_state.voice_listening = True
+                    st.session_state.voice_stale_events_ignored = 0
+                    st.session_state.last_voice_continuous_transcript = ""
+                    st.session_state.last_voice_push_to_talk_transcript = ""
+                    st.session_state.last_voice_debug_transcript = ""
+                    _append_continuous_trace("continuous_session_started", f"session={st.session_state.voice_continuous_session_id[:8]}")
+                    # Reset processor audio buffer if it exists
+                    _webrtc_ctx = st.session_state.get("voice_webrtc_ctx")
+                    if _webrtc_ctx and _webrtc_ctx.get("processor"):
+                        try:
+                            proc = _webrtc_ctx["processor"]
+                            if hasattr(proc, 'audio_buffer') and proc.audio_buffer is not None:
+                                proc.audio_buffer.reset()
+                        except Exception:
+                            pass
+                elif not _current_playing and _prev_playing:
+                    _append_continuous_trace("webrtc_not_playing", "microphone_stream_stopped")
+                    st.session_state.voice_continuous_requested = False
+                    st.session_state.voice_events_enabled = False
+                    st.session_state.voice_listening = False
+                    st.session_state.voice_continuous_session_id = None
+                    st.session_state.voice_continuous_session_start = 0.0
+                    _append_continuous_trace("continuous_session_stopped", "microphone_stream_stopped")
+                st.session_state._voice_prev_webrtc_playing = _current_playing
+    
+                # Store processor reference in session state and emit precise stage
+                _processor_stage = "component_not_mounted"
+                if ctx is not None:
+                    _current_playing = getattr(ctx.state, "playing", False)
+                    if not _current_playing:
+                        _processor_stage = "webrtc_not_playing"
+                    elif ctx.audio_processor is None:
+                        _processor_stage = "processor_not_created"
                     else:
-                        logger.debug("No audio processor available yet (ctx=%s)", "present" if ctx else "None")
-    
-                    # Show last heard phrase
-                    if st.session_state.last_voice_transcript:
-                        st.info(f"Last heard: **{st.session_state.last_voice_transcript}**")
-    
-                    # Show parsed interpretation
-                    if st.session_state.last_voice_event:
-                        event = st.session_state.last_voice_event
-                        if event.type == "set_score":
-                            st.success(f"Parsed: Set score to {event.score_a}-{event.score_b}")
-                        elif event.type == "increment":
-                            st.success(f"Parsed: Point to Player {event.player}")
-                        elif event.type == "undo":
-                            st.success("Parsed: Undo last point")
-                        else:
-                            st.warning(f"Parsed: Unknown command (confidence: {event.confidence:.0%})")
-    
-                    # Show last accepted update
-                    if st.session_state.last_voice_feedback:
-                        st.caption(f"Last update: {st.session_state.last_voice_feedback}")
+                        _frames = getattr(ctx.audio_processor, "_audio_frames_received", 0)
+                        _processor_stage = "audio_frames_received" if _frames > 0 else "processor_created_no_frames"
                     
-                    # Voice diagnostics
-                    with st.expander("🩺 Voice diagnostics", expanded=False):
-                        _hf_token = get_hf_token()
-                        _hf_configured = "yes" if _hf_token else "no"
-                        _asr_status = _normalize_status_dict(
-                            st.session_state.get("voice_asr_status"),
-                            default_reason="ASR status unavailable",
-                        )
-                        _asr_loaded = "yes" if bool(_asr_status.get("available", False)) else "no"
-                        _webrtc_ctx = st.session_state.get("voice_webrtc_ctx")
-                        proc = _get_voice_webrtc_processor(_webrtc_ctx)
+                    if st.session_state.voice_webrtc_ctx is None:
+                        st.session_state.voice_webrtc_ctx = {}
+                    proc = ctx.audio_processor
+                    st.session_state.voice_webrtc_ctx["processor"] = proc
+                    if proc is not None:
+                        proc._session_id = st.session_state.get("voice_continuous_session_id")
+                        logger.info("Stored audio processor in session state (session=%s)", proc._session_id[:8] if proc._session_id else "none")
+                
+                _prev_processor_stage = st.session_state.get("_voice_prev_processor_stage")
+                if _processor_stage != _prev_processor_stage:
+                    if _processor_stage == "processor_not_created":
+                        _append_continuous_trace(_processor_stage, "webrtc_playing_but_no_processor")
+                    else:
+                        _append_continuous_trace(_processor_stage)
+                    st.session_state._voice_prev_processor_stage = _processor_stage
+                
+                # Show mount error if any
+                if mount_error:
+                    st.error(f"🔴 WebRTC component render failed: {mount_error}")
+                    st.caption("Push-to-talk and debug text scoring remain available.")
+                elif ctx is None:
+                    st.warning("🟡 WebRTC component did not return a context. The component may still be loading.")
+                elif not ctx.state.playing:
+                    st.info("⚪ Continuous mode is not active. Click START in the microphone component above.")
+                else:
+                    st.success("🟢 Continuous microphone active. Speak a score command.")
+                
+                # Mic status panel — always show when component is rendered
+                _webrtc_ctx = st.session_state.get("voice_webrtc_ctx")
+                _proc = _get_voice_webrtc_processor(_webrtc_ctx)
+                _webrtc_mounted = _proc is not None
+                _webrtc_state = str(getattr(ctx, "state", "unknown")) if ctx else "unknown"
+                _audio_processor_created = "yes" if _webrtc_mounted else "no"
+                _last_speech_ts = getattr(getattr(_proc, 'audio_buffer', None), '_last_speech_time', None) if _proc else None
+                _last_audio_frame_ts = f"{_last_speech_ts:.3f}" if _last_speech_ts is not None else "N/A"
+                _queued_chunks = _safe_queue_size(getattr(_proc, "_chunk_queue", None)) if _proc else 0
+                _last_asr = st.session_state.get("last_voice_transcript", "—") or "—"
+                _seg_duration = getattr(getattr(_proc, 'audio_buffer', None), 'get_speech_segment_duration_ms', lambda: 0.0)() if _proc else 0.0
+                _seg_reset_reason = getattr(getattr(_proc, 'audio_buffer', None), 'get_segment_reset_reason', lambda: "")() if _proc else ""
+                _buffer_duration = getattr(getattr(_proc, 'audio_buffer', None), 'get_buffer_duration_ms', lambda: 0.0)() if _proc else 0.0
+                
+                _mic_status_items = [
+                    ("WebRTC component mounted", "yes" if _webrtc_mounted else "no"),
+                    ("WebRTC state", _webrtc_state),
+                    ("audio processor created", _audio_processor_created),
+                    ("last audio frame timestamp", _last_audio_frame_ts),
+                    ("queued chunks count", str(_queued_chunks)),
+                    ("last ASR result", _last_asr),
+                    ("speech segment duration", f"{_seg_duration:.1f} ms"),
+                    ("buffer duration", f"{_buffer_duration:.1f} ms"),
+                    ("segment reset reason", _seg_reset_reason or "—"),
+                ]
+                st.markdown(
+                    "\n".join(
+                        f"- {label}: **{_debug_value(value)}"
+                        for label, value in _mic_status_items
+                    )
+                )
+                # Show last heard phrase
+                if st.session_state.last_voice_transcript:
+                    st.info(f"Last heard: **{st.session_state.last_voice_transcript}**")
+            
+                # Show parsed interpretation
+                if st.session_state.last_voice_event:
+                    event = st.session_state.last_voice_event
+                    if event.type == "set_score":
+                        st.success(f"Parsed: Set score to {event.score_a}-{event.score_b}")
+                    elif event.type == "increment":
+                        st.success(f"Parsed: Point to Player {event.player}")
+                    elif event.type == "undo":
+                        st.success("Parsed: Undo last point")
+                    else:
+                        st.warning(f"Parsed: Unknown command (confidence: {event.confidence:.0%})")
+            
+                # Show last accepted update
+                if st.session_state.last_voice_feedback:
+                    st.caption(f"Last update: {st.session_state.last_voice_feedback}")
+                
+                # Warn if last accepted command came from debug while continuous is requested
+                _last_event_source = getattr(
+                    st.session_state.get("last_voice_event"),
+                    "source",
+                    None,
+                )
+                if _last_event_source == "debug":
+                    st.warning(
+                        "Last accepted command came from debug input, not continuous listening. "
+                        "Use the debug panel or speak into the microphone for continuous commands."
+                    )
+                
+                # Voice diagnostics
+                with st.expander("🩺 Voice diagnostics", expanded=False):
+                    _hf_token = get_hf_token()
+                    _hf_configured = "yes" if _hf_token else "no"
+                    _asr_status = _normalize_status_dict(
+                        st.session_state.get("voice_asr_status"),
+                        default_reason="ASR status unavailable",
+                    )
+                    _asr_loaded = "yes" if bool(_asr_status.get("available", False)) else "no"
+                    _webrtc_ctx = st.session_state.get("voice_webrtc_ctx")
+                    proc = _get_voice_webrtc_processor(_webrtc_ctx)
+                    _proc_id = id(proc) if proc else "none"
+                    _proc_class = type(proc).__name__ if proc else "—"
+                    _session_id = st.session_state.get("voice_continuous_session_id", "none")
+                    _session_start = st.session_state.get("voice_continuous_session_start", 0.0)
+                    _stale_ignored = st.session_state.get("voice_stale_events_ignored", 0)
+                    _factory_calls = st.session_state.get("_voice_factory_call_count", 0)
+                    _factory_last_error = st.session_state.get("_voice_factory_last_error")
+                    _proc_callback_count = st.session_state.get("_voice_processor_callback_count", 0)
+                    _last_proc_exception = st.session_state.get("_voice_last_processor_exception")
+                    _proc_diag = proc.get_diagnostics() if proc and hasattr(proc, "get_diagnostics") else {}
 
-                        _q_size = _safe_queue_size(getattr(proc, "_chunk_queue", None)) if proc else 0
-                        _dropped = int(getattr(proc, "_dropped_chunks", 0) or 0) if proc else 0
-                        _evt_q = _safe_queue_size(getattr(proc, "event_queue", None)) if proc else 0
-                        _last_rms = st.session_state.get("voice_last_chunk_rms", 0.0)
-                        _seg_ms = getattr(proc.audio_buffer, 'get_buffer_duration_ms', lambda: 0.0)() if proc else 0.0
-                        _last_transcript = st.session_state.get("last_voice_transcript", "")
-                        _last_accepted = st.session_state.get("voice_last_applied_event_key")
-                        _last_rejected_reason = st.session_state.get("last_voice_feedback", "")
-                        _proc_status = getattr(proc, "_status", "n/a") if proc else "no processor"
-                        _asr_ready = "yes" if (proc and getattr(proc, "_asr_ready", False)) else "no"
-                        _voice_diag_items = [
-                            ("WebRTC installed", "yes" if WEBRTC_AVAILABLE else "no"),
-                            ("voice scoring enabled", "yes" if st.session_state.get("voice_scoring_enabled") else "no"),
-                            ("HF_TOKEN configured", _hf_configured),
-                            ("ASR model loaded", _asr_loaded),
-                            ("processor active", _asr_ready),
-                            ("processor status", _proc_status),
-                            ("audio queue size", _q_size),
-                            ("event queue size", _evt_q),
-                            ("dropped audio frames", _dropped),
-                            ("VAD RMS latest", f"{_last_rms:.4f}"),
-                            ("current speech segment duration", f"{_seg_ms:.1f} ms" if _seg_ms else "0.0 ms"),
-                            ("last transcript", _last_transcript or "—"),
-                            ("last accepted command", _last_accepted or "—"),
-                            ("last rejected command reason", _last_rejected_reason or "—"),
-                        ]
-                        st.markdown(
-                            "\n".join(
-                                f"- {label}: **{_debug_value(value)}**"
-                                for label, value in _voice_diag_items
-                            )
+                    _q_size = _safe_queue_size(getattr(proc, "_chunk_queue", None)) if proc else 0
+                    _dropped = int(getattr(proc, "_dropped_chunks", 0) or 0) if proc else 0
+                    _evt_q = _safe_queue_size(getattr(proc, "event_queue", None)) if proc else 0
+                    _last_rms = st.session_state.get("voice_last_chunk_rms", 0.0)
+                    _seg_ms = getattr(getattr(proc, 'audio_buffer', None), 'get_speech_segment_duration_ms', lambda: 0.0)() if proc else 0.0
+                    _seg_reset_reason = getattr(getattr(proc, 'audio_buffer', None), 'get_segment_reset_reason', lambda: "")() if proc else ""
+                    _buffer_duration = getattr(getattr(proc, 'audio_buffer', None), 'get_buffer_duration_ms', lambda: 0.0)() if proc else 0.0
+                    _last_transcript = st.session_state.get("last_voice_transcript", "")
+                    _last_accepted = st.session_state.get("voice_last_applied_event_key")
+                    _last_rejected_reason = st.session_state.get("last_voice_rejection_reason", "")
+                    _last_success_message = st.session_state.get("last_voice_success_message", "")
+                    _last_action_taken = st.session_state.get("last_voice_action_taken", "")
+                    _last_continuous_transcript = st.session_state.get("last_voice_continuous_transcript", "")
+                    _last_push_to_talk_transcript = st.session_state.get("last_voice_push_to_talk_transcript", "")
+                    _last_debug_transcript = st.session_state.get("last_voice_debug_transcript", "")
+                    _last_source = getattr(
+                        st.session_state.get("last_voice_event"),
+                        "source",
+                        "unknown",
+                    ) if st.session_state.get("last_voice_event") else "—"
+                    _proc_status = getattr(proc, "_status", "n/a") if proc else "no processor"
+                    _asr_ready = "yes" if (proc and getattr(proc, "_asr_ready", False)) else "no"
+                    _asr_latency = getattr(st.session_state.get("last_voice_event"), "asr_latency_ms", None)
+                    _voice_diag_items = [
+                        ("continuous mode requested", "yes" if st.session_state.get("voice_listening") else "no"),
+                        ("WebRTC component mounted", "yes" if _webrtc_mounted else "no"),
+                        ("WebRTC playing", "yes" if _get_webrtc_playing_state() else "no"),
+                        ("WebRTC signalling", st.session_state.get("voice_webrtc_streamer_state", {}).get("signalling", False)),
+                        ("processor created", "yes" if proc else "no"),
+                        ("processor ID", str(_proc_id)),
+                        ("processor class", _proc_class),
+                        ("processor callback count", str(_proc_callback_count)),
+                        ("audio_frame_callback count", str(_audio_callback_count)),
+                        ("factory call count", str(_factory_calls)),
+                        ("factory last error", _factory_last_error or "none"),
+                        ("last processor exception", str(_last_proc_exception) if _last_proc_exception else "none"),
+                        ("audio frames received", str(_proc_diag.get("audio_frames_received", 0))),
+                        ("chunks created", str(_proc_diag.get("chunks_created", 0))),
+                        ("ASR events enqueued", str(_proc_diag.get("asr_events_enqueued", 0))),
+                        ("current continuous session ID", _session_id[:8] + "..." if isinstance(_session_id, str) and len(_session_id) > 8 else _session_id),
+                        ("session start", f"{_session_start:.1f}" if _session_start else "—"),
+                        ("stale events ignored", str(_stale_ignored)),
+                        ("audio queue size", str(_q_size)),
+                        ("event queue size", str(_evt_q)),
+                        ("event queue peek", str(_peek_evt)[:200] if (_peek_evt := proc.peek_events(max_items=3) if proc and hasattr(proc, "peek_events") else []) else "empty"),
+                        ("chunk queue peek", str(_peek_chk)[:200] if (_peek_chk := proc.peek_chunks(max_items=3) if proc and hasattr(proc, "peek_chunks") else []) else "empty"),
+                        ("dropped audio frames", str(_dropped)),
+                        ("VAD RMS latest", f"{_last_rms:.4f}"),
+                        ("speech segment duration", f"{_seg_ms:.1f} ms" if _seg_ms else "0.0 ms"),
+                        ("buffer duration", f"{_buffer_duration:.1f} ms" if _buffer_duration else "0.0 ms"),
+                        ("segment reset reason", _seg_reset_reason or "—"),
+                        ("last continuous transcript", _last_continuous_transcript or "—"),
+                        ("last push-to-talk transcript", _last_push_to_talk_transcript or "—"),
+                        ("last debug transcript", _last_debug_transcript or "—"),
+                        ("last command source", _last_source),
+                        ("last transcript", _last_transcript or "—"),
+                        ("last accepted command", _last_accepted or "—"),
+                        ("last rejected command reason", _last_rejected_reason or "—"),
+                        ("last success message", _last_success_message or "—"),
+                        ("last action taken", _last_action_taken or "—"),
+                        ("ASR model loaded", _asr_loaded),
+                        ("processor active", _asr_ready),
+                        ("processor status", _proc_status),
+                        ("last ASR latency", f"{_asr_latency:.1f} ms" if _asr_latency else "—"),
+                    ]
+                    st.markdown(
+                        "\n".join(
+                            f"- {label}: **{_debug_value(value)}"
+                            for label, value in _voice_diag_items
                         )
+                    )
 
                     # Runtime / Ollama bridge diagnostics
                     try:
@@ -4617,135 +5523,144 @@ def _render_ui() -> None:
                     except Exception:
                         pass
 
-                # Confidence indicator
-                if st.session_state.last_voice_event:
-                    _conf = getattr(st.session_state.last_voice_event, "confidence", 0.0)
-                    _conf_pct = int(_conf * 100)
-                    _color = "🔴" if _conf_pct < 50 else ("🟡" if _conf_pct < 80 else "🟢")
-                    st.progress(_conf, text=f"{_color} Confidence: {_conf_pct:.0f}%")
-    
-                # Voice ASR Diagnostics expander (precise status + test buttons)
-                with st.expander("🩺 Voice ASR Diagnostics", expanded=False):
-                    _diag = get_asr_diagnostic()
-                    _asr_state = _diag.get("state") or _diag.get("reason") or "not_configured"
-                    _asr_diag_items = [
-                        ("ASR provider", _diag.get("provider", "faster_whisper")),
-                        ("ASR ready", "yes" if _diag.get("available") else "no"),
-                        ("State", _asr_state),
-                        ("Model", _diag.get("model_size", "—")),
-                        ("Device", _diag.get("device", "—")),
-                        ("Compute type", _diag.get("compute_type", "—")),
-                        ("Last ASR error", _diag.get("reason") or "none"),
-                    ]
-                    st.markdown(
-                        "\n".join(
-                            f"**{label}:** {_debug_value(value)}"
-                            for label, value in _asr_diag_items
-                        )
-                    )
+                    if st.session_state.voice_listening:
+                        # Confidence indicator
+                        if st.session_state.last_voice_event:
+                            _conf = getattr(st.session_state.last_voice_event, "confidence", 0.0)
+                            _conf_pct = int(_conf * 100)
+                            _color = "🔴" if _conf_pct < 50 else ("🟡" if _conf_pct < 80 else "🟢")
+                            st.progress(_conf, text=f"{_color} Confidence: {_conf_pct:.0f}%")
+                
+                        # Voice ASR Diagnostics expander (precise status + test buttons)
+                        with st.expander("🩺 Voice ASR Diagnostics", expanded=False):
+                            _diag = get_asr_diagnostic()
+                            _asr_state = _diag.get("state") or _diag.get("reason") or "not_configured"
+                            _asr_diag_items = [
+                                ("ASR provider", _diag.get("provider", "faster_whisper")),
+                                ("ASR ready", "yes" if _diag.get("available") else "no"),
+                                ("State", _asr_state),
+                                ("Model", _diag.get("model_size", "—")),
+                                ("Device", _diag.get("device", "—")),
+                                ("Compute type", _diag.get("compute_type", "—")),
+                                ("Last ASR error", _diag.get("reason") or "none"),
+                            ]
+                            st.markdown(
+                                "\n".join(
+                                    f"**{label}:** {_debug_value(value)}"
+                                    for label, value in _asr_diag_items
+                                )
+                            )
 
-                    st.divider()
-                    c_left, c_mid, c_right = st.columns(3)
-                    with c_left:
-                        if st.button("Test imports", key="asr_test_imports"):
-                            st.json(_diag.get("imports", {}))
-                    with c_mid:
-                        if st.button("Load ASR model", key="asr_test_load"):
-                            _asr = get_asr()
-                            if _asr is None:
-                                st.error("No ASR backend available.")
+                            st.divider()
+                            c_left, c_mid, c_right = st.columns(3)
+                            with c_left:
+                                if st.button("Test imports", key="asr_test_imports"):
+                                    st.json(_diag.get("imports", {}))
+                            with c_mid:
+                                if st.button("Load ASR model", key="asr_test_load"):
+                                    _asr = get_asr()
+                                    if _asr is None:
+                                        st.error("No ASR backend available.")
+                                    else:
+                                        st.json(_asr.get_status().__dict__ if hasattr(_asr.get_status(), "__dict__") else _asr.get_status())
+                            with c_right:
+                                if st.button("Refresh status", key="asr_refresh"):
+                                    st.session_state.voice_asr_status = None
+                                    st.rerun()
+
+                            st.caption(
+                                "Import probe shows exactly which ASR packages are "
+                                "present on this runtime. 'Load ASR model' attempts to "
+                                "instantiate the model and reports the precise outcome."
+                            )
+
+                        # Debug expander
+                        with st.expander("🔍 Voice Debug", expanded=False):
+                            st.markdown("**Recent Voice Events (unified audit)**")
+                            _audit_events = st.session_state.get("voice_audit_events", [])
+                            if _audit_events:
+                                for entry in _audit_events[-10:]:
+                                    st.json(entry)
                             else:
-                                st.json(_asr.get_status().__dict__ if hasattr(_asr.get_status(), "__dict__") else _asr.get_status())
-                    with c_right:
-                        if st.button("Refresh status", key="asr_refresh"):
-                            st.session_state.voice_asr_status = None
-                            st.rerun()
+                                st.caption("No events yet.")
+                            
+                            if st.button("Clear Event Log", key="clear_voice_log"):
+                                st.session_state.voice_audit_events = []
+                                st.session_state.voice_event_log = []
+                                if st.session_state.get("voice_event_logger"):
+                                    st.session_state.voice_event_logger.clear()
+                                st.rerun()
 
-                    st.caption(
-                        "Import probe shows exactly which ASR packages are "
-                        "present on this runtime. 'Load ASR model' attempts to "
-                        "instantiate the model and reports the precise outcome."
-                    )
-
-                # Debug expander
-                with st.expander("🔍 Voice Debug", expanded=False):
-                    st.markdown("**Recent Voice Events**")
-                    if st.session_state.voice_event_log:
-                        for entry in st.session_state.voice_event_log[-10:]:
-                            st.json(entry)
-                    else:
-                        st.caption("No events yet.")
-                    
-                    st.markdown("**ASR Status**")
-                    if st.session_state.voice_asr_status:
-                        status_display = _normalize_status_dict(st.session_state.voice_asr_status)
-                        st.json(status_display)
-                    else:
-                        st.caption("ASR not initialized.")
-                    
-                    if st.button("Clear Event Log", key="clear_voice_log"):
-                        st.session_state.voice_event_log = []
-                        st.rerun()
-
-            # Voice scoring debug expander (diagnostics for the game->game
-            # transition). Surfaces the exact state that controls whether the
-            # next voice command is accepted, so the "voice stops after Game1"
-            # class of bug is visible instead of silent.
-            with st.expander("🩺 Voice scoring debug", expanded=False):
-                _mm = st.session_state.get("match_manager")
-                _eng = getattr(_mm, "engine", None)
-                _quick_mode = st.session_state.get("quick_voice_mode", "off")
-                _last_accepted = st.session_state.get("voice_last_applied_event_key")
-                _last_rejected = st.session_state.get("last_voice_feedback", "")
-                _q_last_player = st.session_state.get("quick_voice_last_player")
-                _q_last_ts = st.session_state.get("quick_voice_last_ts", 0.0)
-                _rerun_req = bool(st.session_state.get(_VOICE_RERUN_KEY))
-                _voice_debug_items = [
-                    ("voice mode", _quick_mode),
-                    ("voice enabled", "yes" if st.session_state.get("voice_scoring_enabled") else "no"),
-                    ("last transcript", st.session_state.get("last_voice_transcript", "—") or "—"),
-                    (
-                        "last parsed intent",
-                        (
-                            st.session_state.get("last_voice_event").intent
-                            if st.session_state.get("last_voice_event") else "—"
-                        ),
-                    ),
-                    ("last accepted command", _last_accepted or "—"),
-                    ("last rejected reason", _last_rejected or "—"),
-                    (
-                        "current score",
-                        f"{_eng.score_a}-{_eng.score_b}" if _eng else "n/a",
-                    ),
-                    (
-                        "games won",
-                        f"{_eng.games_won_a}-{_eng.games_won_b}" if _eng else "n/a",
-                    ),
-                    (
-                        "completed games",
-                        len(_eng.round_scores) if _eng else 0,
-                    ),
-                    (
-                        "game_won flag",
-                        _eng.match_status == "game_won" if _eng else "n/a",
-                    ),
-                    (
-                        "match_complete flag",
-                        _eng.match_status == "match_won" if _eng else "n/a",
-                    ),
-                    ("last applied event id", _last_accepted or "—"),
-                    (
-                        "quick voice last player/time",
-                        f"{_q_last_player} / {_q_last_ts:.0f}" if _q_last_player else "—",
-                    ),
-                    ("rerun requested", _rerun_req),
-                ]
-                st.markdown(
-                    "\n".join(
-                        f"- {label}: **{_debug_value(value)}**"
-                        for label, value in _voice_debug_items
-                    )
-                )
+                    if st.session_state.voice_listening:
+                        # Voice scoring debug expander
+                        with st.expander("🩺 Voice scoring debug", expanded=False):
+                            _mm = st.session_state.get("match_manager")
+                            _eng = getattr(_mm, "engine", None)
+                            _quick_mode = st.session_state.get("quick_voice_mode", "off")
+                            _last_accepted = st.session_state.get("voice_last_applied_event_key")
+                            _last_rejected = st.session_state.get("last_voice_rejection_reason", "")
+                            _last_success = st.session_state.get("last_voice_success_message", "")
+                            _last_action = st.session_state.get("last_voice_action_taken", "")
+                            _q_last_player = st.session_state.get("quick_voice_last_player")
+                            _q_last_ts = st.session_state.get("quick_voice_last_ts", 0.0)
+                            _rerun_req = bool(st.session_state.get(_VOICE_RERUN_KEY))
+                            _last_source = getattr(
+                                st.session_state.get("last_voice_event"),
+                                "source",
+                                "unknown",
+                            ) if st.session_state.get("last_voice_event") else "—"
+                            _voice_debug_items = [
+                                ("voice mode", _quick_mode),
+                                ("voice enabled", "yes" if st.session_state.get("voice_scoring_enabled") else "no"),
+                                ("last transcript", st.session_state.get("last_voice_transcript", "—") or "—"),
+                                ("last command source", _last_source),
+                                ("last continuous transcript", st.session_state.get("last_voice_continuous_transcript", "—") or "—"),
+                                ("last push-to-talk transcript", st.session_state.get("last_voice_push_to_talk_transcript", "—") or "—"),
+                                ("last debug transcript", st.session_state.get("last_voice_debug_transcript", "—") or "—"),
+                                (
+                                    "last parsed intent",
+                                    (
+                                        st.session_state.get("last_voice_event").type
+                                        if st.session_state.get("last_voice_event") else "—"
+                                    ),
+                                ),
+                                ("last accepted command", _last_accepted or "—"),
+                                ("last rejected reason", _last_rejected or "—"),
+                                ("last success message", _last_success or "—"),
+                                ("last action taken", _last_action or "—"),
+                                (
+                                    "current score",
+                                    f"{_eng.score_a}-{_eng.score_b}" if _eng else "n/a",
+                                ),
+                                (
+                                    "games won",
+                                    f"{_eng.games_won_a}-{_eng.games_won_b}" if _eng else "n/a",
+                                ),
+                                (
+                                    "completed games",
+                                    len(_eng.round_scores) if _eng else 0,
+                                ),
+                                (
+                                    "game_won flag",
+                                    _eng.match_status == "game_won" if _eng else "n/a",
+                                ),
+                                (
+                                    "match_complete flag",
+                                    _eng.match_status == "match_won" if _eng else "n/a",
+                                ),
+                                ("last applied event id", _last_accepted or "—"),
+                                (
+                                    "quick voice last player/time",
+                                    f"{_q_last_player} / {_q_last_ts:.0f}" if _q_last_player else "—",
+                                ),
+                                ("rerun requested", _rerun_req),
+                            ]
+                            st.markdown(
+                                "\n".join(
+                                    f"- {label}: **{_debug_value(value)}"
+                                    for label, value in _voice_debug_items
+                                )
+                            )
 
             # Debug voice panel (developer helper)
             if st.session_state.voice_scoring_enabled:
@@ -4791,61 +5706,84 @@ def _render_ui() -> None:
             # =====================================================================
             with st.expander("📊 Voice Observability & Operations", expanded=False):
                 st.caption(
-                    "Structured audit log for voice scoring events. "
-                    "Gated by VOICE_DEBUG_EVENTS; exportable per match."
+                    "Unified audit log for voice scoring events. "
+                    "All sources (debug, push-to-talk, continuous) append here. "
+                    "Exportable per match."
                 )
-                event_logger = st.session_state.get("voice_event_logger")
-                if event_logger is None:
-                    st.caption("Event logger not initialized.")
+                _audit_events = st.session_state.get("voice_audit_events", [])
+                if _audit_events:
+                    st.markdown(f"**Recent events (showing last {min(len(_audit_events), 50)} of {len(_audit_events)} retained)**")
+                    for entry in reversed(_audit_events[-50:]):
+                        status_icon = "✅" if entry.get("accepted") else "❌"
+                        source = entry.get("source", "?")
+                        note = entry.get("note", "")
+                        st.markdown(
+                            f"{status_icon} **{entry.get('event_type', '?')}** "
+                            f"`{entry.get('previous_score', '?')}` → `{entry.get('new_score', '?')}` "
+                            f"| source: {source} "
+                            f"| conf: {entry.get('confidence', 0):.0%} "
+                            f"| {note}"
+                        )
+                        with st.popover("Details"):
+                            st.json(entry)
                 else:
-                    recent_events = event_logger.recent(limit=50)
-                    if recent_events:
-                        st.markdown(f"**Recent events (showing {len(recent_events)} of {len(event_logger._events)} retained)**")
-                        for i, entry in enumerate(reversed(recent_events), 1):
-                            status_icon = "✅" if entry.get("accepted") else "❌"
-                            note = entry.get("note", "")
-                            st.markdown(
-                                f"{status_icon} **{entry.get('event_type', '?')}** "
-                                f"`{entry.get('previous_score', '?')}` → `{entry.get('new_score', '?')}` "
-                                f"| conf: {entry.get('confidence', 0):.0%} "
-                                f"| speaker: {entry.get('speaker_label', '—')} "
-                                f"| {note}"
-                            )
-                            with st.popover("Details"):
-                                st.json(entry)
-                    else:
-                        st.caption("No events recorded yet. Enable VOICE_DEBUG_EVENTS to start logging.")
+                    st.caption("No events recorded yet. Run a voice command to start logging.")
         
-                        col_export, col_clear, col_info = st.columns(3)
-                        with col_export:
-                            if st.button("📥 Export Audit Log (JSON)", key="export_audit_log"):
-                                import json
-                                from datetime import datetime
-                                export_data = event_logger.export()
-                                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                                filename = f"voice_audit_{timestamp}.json"
-                                st.download_button(
-                                    label=f"Download {filename}",
-                                    data=json.dumps(export_data, indent=2, default=str),
-                                    file_name=filename,
-                                    mime="application/json",
-                                    key="download_audit",
-                                )
-                        with col_clear:
-                            if st.button("🗑️ Clear Audit Log", key="clear_audit_log"):
-                                logger.clear()
-                                st.success("Audit log cleared.")
-                                st.rerun()
-                        with col_info:
-                            st.caption(f"Retention: {VOICE_RETENTION_DAYS} days (0 = delete immediately)")
+                col_export, col_clear, col_info = st.columns(3)
+                with col_export:
+                    if st.button("📥 Export Audit Log (JSON)", key="export_audit_log"):
+                        import json
+                        from datetime import datetime
+                        export_data = _audit_events
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        filename = f"voice_audit_{timestamp}.json"
+                        st.download_button(
+                            label=f"Download {filename}",
+                            data=json.dumps(export_data, indent=2, default=str),
+                            file_name=filename,
+                            mime="application/json",
+                            key="download_audit",
+                        )
+                with col_clear:
+                    if st.button("🗑️ Clear Audit Log", key="clear_audit_log"):
+                        st.session_state.voice_audit_events = []
+                        st.session_state.voice_event_log = []
+                        if st.session_state.get("voice_event_logger"):
+                            st.session_state.voice_event_logger.clear()
+                        st.success("Audit log cleared.")
+                        st.rerun()
+                with col_info:
+                    st.caption(f"Retention: up to 1000 events in memory")
     
-    # ============================================================================
-    # Process voice events BEFORE rendering scoreboard (drain queue early)
-    # ============================================================================
-    # Drain pending continuous voice events BEFORE rendering the live scoreboard.
-    # This ensures accepted commands from background audio callbacks are applied
-    # and reflected in the UI on the same render cycle.
-    _process_voice_events()
+    if st.session_state.get("tt_sounds_enabled", False):
+        with st.expander("🔬 Audio Rally Debug", expanded=False):
+            _dims = st.session_state.get("tt_sounds_recent_events", [])
+            if _dims:
+                for ev in _dims[-10:]:
+                    st.caption(f"{ev.timestamp:.2f}s — {ev.event_type} energy={ev.energy:.3f} conf={ev.confidence:.2f}")
+            else:
+                st.caption("No impacts detected yet.")
+        
+        _ctx = st.session_state.get("tt_sounds_rally_context")
+        if _ctx and _ctx.impacts:
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                st.metric("Impacts", len(_ctx.impacts))
+            with c2:
+                dur = (_ctx.impacts[-1].timestamp - _ctx.impacts[0].timestamp) if len(_ctx.impacts) > 1 else 0.0
+                st.metric("Rally duration", f"{dur:.1f}s")
+            with c3:
+                intervals = [
+                    _ctx.impacts[i+1].timestamp - _ctx.impacts[i].timestamp
+                    for i in range(len(_ctx.impacts)-1)
+                ]
+                avg = sum(intervals)/len(intervals) if intervals else 0.0
+                st.metric("Avg interval", f"{avg*1000:.0f} ms")
+            with c4:
+                strongest = max(e.energy for e in _ctx.impacts)
+                st.metric("Strongest impact", f"{strongest:.3f}")
+        else:
+            st.caption("Start a rally to see audio summary.")
     
     # ============================================================================
     # Voice Input Section
@@ -5087,7 +6025,13 @@ def _render_ui() -> None:
 
             if "voice_ai_summary" in st.session_state and st.session_state.voice_ai_summary:
                 st.markdown(f"**🤖 AI Summary:**\n\n{st.session_state.voice_ai_summary}")
-
+    
+    if st.session_state.get("tt_sounds_enabled", False):
+        _summaries = st.session_state.get("tt_sounds_audio_summaries", [])
+        if _summaries:
+            with st.expander("🏓 Audio Rally Insights (experimental)", expanded=False):
+                _render_audio_rally_insights(_summaries)
+    
     # Announcements toggle
     st.divider()
     st.subheader("📢 Announcements")
@@ -5101,6 +6045,7 @@ def _render_ui() -> None:
     # audio callbacks are drained and reflected on the scoreboard without manual refresh.
     # Runs in the main Streamlit thread only; never from WebRTC/audio callbacks.
     _maybe_voice_heartbeat()
+    _maybe_tt_sounds_heartbeat()
     st.divider()
     st.subheader("Voice Commands")
     st.markdown("""
