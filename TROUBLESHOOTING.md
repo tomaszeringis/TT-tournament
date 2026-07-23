@@ -4,6 +4,51 @@
 
 ---
 
+## 🎙️ Voice Scoring Issues
+
+### WebRTC Issues
+
+| Problem | Likely Cause | Diagnostic Field | Fix / Action | Fallback mode |
+|---------|-------------|------------------|--------------|---------------|
+| WebRTC START button not visible | `streamlit-webrtc` missing | `webrtc_diag_available` | `pip install streamlit-webrtc` | Push-to-talk |
+| WebRTC mounted but `playing=False` | Browser permission denied or not clicked | `voice_webrtc_streamer_state.playing` | Click START in component; check browser permissions | Push-to-talk |
+| `playing=True` but `audio_frames_received = 0` | Mic muted, no audio, or format mismatch | `last audio frame timestamp` | Unmute tab, check mic, refresh page | Push-to-talk |
+| Audio frames > 0 but `chunks_created = 0` | Silence threshold not met; noise gate too high | `last chunk RMS`, `noise threshold` | Lower noise threshold, speak louder | Push-to-talk |
+| Chunks > 0 but ASR transcript empty | Model not loaded or confidence too low | `ASR state`, `last ASR error` | Load model via diagnostics; check `VOICE_ASR_MODEL_SIZE` | Manual scoring |
+| ASR transcript exists but command rejected | Low confidence, unknown intent, no match selected | `last rejected reason`, `last action taken` | Verify match selection, speak clearly | Manual scoring |
+| Command accepted but scoreboard not updated | Event stale or duplicate suppressed | `stale events ignored`, `last accepted command` | Check session ID, ensure WebRTC still playing | Wait for heartbeat or manual refresh |
+| Debug command works but continuous does not | WebRTC stopped while debug uses main thread | `webrtc playing` badge | Restart continuous via START button | Debug or push-to-talk |
+| Push-to-talk works but continuous does not | Different ASR path; continuous may use queued events | Compare `last push-to-talk transcript` vs `last continuous transcript` | Check chunk queue, VAD settings | Push-to-talk |
+
+### ASR Backend Issues
+
+| Problem | Likely Cause | Diagnostic Field | Fix / Action | Fallback mode |
+|---------|-------------|------------------|--------------|---------------|
+| Faster Whisper model not loaded | Network error, disk full, wrong `VOICE_ASR_DEVICE` | ASR diagnostics `State` field | Check logs, try `VOICE_ASR_DEVICE=cpu`, `VOICE_ASR_COMPUTE_TYPE=int8` | Manual scoring |
+| ASR error shows `not_configured` | `VOICE_ASR_MODEL_SIZE` unset or package missing | ASR provider, imports | Set env var or Streamlit secret; `pip install faster-whisper` | Manual scoring |
+| ASR error shows `model_download_failed` | Network error or `HF_TOKEN` missing | ASR diagnostics `reason` | Set `HF_TOKEN` secret on Cloud | Manual scoring |
+| ASR error shows `model_init_failed` | Wrong device/compute type | ASR diagnostics `reason` | Try `VOICE_ASR_DEVICE=cpu`, `VOICE_ASR_COMPUTE_TYPE=int8` | Manual scoring |
+| Vosk not working | Model path wrong or package missing | ASR diagnostics `imports` | Install `[live]` extra, place model at `VOICE_ASR_VOSK_MODEL_PATH` | Manual scoring |
+| SpeechBrain not working | Missing optional deps | ASR diagnostics `imports` | `pip install ".[speech]"` | Manual scoring |
+
+### Command Issues
+
+| Problem | Likely Cause | Fix / Action | Fallback mode |
+|---------|-------------|--------------|---------------|
+| Commands update wrong player | Color word ambiguous or mispronounced | Use explicit "player one" / "player two" | Manual buttons |
+| Duplicate command suppressed | Cooldown active (1.2s) | Wait for cooldown; game boundary auto-resets | Manual buttons |
+| No active match selected | Match selector empty | Select tournament + match | Manual scoring |
+
+### Streamlit Cloud Issues
+
+| Problem | Likely Cause | Fix / Action | Fallback mode |
+|---------|-------------|--------------|---------------|
+| Streamlit Cloud microphone issue | Browser blocked permission, ephemeral container | Re-allow mic, redeploy, check Cloud secrets | Push-to-talk |
+| Browser permission blocked | Browser settings or HTTPS requirement | Enable mic in browser settings; ensure HTTPS or localhost | Manual scoring |
+| `pyaudio` / PortAudio error on Cloud | `[live]` extra not available on Cloud | Ignore; Cloud uses WebRTC only. Use `[live]` locally if needed. | WebRTC push-to-talk |
+
+---
+
 ## 🔴 Installation Issues
 
 ### Issue: `ModuleNotFoundError: No module named 'ollama'`
@@ -23,7 +68,7 @@ python -m pip install ollama chromadb streamlit-aggrid
 
 **Solution:**
 ```bash
-python -m pip install alembic==1.13.0
+python -m pip install alembic
 ```
 
 ---
@@ -32,7 +77,7 @@ python -m pip install alembic==1.13.0
 
 **Solution:**
 ```bash
-python -m pip install streamlit-aggrid==0.3.5.post1
+python -m pip install streamlit-aggrid
 ```
 
 ---
@@ -45,15 +90,15 @@ python -m pip install streamlit-aggrid==0.3.5.post1
 
 **Solutions:**
 1. **Short term**: Stop all running instances and restart
-   ```bash
-   # Kill all Python processes and restart
-   ```
+    ```bash
+    # Kill all Python processes and restart
+    ```
 
 2. **Long term**: Use PostgreSQL for production
-   ```python
-   # Change in models.py
-   DATABASE_URL = "postgresql://user:password@localhost/tournament"
-   ```
+    ```python
+    # Change in models.py
+    DATABASE_URL = "postgresql://user:password@localhost/tournament"
+    ```
 
 ---
 
@@ -149,7 +194,7 @@ curl -X POST https://outlook.webhook.office.com/webhookb2/... \
 ```python
 # Ensure this is at top of pages
 import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 ```
 
 ---
@@ -171,7 +216,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 **Solution:**
 ```bash
-python -m pip install streamlit-aggrid==0.3.5.post1
+python -m pip install streamlit-aggrid
 ```
 
 ---
@@ -333,17 +378,16 @@ python -m alembic upgrade head
 
 **Solution:**
 ```bash
-# Find process using port
-lsof -i :8000
-lsof -i :8501
-
-# Kill the process (Windows)
+# Find process using port (Windows)
 netstat -ano | findstr :8000
+netstat -ano | findstr :8501
+
+# Kill the process
 taskkill /PID <PID> /F
 
 # Or use different ports
 python api/server.py --port 8001
-python -m streamlit run app/main.py --server.port 8502
+streamlit run app/main.py --server.port 8502
 ```
 
 ---
@@ -359,9 +403,6 @@ python -m streamlit run app/main.py --server.port 8502
 # Create logs directory
 mkdir logs
 
-# Set permissions (Linux/Mac)
-chmod 777 logs
-
 # Windows: no special commands needed
 ```
 
@@ -375,14 +416,14 @@ chmod 777 logs
 
 **Solutions:**
 1. **Reduce sample size in queries**
-   ```python
-   db.query(Match).limit(1000)  # Don't load everything
-   ```
+    ```python
+    db.query(Match).limit(1000)  # Don't load everything
+    ```
 
 2. **Use pagination in UI**
-   ```python
-   GridOptionsBuilder.configure_pagination(paginationAutoPageSize=True)
-   ```
+    ```python
+    GridOptionsBuilder.configure_pagination(paginationAutoPageSize=True)
+    ```
 
 3. **Switch to PostgreSQL** for better performance
 
@@ -412,10 +453,7 @@ gb.configure_pagination(paginationPageSize=50)
 **Solution:**
 ```bash
 # Create directory
-mkdir -p logs
-
-# Check permissions
-ls -la logs/
+mkdir logs
 ```
 
 ---
@@ -465,10 +503,10 @@ Run through this checklist to verify everything works:
 
 ```bash
 # 1. Check Python version
-python --version  # Should be 3.7+
+python --version  # Should be 3.11 - 3.13
 
 # 2. Verify dependencies
-python -m pip list | grep -E "sqlalchemy|fastapi|streamlit|ollama|chromadb"
+python -m pip list | grep -E "streamlit|fastapi|faster-whisper|streamlit-webrtc"
 
 # 3. Check database
 ls -la data/tournament.db
@@ -479,11 +517,11 @@ python -m alembic current
 # 5. Test API
 curl http://localhost:8000/health
 
-# 6. Test RAG
-python -c "from services.ai_engine import AIEngine; print('✅ RAG imports OK')"
+# 6. Test Streamlit imports
+python -c "import streamlit; import streamlit_webrtc; print('Streamlit imports OK')"
 
-# 7. Test Streamlit imports
-python -c "import streamlit; import streamlit_aggrid; print('✅ Streamlit imports OK')"
+# 7. Verify ASR imports
+python -c "from faster_whisper import WhisperModel; print('ASR imports OK')"
 
 # 8. Verify log directory
 ls -la logs/
@@ -496,28 +534,29 @@ ls -la logs/
 If you encounter an issue not listed here:
 
 1. **Check the full logs**
-   ```bash
-   tail -f logs/app.log
-   ```
+    ```bash
+    tail -f logs/app.log
+    ```
 
 2. **Enable debug logging**
-   ```python
-   logging.getLogger().setLevel(logging.DEBUG)
-   ```
+    ```python
+    logging.getLogger().setLevel(logging.DEBUG)
+    ```
 
 3. **Test individual components**
-   ```bash
-   python test_api.py
-   python initialize_rag.py
-   ```
+    ```bash
+    python test_api.py
+    python initialize_rag.py
+    ```
 
 4. **Check documentation**
-   - [Alembic Docs](https://alembic.sqlalchemy.org/)
-   - [FastAPI Docs](https://fastapi.tiangolo.com/)
-   - [Streamlit Docs](https://docs.streamlit.io/)
-   - [ChromaDB Docs](https://docs.trychroma.com/)
+    - [FastAPI Docs](https://fastapi.tiangolo.com/)
+    - [SQLAlchemy ORM](https://docs.sqlalchemy.org/)
+    - [Streamlit Docs](https://docs.streamlit.io/)
+    - [ChromaDB Docs](https://docs.trychroma.com/)
+    - [faster-whisper Docs](https://github.com/SYSTRAN/faster-whisper)
+    - [streamlit-webrtc Docs](https://github.com/whitphx/streamlit-webrtc)
 
 ---
 
-**Last Updated:** June 17, 2026
-
+**Last Updated:** July 22, 2026

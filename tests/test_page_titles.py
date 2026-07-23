@@ -26,6 +26,11 @@ PAGE_FILES = [
     ],
 ]
 
+PUBLIC_BYPASS_PAGES = {
+    "public_board_readonly.py",
+    "public_registration.py",
+}
+
 
 def _page_titles_from_source(path):
     """Return list of (filename, page_title_ast_node) for set_page_config calls."""
@@ -70,12 +75,15 @@ def _is_branded(node):
 
 @pytest.mark.parametrize("path", PAGE_FILES, ids=lambda p: os.path.basename(p))
 def test_page_titles_are_branded(path):
+    basename = os.path.basename(path)
+    if basename in PUBLIC_BYPASS_PAGES:
+        pytest.skip(f"{basename} is a public bypass page and must not call set_page_config")
     if not os.path.exists(path):
         pytest.skip(f"{path} not present")
     titles = _page_titles_from_source(path)
-    assert titles, f"No set_page_config(page_title=...) found in {os.path.basename(path)}"
+    assert titles, f"No set_page_config(page_title=...) found in {basename}"
     for title_node in titles:
         assert _is_branded(title_node), (
-            f"page_title in {os.path.basename(path)} is not branded with LIT_IT: "
+            f"page_title in {basename} is not branded with LIT_IT: "
             f"{ast.unparse(title_node)}"
         )

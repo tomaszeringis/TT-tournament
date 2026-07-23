@@ -64,8 +64,36 @@ class Tournament(Base):
     tie_break_order = Column(Text, nullable=True)
     is_archived = Column(Boolean, default=False)
 
+    # Self-serve registration
+    registration_open = Column(Boolean, default=False)
+    public_registration_token_hash = Column(String(64), nullable=True, index=True)
+
     # Relationship
     matches = relationship("Match", back_populates="tournament")
+    participants = relationship("TournamentParticipant", back_populates="tournament", cascade="all, delete-orphan")
+
+
+class TournamentParticipant(Base):
+    __tablename__ = "tournament_participants"
+    id = Column(Integer, primary_key=True, index=True)
+    tournament_id = Column(Integer, ForeignKey("tournaments.id"), nullable=False)
+    player_id = Column(Integer, ForeignKey("players.id"), nullable=False)
+    display_name = Column(String, nullable=False)
+    department = Column(String, nullable=True)
+    email_hash = Column(String(64), nullable=True, index=True)
+    employee_id_hash = Column(String(64), nullable=True, index=True)
+    checked_in = Column(Boolean, default=False)
+    checked_in_at = Column(DateTime, nullable=True)
+    registration_source = Column(String, nullable=True)
+    status = Column(String, nullable=False, default="registered")
+    duplicate_status = Column(String, nullable=True)
+    duplicate_of_participant_id = Column(Integer, ForeignKey("tournament_participants.id"), nullable=True)
+    bracket_eligible = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    tournament = relationship("Tournament", back_populates="participants")
+    player = relationship("Player")
+
 
 class RatingHistory(Base):
     __tablename__ = "rating_history"
@@ -550,10 +578,47 @@ class CommentaryEvent(Base):
     tournament = relationship("Tournament", foreign_keys=[tournament_id])
 
 
+class MatchPointEvent(Base):
+    """Persisted point-level event for advanced analytics."""
+    __tablename__ = "match_point_events"
+    id = Column(Integer, primary_key=True, index=True)
+    match_id = Column(Integer, ForeignKey("matches.id"), nullable=True)
+    game_index = Column(Integer, nullable=False)
+    point_index = Column(Integer, nullable=False)
+    scorer_side = Column(String, nullable=False)
+    player_a_id = Column(Integer, nullable=True)
+    player_b_id = Column(Integer, nullable=True)
+    score_a_before = Column(Integer, nullable=False)
+    score_b_before = Column(Integer, nullable=False)
+    score_a_after = Column(Integer, nullable=False)
+    score_b_after = Column(Integer, nullable=False)
+    games_a_before = Column(Integer, nullable=False)
+    games_b_before = Column(Integer, nullable=False)
+    games_a_after = Column(Integer, nullable=False)
+    games_b_after = Column(Integer, nullable=False)
+    game_target = Column(Integer, nullable=False)
+    best_of = Column(Integer, nullable=False)
+    is_game_winning_point = Column(Boolean, default=False)
+    is_match_winning_point = Column(Boolean, default=False)
+    timestamp = Column(Float, nullable=True)
+    source = Column(String, nullable=True)
+    server_id = Column(String, nullable=True)
+    rally_length = Column(Integer, nullable=True)
+    end_reason = Column(String, nullable=True)
+    shot_type = Column(String, nullable=True)
+    placement = Column(String, nullable=True)
+    notes = Column(String, nullable=True)
+    event_json = Column(Text, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    match = relationship("Match", foreign_keys=[match_id])
+
+
 # Update Match relationships for voice events/commands and commentary events
 Match.voice_events = relationship("VoiceEvent", back_populates="match", cascade="all, delete-orphan")
 Match.voice_commands = relationship("VoiceCommand", back_populates="match", cascade="all, delete-orphan")
 Match.commentary_events = relationship("CommentaryEvent", back_populates="match", cascade="all, delete-orphan")
+Match.point_events = relationship("MatchPointEvent", back_populates="match", cascade="all, delete-orphan")
 
 
 def init_db():

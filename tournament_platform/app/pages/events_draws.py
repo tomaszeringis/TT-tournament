@@ -5,6 +5,7 @@ This page handles tournament creation, bracket generation, standings, and partic
 """
 
 import logging
+from typing import Optional
 
 import streamlit as st
 import streamlit_shadcn_ui as ui
@@ -12,16 +13,18 @@ import pandas as pd
 import math
 from sqlalchemy.orm import selectinload
 
-from tournament_platform.models import SessionLocal, Player, Match, Tournament, MatchStatus, TournamentType, Event, EventType
+from tournament_platform.models import SessionLocal, Player, Match, Tournament, TournamentParticipant, MatchStatus, TournamentType, Event, EventType, Entry, Stage
 from tournament_platform.services.tournament_engine import TournamentFactory, TournamentContext, KnockoutStrategy, RoundRobinStrategy, GroupsKnockoutStrategy, SwissStrategy
 from tournament_platform.services.bracket_manager import TournamentState
 from tournament_platform.app.components.interactive_bracket import interactive_bracket
 from tournament_platform.app.components.participants_panel import render_participants_panel, get_all_players
 from tournament_platform.app.components.empty_state import render_empty_state
 from tournament_platform.app.components.loading_animation import render_loading_animation
+from tournament_platform.app.components.pairing_explanation_component import render_pairing_expander
 from tournament_platform.app.utils import render_status_badge
 from tournament_platform.app.design_system import apply_global_styles
 from tournament_platform.app.components.tour import render_tour
+from tournament_platform.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,29 @@ def calculate_bracket_size(participant_count: int) -> int:
         return 128
     # For very large tournaments, cap at 128
     return 128
+
+
+def _get_tournament_selector_for_participants() -> Optional[int]:
+    """Render a tournament selector and return the selected tournament id, or None."""
+    try:
+        db = SessionLocal()
+        tournaments = db.query(Tournament).order_by(Tournament.name.asc()).all()
+        db.close()
+    except Exception as e:
+        st.error(f"Error loading tournaments: {e}")
+        return None
+
+    if not tournaments:
+        st.info("No tournaments found. Create a tournament first.")
+        return None
+
+    options = {f"{t.name} (ID {t.id})": t.id for t in tournaments}
+    selected = st.selectbox(
+        "Select Tournament",
+        options=list(options.keys()),
+        key="participants_tournament_select_events",
+    )
+    return options[selected]
 
 
 def render_tournament_creation_wizard():
@@ -418,26 +444,31 @@ def build_bracket_data(tournament, players):
 
     matches_data = []
     for m in matches:
-        p1_id = resolve_id(getattr(m, "player1_id", None), m.player1)
-        p2_id = resolve_id(getattr(m, "player2_id", None), m.player2)
-        ensure_participant(p1_id, m.player1)
-        ensure_participant(p2_id, m.player2)
+        p1_id = resolve_id(getattr(m, "player1_id", None), getattr(m, "player1", None))
+        p2_id = resolve_id(getattr(m, "player2_id", None), getattr(m, "player2", None))
+        ensure_participant(p1_id, getattr(m, "player1", None))
+        ensure_participant(p2_id, getattr(m, "player2", None))
+
+        status_val = getattr(m, "status", None)
+        if hasattr(status_val, "value"):
+            status_val = status_val.value
+        status_val = str(status_val or "pending")
 
         match_entry = {
-            "id": m.id,
-            "number": m.bracket_index or 0,
+            "id": getattr(m, "id", None),
+            "number": getattr(m, "bracket_index", None) or 0,
             "stageId": 0,
             "groupId": 0,
-            "roundId": (m.round_number or 1) - 1,
-            "status": BRACKET_STATUS_COMPLETED if m.status == MatchStatus.completed else BRACKET_STATUS_READY,
+            "roundId": (getattr(m, "round_number", None) or 1) - 1,
+            "status": int(BRACKET_STATUS_COMPLETED) if status_val == "completed" else int(BRACKET_STATUS_READY),
             "opponent1": {"id": p1_id, "score": None},
             "opponent2": {"id": p2_id, "score": None},
         }
-        if m.status == MatchStatus.completed and m.score:
+        if status_val == "completed" and getattr(m, "score", None):
             try:
-                s1, s2 = map(int, m.score.split('-'))
-                match_entry["opponent1"]["score"] = s1
-                match_entry["opponent2"]["score"] = s2
+                s1, s2 = map(int, str(m.score).split("-"))
+                match_entry["opponent1"]["score"] = int(s1)
+                match_entry["opponent2"]["score"] = int(s2)
             except (ValueError, AttributeError):
                 pass
         matches_data.append(match_entry)
@@ -460,7 +491,7 @@ def build_bracket_data(tournament, players):
     }
 
 
-def normalize_bracket_matches(matches, players=None):
+def normalize_bracket_matches(matches, players=None, db=None):
     """
     Normalize raw ``Match`` objects into a predictable list of plain dicts.
 
@@ -472,20 +503,66 @@ def normalize_bracket_matches(matches, players=None):
         matches: Iterable of Match objects (or anything with the expected attrs).
         players: Optional list of Player objects (unused today, accepted for a
             stable signature / future name resolution).
+        db: Optional SQLAlchemy session used to batch-load Entry seed positions.
 
     Returns:
         List of dicts with keys: ``id``, ``round``, ``bracket_index``,
         ``player1``, ``player2``, ``winner``, ``score``, ``status``,
-        ``table``, ``valid``.
+        ``table``, ``valid``, ``bye``, ``seed1``, ``seed2``,
+        ``stage_type``, ``group_name``.
     """
+    _seed_map = {}
+    _stage_event_ids = set()
+
+    if db is not None:
+        for m in matches or []:
+            stage = getattr(m, "stage", None)
+            event = getattr(stage, "event", None) if stage else None
+            event_id = getattr(event, "id", None)
+            if event_id is not None:
+                _stage_event_ids.add(event_id)
+
+        if _stage_event_ids:
+            entries = (
+                db.query(Entry)
+                .filter(Entry.event_id.in_(_stage_event_ids))
+                .filter(Entry.seed_position.is_not(None))
+                .all()
+            )
+            _seed_map = {e.player1_id: e.seed_position for e in entries}
+
     normalized = []
     for m in (matches or []):
         status = getattr(m, "status", None)
         status_str = getattr(status, "value", None) or (str(status) if status else "pending")
 
-        player1 = getattr(m, "player1", None) or "TBD"
-        player2 = getattr(m, "player2", None) or "TBD"
+        raw_player1 = getattr(m, "player1", None)
+        raw_player2 = getattr(m, "player2", None)
+        player1 = raw_player1 or "TBD"
+        player2 = raw_player2 or "TBD"
         round_number = getattr(m, "round_number", None) or 1
+
+        stage = getattr(m, "stage", None)
+        stage_type = None
+        group_name = None
+        if stage is not None:
+            stage_type = getattr(stage, "stage_type", None)
+            try:
+                groups = getattr(stage, "groups", None)
+                if groups:
+                    group_name = getattr(groups[0], "name", None) if groups else None
+            except Exception:
+                group_name = None
+
+        is_bye = bool(
+            not raw_player2
+            or str(raw_player2).strip().upper() == "BYE"
+        )
+
+        p1_id = getattr(m, "player1_id", None)
+        p2_id = getattr(m, "player2_id", None)
+        seed1 = _seed_map.get(p1_id) if p1_id else None
+        seed2 = _seed_map.get(p2_id) if p2_id else None
 
         entry = {
             "id": getattr(m, "id", None),
@@ -497,6 +574,11 @@ def normalize_bracket_matches(matches, players=None):
             "score": getattr(m, "score", None),
             "status": status_str,
             "table": getattr(m, "location", None),
+            "bye": is_bye,
+            "seed1": seed1,
+            "seed2": seed2,
+            "stage_type": stage_type,
+            "group_name": group_name,
         }
         # A match is "valid" (fully renderable) when it has an id and at least
         # one real (non-TBD) player.
@@ -526,16 +608,33 @@ def _render_match_card(match):
     p1_disp = f"**{p1}** 🏆" if winner and winner == p1 else p1
     p2_disp = f"**{p2}** 🏆" if winner and winner == p2 else p2
 
+    seed1 = match.get("seed1")
+    seed2 = match.get("seed2")
+    if seed1 and p1 != "TBD":
+        p1_disp = f"**{p1}** 🏆" if winner and winner == p1 else p1
+        p1_disp = f"[S{seed1}] {p1_disp}"
+    if seed2 and p2 != "TBD":
+        p2_disp = f"**{p2}** 🏆" if winner and winner == p2 else p2
+        p2_disp = f"[S{seed2}] {p2_disp}"
+
+    bye_label = "BYE" if match.get("bye") else None
+
     # st.container(border=True) is theme-aware (readable in dark mode) and does
     # not depend on any custom HTML/JS/CDN, so it can never render blank.
     with st.container(border=True):
-        st.markdown(f"{p1_disp}  \n{p2_disp}")
+        if bye_label:
+            st.markdown(f"**{p1_disp}**  \n*{bye_label}*")
+        else:
+            st.markdown(f"{p1_disp}  \n{p2_disp}")
         meta = [status_label]
         if match.get("score"):
             meta.insert(0, f"Score: {match['score']}")
         if match.get("table"):
             meta.append(f"Table {match['table']}")
+        if match.get("group_name"):
+            meta.append(f"Group: {match['group_name']}")
         st.caption(" · ".join(meta))
+        render_pairing_expander(match)
 
 
 def render_bracket_fallback(matches):
@@ -575,6 +674,85 @@ def render_bracket_fallback(matches):
             for i, match in enumerate(grouped[rnd]):
                 with round_cols[i % len(round_cols)]:
                     _render_match_card(match)
+
+
+def _detect_tournament_format(matches):
+    """Detect tournament format from match/stage data.
+
+    Returns one of: "knockout", "groups", "swiss", "round_robin", "unknown".
+    """
+    if not matches:
+        return "unknown"
+
+    stage_types = set()
+    for m in matches:
+        stage = getattr(m, "stage", None)
+        if stage is not None:
+            stype = getattr(stage, "stage_type", None)
+            if stype:
+                stage_types.add(stype)
+
+    if "group" in stage_types:
+        return "groups"
+    if "swiss" in stage_types:
+        return "swiss"
+    if "knockout" in stage_types:
+        return "knockout"
+
+    all_have_rounds = all(getattr(m, "round_number", None) is not None for m in matches)
+    if all_have_rounds:
+        return "knockout"
+
+    return "unknown"
+
+
+def build_safe_bracket_payload(matches, tournament_format: str) -> dict:
+    """Build a JSON-safe payload for the interactive bracket component."""
+    safe_matches = []
+    for m in matches:
+        status = getattr(m, "status", None)
+        if hasattr(status, "value"):
+            status = status.value
+        status = str(status or "pending")
+
+        score = getattr(m, "score", None)
+        score = str(score or "")
+
+        safe_matches.append({
+            "id": int(getattr(m, "id", 0) or 0),
+            "round": int(getattr(m, "round_number", None) or 1),
+            "match_number": int(getattr(m, "bracket_index", None) or 0),
+            "player1": str(getattr(m, "player1", None) or "TBD"),
+            "player2": str(getattr(m, "player2", None) or "TBD"),
+            "score": score,
+            "game_scores": [],
+            "status": status,
+            "winner": str(getattr(m, "winner", None) or ""),
+            "table": str(getattr(m, "location", None) or ""),
+            "is_bye": bool(
+                not getattr(m, "player2", None)
+                or str(getattr(m, "player2", None)).strip().upper() == "BYE"
+            ),
+        })
+
+    return {
+        "stages": [
+            {
+                "id": 0,
+                "name": "Main Stage",
+                "type": tournament_format,
+                "settings": {"size": calculate_bracket_size(len(safe_matches))},
+            }
+        ],
+        "matches": safe_matches,
+        "participants": [],
+    }
+
+
+def _validate_bracket_payload(payload: dict) -> None:
+    """Raise if payload contains non-JSON-safe values."""
+    import json
+    json.dumps(payload)
 
 
 def render_bracket(tournament, all_players):
@@ -621,54 +799,116 @@ def render_bracket(tournament, all_players):
         )
         return
 
-    # --- Reliable native view (primary, always visible) --------------------
-    try:
-        normalized = normalize_bracket_matches(matches, all_players)
-        render_bracket_fallback(normalized)
-    except Exception:  # noqa: BLE001 - the native renderer must never crash the page
-        logger.exception(
-            "Native bracket renderer failed for tournament %s", tournament.id
-        )
-        normalized = []
-        st.error("The bracket could not be displayed. Please try refreshing.")
-        if st.button("🔄 Refresh bracket", key=f"refresh_bracket_{tournament.id}"):
-            st.rerun()
+    tournament_format = _detect_tournament_format(matches)
 
-    # --- Optional enhanced visual bracket (opt-in, may need external libs) --
+    # --- Reassemble tournament object from session to avoid detached-instance
+    #     errors when `normalize_bracket_matches` accesses lazy relationships.
+    db = SessionLocal()
+    try:
+        db_tournament = db.query(Tournament).get(getattr(tournament, "id", None))
+        if db_tournament is not None:
+            from sqlalchemy.orm import selectinload
+            db_matches = db.query(Match).options(
+                selectinload(Match.stage).selectinload(Stage.groups)
+            ).filter(Match.tournament_id == db_tournament.id).all()
+            db_tournament.matches = db_matches
+            matches = db_matches
+            tournament = db_tournament
+
+        normalized = normalize_bracket_matches(matches, all_players, db=db)
+    finally:
+        db.close()
+
+    # --- Format-aware routing ------------------------------------------------
+    if tournament_format == "groups":
+        rounds = sorted({m["round"] for m in normalized})
+        st.markdown("**Group stage matches**")
+        render_bracket_fallback(normalized)
+        st.caption(
+            "Knockout bracket will appear after the group stage is completed."
+        )
+        return
+
+    if tournament_format == "swiss":
+        st.markdown("**Swiss pairings**")
+        render_bracket_fallback(normalized)
+        st.caption(
+            "Swiss standings update after each round. Knockout bracket will "
+            "appear if a knockout stage is generated later."
+        )
+        return
+
+    if tournament_format == "round_robin":
+        st.markdown("**Round-robin fixtures**")
+        render_bracket_fallback(normalized)
+        return
+
+    # --- Knockout: native fallback first (always visible) --------------------
+    try:
+        render_bracket_fallback(normalized)
+    except Exception as exc:  # noqa: BLE001 - native fallback must never crash the page
+        logger.exception(
+            "Native bracket renderer failed for tournament %s", getattr(tournament, "id", None)
+        )
+        st.warning("Interactive bracket unavailable. Showing native bracket view.")
+        try:
+            render_bracket_fallback(normalized)
+        except Exception:
+            st.error("The bracket could not be displayed. Please try refreshing.")
+            if st.button("🔄 Refresh bracket", key=f"refresh_bracket_{getattr(tournament, 'id', None)}"):
+                st.rerun()
+
+    # --- Interactive visual bracket (knockout only) --------------------------
+    if tournament_format != "knockout":
+        return
+
     with st.expander("🎯 Interactive visual bracket (beta)", expanded=False):
         st.caption(
             "Requires the bracket libraries to load. If this appears blank, "
             "use the match list above."
         )
         try:
-            bracket_data = build_bracket_data(tournament, all_players)
-            if bracket_data and bracket_data.get("matches"):
-                clicked = interactive_bracket(bracket_data, key=f"bracket_{tournament.id}")
+            payload = build_safe_bracket_payload(matches, tournament_format)
+            _validate_bracket_payload(payload)
+
+            if payload and payload.get("matches"):
+                clicked = interactive_bracket(payload, key=f"bracket_{getattr(tournament, 'id', None)}")
                 if clicked:
                     st.session_state['selected_match_from_bracket'] = clicked
                     st.toast("Match selected!")
             else:
                 st.info("No bracket data available to visualize.")
-        except Exception as e:  # noqa: BLE001 - fall back to the native list above
+        except Exception as exc:  # noqa: BLE001 - interactive bracket is optional
             logger.exception(
-                "Interactive visual bracket failed for tournament %s", tournament.id
+                "Interactive visual bracket failed for tournament %s", getattr(tournament, "id", None)
             )
-            st.warning("Visual bracket failed to render, showing fallback match list above.")
-            st.caption(f"Details: {type(e).__name__}")
+            st.warning("Interactive bracket unavailable. Showing native bracket view.")
+            st.caption(f"Details: {type(exc).__name__}")
 
     # --- Diagnostics (collapsed; unobtrusive for normal users) -------------
     with st.expander("🔧 Bracket diagnostics", expanded=False):
         try:
             rounds = sorted({m["round"] for m in normalized})
+            payload = build_safe_bracket_payload(matches, tournament_format)
+            try:
+                import json
+                json.dumps(payload)
+                json_ok = True
+            except Exception:
+                json_ok = False
+
             st.write(
                 {
                     "tournament_id": getattr(tournament, "id", None),
                     "tournament_name": getattr(tournament, "name", None),
+                    "tournament_format": tournament_format,
                     "match_count": len(normalized),
                     "round_count": len(rounds),
                     "rounds": rounds,
                     "valid_matches": sum(1 for m in normalized if m.get("valid")),
-                    "renderer": "native fallback (primary) + interactive (beta)",
+                    "payload_json_safe": json_ok,
+                    "interactive_attempted": tournament_format == "knockout",
+                    "renderer": "native fallback (primary) + interactive (beta, knockout only)",
                 }
             )
         except Exception:  # noqa: BLE001 - diagnostics must never break the page
@@ -848,71 +1088,117 @@ def render_tournament_generation(tournament):
     db = SessionLocal()
     all_players = db.query(Player).all()
     player_names = [p.name for p in all_players]
-    
-    if player_names:
-        selected_players = st.multiselect(
-            f"Select players for {tournament.name}",
-            options=player_names,
-            default=player_names[:8] if len(player_names) >= 8 else player_names
+
+    # Build participant-sourced player name lists if self-registration is enabled
+    participant_options = []
+    checked_in_options = []
+    if settings.ENABLE_SELF_REGISTRATION:
+        participants = (
+            db.query(TournamentParticipant)
+            .filter(TournamentParticipant.tournament_id == tournament.id)
+            .all()
         )
-        
-        default_format = "Knockout" if tournament.tournament_type == TournamentType.knockout else "Round-Robin"
-        tournament_format = st.selectbox(
-            "Tournament Format",
-            options=["Knockout", "Round-Robin", "Groups → Knockout"],
-            index=0 if default_format == "Knockout" else (1 if default_format == "Round-Robin" else 2),
-            key=f"format_{tournament.id}"
+        participant_options = sorted({p.display_name for p in participants if p.display_name})
+        checked_in_participants = [p for p in participants if p.checked_in]
+        checked_in_options = sorted({p.display_name for p in checked_in_participants if p.display_name})
+
+        pending_count = sum(1 for p in participants if p.duplicate_status == "pending_review")
+        if pending_count > 0:
+            st.warning(
+                f"{pending_count} participant(s) have pending duplicate reviews "
+                "and will be excluded from bracket generation by default."
+            )
+    db.close()
+
+    bracket_source = "manual"
+    if settings.ENABLE_SELF_REGISTRATION and (participant_options or checked_in_options):
+        bracket_source = st.radio(
+            "Bracket Source",
+            options=["manual", "registered", "checked_in"],
+            format_func=lambda x: {
+                "manual": "Manually selected (all players)",
+                "registered": "All registered participants",
+                "checked_in": "Checked-in only",
+            }[x],
+            horizontal=True,
+            key=f"bracket_source_{tournament.id}",
+            help="Choose which players to include in the bracket.",
         )
-        
-        # Groups → Knockout configuration
-        num_groups = 2
-        qualifiers_per_group = 2
-        if tournament_format == "Groups → Knockout":
-            col1, col2 = st.columns(2)
-            with col1:
-                num_groups = st.number_input(
-                    "Number of Groups",
-                    min_value=2,
-                    max_value=8,
-                    value=2,
-                    key=f"num_groups_gen_{tournament.id}"
-                )
-            with col2:
-                qualifiers_per_group = st.number_input(
-                    "Qualifiers per Group",
-                    min_value=1,
-                    max_value=4,
-                    value=2,
-                    key=f"qualifiers_gen_{tournament.id}"
-                )
-        
-        if ui.button(f"🏆 Generate {tournament_format}", key=f"gen_{tournament.id}"):
-            if len(selected_players) < 2:
-                st.toast("Please select at least 2 players", icon="⚠️")
-            else:
-                try:
-                    if tournament_format == "Groups → Knockout":
-                        selected_strategy = GroupsKnockoutStrategy(
-                            num_groups=num_groups,
-                            qualifiers_per_group=qualifiers_per_group
-                        )
-                    else:
-                        strategies = {
-                            "Knockout": KnockoutStrategy(),
-                            "Round-Robin": RoundRobinStrategy()
-                        }
-                        selected_strategy = strategies[tournament_format]
-                    context = TournamentContext(selected_strategy)
-                    context.run_generation(selected_players, tournament.id, db)
-                    
-                    st.toast("✅ Tournament generated successfully!", icon="🏆")
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error generating tournament: {e}")
-                finally:
-                    db.close()
+
+    if bracket_source == "manual":
+        available_names = player_names
+    elif bracket_source == "registered":
+        available_names = participant_options
     else:
-        st.info("Register players first to generate a bracket")
+        available_names = checked_in_options
+
+    if not available_names:
+        st.info("No players available for the selected bracket source.")
+        return
+
+    default_selection = available_names[:8] if len(available_names) >= 8 else available_names
+    selected_players = st.multiselect(
+        f"Select players for {tournament.name}",
+        options=available_names,
+        default=default_selection,
+        key=f"players_{tournament.id}",
+    )
+    
+    default_format = "Knockout" if tournament.tournament_type == TournamentType.knockout else "Round-Robin"
+    tournament_format = st.selectbox(
+        "Tournament Format",
+        options=["Knockout", "Round-Robin", "Groups → Knockout"],
+        index=0 if default_format == "Knockout" else (1 if default_format == "Round-Robin" else 2),
+        key=f"format_{tournament.id}"
+    )
+    
+    # Groups → Knockout configuration
+    num_groups = 2
+    qualifiers_per_group = 2
+    if tournament_format == "Groups → Knockout":
+        col1, col2 = st.columns(2)
+        with col1:
+            num_groups = st.number_input(
+                "Number of Groups",
+                min_value=2,
+                max_value=8,
+                value=2,
+                key=f"num_groups_gen_{tournament.id}"
+            )
+        with col2:
+            qualifiers_per_group = st.number_input(
+                "Qualifiers per Group",
+                min_value=1,
+                max_value=4,
+                value=2,
+                key=f"qualifiers_gen_{tournament.id}"
+            )
+    
+    if ui.button(f"🏆 Generate {tournament_format}", key=f"gen_{tournament.id}"):
+        if len(selected_players) < 2:
+            st.toast("Please select at least 2 players", icon="⚠️")
+        else:
+            try:
+                if tournament_format == "Groups → Knockout":
+                    selected_strategy = GroupsKnockoutStrategy(
+                        num_groups=num_groups,
+                        qualifiers_per_group=qualifiers_per_group
+                    )
+                else:
+                    strategies = {
+                        "Knockout": KnockoutStrategy(),
+                        "Round-Robin": RoundRobinStrategy()
+                    }
+                    selected_strategy = strategies[tournament_format]
+                context = TournamentContext(selected_strategy)
+                context.run_generation(selected_players, tournament.id, db)
+                
+                st.toast("✅ Tournament generated successfully!", icon="🏆")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error generating tournament: {e}")
+            finally:
+                db.close()
 
 
 def render_active_tournaments():
@@ -1018,7 +1304,14 @@ def render_events_draws():
         render_tournament_creation_wizard()
 
     with tab_participants:
-        render_participants_panel()
+        tournament_id_for_participants = None
+        if settings.ENABLE_SELF_REGISTRATION:
+            if "active_tournament_id" in st.session_state and st.session_state["active_tournament_id"] is not None:
+                tournament_id_for_participants = st.session_state["active_tournament_id"]
+            else:
+                st.caption("Select a tournament to manage registration and check-in.")
+                tournament_id_for_participants = _get_tournament_selector_for_participants()
+        render_participants_panel(tournament_id=tournament_id_for_participants)
 
     with tab_draws:
         render_active_tournaments()

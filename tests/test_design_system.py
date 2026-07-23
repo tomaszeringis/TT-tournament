@@ -7,6 +7,7 @@ theme block (``GLOBAL_STYLES``).
 """
 
 import ast
+import inspect
 import os
 
 import pytest
@@ -91,5 +92,29 @@ def test_branded_card_helpers_exist():
         "render_litit_announcement_card",
         "render_litit_result_row",
         "render_litit_upcoming_row",
+        "render_public_match_card",
+        "render_public_coming_up_card",
+        "render_public_delayed_card",
+        "render_public_result_row",
     ):
         assert callable(getattr(ds, helper)), f"Missing brand card helper: {helper}"
+
+
+class TestPublicBoardSafeRenderers:
+    def test_safe_renderers_do_not_emit_html(self):
+        helpers = [
+            ("render_public_match_card", {"match": {"player1": "Tomas Z", "player2": "Darius A", "location": "1", "scheduled_time": "2026-07-23T15:10:00", "status": "pending", "call_status": "not_called"}}),
+            ("render_public_coming_up_card", {"match": {"player1": "Tomas Z", "player2": "Darius A", "location": "1", "scheduled_time": "2026-07-23T15:10:00"}}),
+            ("render_public_delayed_card", {"match": {"player1": "Tomas Z", "player2": "Darius A", "location": "1", "scheduled_time": "2026-07-23T15:10:00", "operator_note": "Late start"}}),
+            ("render_public_result_row", {"player1": "Tomas Z", "player2": "Darius A", "score": "3-1", "winner": "Tomas Z", "time_str": "15:10"}),
+        ]
+        for helper_name, kwargs in helpers:
+            helper = getattr(ds, helper_name)
+            source = inspect.getsource(helper)
+            assert "unsafe_allow_html" not in source, f"{helper_name} must not use unsafe_allow_html=True"
+
+    def test_safe_renderers_handle_missing_fields(self):
+        ds.render_public_match_card({})
+        ds.render_public_coming_up_card({})
+        ds.render_public_delayed_card({})
+        ds.render_public_result_row("", "", "", "", "")

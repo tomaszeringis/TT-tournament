@@ -95,6 +95,8 @@ class Settings(BaseSettings):
     # Microsoft Teams Webhook (notifications)
     # -------------------------------------------------------------------------
     TEAMS_WEBHOOK_URL: str = ""
+    TEAMS_POST_COOLDOWN_SECONDS: int = 5
+    TOURNAMENT_TIMEZONE: str = "Europe/Vilnius"
 
     # -------------------------------------------------------------------------
     # Azure AD / Microsoft Graph (Calendar integration)
@@ -160,8 +162,11 @@ class Settings(BaseSettings):
     ENABLE_AI_MATCH_INSIGHTS: bool = False       # Post-match AI insight cards
     ENABLE_SELF_REGISTRATION: bool = False      # Public self-serve registration
     ENABLE_CSV_BULK_IMPORT: bool = True         # CSV bulk participant import
-    PUBLIC_BOARD_BASE_URL: str = "http://localhost:8501/public_board"
+    PUBLIC_BOARD_BASE_URL: str = ""
     PUBLIC_BOARD_STALE_SECONDS: int = 60         # Threshold for "data may be stale"
+    PUBLIC_BOARD_AUTO_REFRESH_DEFAULT: bool = False
+    PUBLIC_BOARD_REFRESH_INTERVAL_SECONDS: int = 10
+    PUBLIC_BOARD_KIOSK_REFRESH_INTERVAL_SECONDS: int = 5
 
     @model_validator(mode='after')
     def resolve_absolute_paths(self):

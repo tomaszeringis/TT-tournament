@@ -48,7 +48,7 @@ def load_completed_match_options(
     limit: int = 100,
     tournament_name: Optional[str] = None,
 ) -> List[MatchAnalyticsOption]:
-    from tournament_platform.models import Match, MatchStatus
+    from tournament_platform.models import Match, MatchStatus, Player
 
     query = db.query(Match).filter(Match.status == MatchStatus.completed)
     if tournament_id is not None:
@@ -56,13 +56,35 @@ def load_completed_match_options(
     query = query.order_by(Match.completed_at.desc().nullslast(), Match.id.desc())
     matches = query.limit(limit).all()
 
+    player_ids = set()
+    for m in matches:
+        if m.player1_id:
+            player_ids.add(m.player1_id)
+        if m.player2_id:
+            player_ids.add(m.player2_id)
+
+    player_name_map: Dict[int, str] = {}
+    if player_ids:
+        players = db.query(Player).filter(Player.id.in_(list(player_ids))).all()
+        player_name_map = {p.id: p.name for p in players}
+
+    def _resolve_name(match: Any, side: str) -> str:
+        if side == "a":
+            raw = getattr(match, "player1", None)
+            pid = getattr(match, "player1_id", None)
+        else:
+            raw = getattr(match, "player2", None)
+            pid = getattr(match, "player2_id", None)
+        if raw and raw.strip():
+            return raw.strip()
+        if pid and pid in player_name_map:
+            return player_name_map[pid]
+        return "Player A" if side == "a" else "Player B"
+
     options: List[MatchAnalyticsOption] = []
     for m in matches:
-        player_a = m.player1 or "Player A"
-        player_b = m.player2 or "Player B"
-
-        if _looks_like_generated_player(player_a) and _looks_like_generated_player(player_b):
-            continue
+        player_a = _resolve_name(m, "a")
+        player_b = _resolve_name(m, "b")
 
         winner = m.winner or ""
         score = m.score or ""

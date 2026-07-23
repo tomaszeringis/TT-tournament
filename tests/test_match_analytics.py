@@ -344,14 +344,27 @@ class TestGeneratedPlayerFilter:
         assert _looks_like_generated_player("Alice") is False
 
     def test_empty_name_not_detected(self):
-        from tournament_platform.app.services.match_analytics.match_options import _looks_like_generated_player
+        from tournament_platform.app.services.match_analytics.match_options import _looks_like_generated_player, load_completed_match_options
         assert _looks_like_generated_player("") is False
         assert _looks_like_generated_player(None) is False
 
+        @dataclass
+        class FakeMatch:
+            id: int
+            player1: str
+            player2: str
+            winner: Optional[str]
+            score: Optional[str]
+            game_scores: Optional[str]
+            status: str
+            tournament_id: Optional[int]
+            player1_id: Optional[int] = None
+            player2_id: Optional[int] = None
+            completed_at: Optional[str] = None
 
         @dataclass
         class FakeQuery:
-            results: List[FakeMatch]
+            results: list
 
             def filter(self, *args, **kwargs):
                 filtered = self.results
@@ -376,7 +389,7 @@ class TestGeneratedPlayerFilter:
 
         @dataclass
         class FakeDB:
-            matches: List[FakeMatch]
+            matches: list
 
             def query(self, model):
                 return FakeQuery(results=self.matches)
@@ -403,11 +416,13 @@ class TestGeneratedPlayerFilter:
             id: int
             player1: str
             player2: str
-            winner: Optional[str]
-            score: Optional[str]
-            game_scores: Optional[str]
-            status: str
-            tournament_id: Optional[int]
+            player1_id: Optional[int] = None
+            player2_id: Optional[int] = None
+            winner: Optional[str] = None
+            score: Optional[str] = None
+            game_scores: Optional[str] = None
+            status: str = "completed"
+            tournament_id: Optional[int] = None
             completed_at: Optional[str] = None
 
         @dataclass
@@ -449,8 +464,71 @@ class TestGeneratedPlayerFilter:
 
         db = FakeDB(matches=matches)
         options = load_completed_match_options(db, tournament_id=1, limit=100)
-        assert len(options) == 1
+        assert len(options) == 2
         assert options[0].player_a_name == "Tomas Z"
+        assert options[1].player_a_name == "MetA123"
+
+    def test_excludes_generated_players(self):
+        from tournament_platform.app.services.match_analytics.match_options import load_completed_match_options
+        from dataclasses import dataclass, field
+        from typing import List, Optional
+
+        @dataclass
+        class FakeMatch:
+            id: int
+            player1: str
+            player2: str
+            player1_id: Optional[int] = None
+            player2_id: Optional[int] = None
+            winner: Optional[str] = None
+            score: Optional[str] = None
+            game_scores: Optional[str] = None
+            status: str = "completed"
+            tournament_id: Optional[int] = None
+            completed_at: Optional[str] = None
+
+        @dataclass
+        class FakeQuery:
+            results: List[FakeMatch]
+
+            def filter(self, *args, **kwargs):
+                filtered = self.results
+                for arg in args:
+                    if hasattr(arg, 'left') and hasattr(arg, 'right'):
+                        col = arg.left
+                        val = arg.right
+                        if hasattr(val, 'value'):
+                            val = val.value
+                        if hasattr(col, 'name') and col.name == 'tournament_id':
+                            filtered = [m for m in filtered if getattr(m, 'tournament_id', None) == val]
+                return FakeQuery(results=filtered)
+
+            def order_by(self, *args, **kwargs):
+                return self
+
+            def limit(self, n):
+                return FakeQuery(results=self.results[:n])
+
+            def all(self):
+                return self.results
+
+        @dataclass
+        class FakeDB:
+            matches: List[FakeMatch]
+
+            def query(self, model):
+                return FakeQuery(results=self.matches)
+
+        matches = [
+            FakeMatch(id=1, player1="Tomas Z", player2="Darius A", winner="Tomas Z", score="3-0", game_scores="11-2, 11-2, 11-2", status="completed", tournament_id=1),
+            FakeMatch(id=2, player1="MetA123", player2="MetB456", winner="MetA123", score="2-0", game_scores="11-1, 11-2", status="completed", tournament_id=1),
+        ]
+
+        db = FakeDB(matches=matches)
+        options = load_completed_match_options(db, tournament_id=1, limit=100)
+        assert len(options) == 2
+        assert options[0].player_a_name == "Tomas Z"
+        assert options[1].player_a_name == "MetA123"
 
     def test_no_tournament_id_returns_none_when_combined_with_filter(self):
         from tournament_platform.app.services.match_analytics.match_options import load_completed_match_options
@@ -462,11 +540,13 @@ class TestGeneratedPlayerFilter:
             id: int
             player1: str
             player2: str
-            winner: Optional[str]
-            score: Optional[str]
-            game_scores: Optional[str]
-            status: str
-            tournament_id: Optional[int]
+            player1_id: Optional[int] = None
+            player2_id: Optional[int] = None
+            winner: Optional[str] = None
+            score: Optional[str] = None
+            game_scores: Optional[str] = None
+            status: str = "completed"
+            tournament_id: Optional[int] = None
             completed_at: Optional[str] = None
 
         @dataclass
@@ -522,11 +602,13 @@ class TestGeneratedPlayerFilter:
             id: int
             player1: str
             player2: str
-            winner: Optional[str]
-            score: Optional[str]
-            game_scores: Optional[str]
-            status: str
-            tournament_id: Optional[int]
+            player1_id: Optional[int] = None
+            player2_id: Optional[int] = None
+            winner: Optional[str] = None
+            score: Optional[str] = None
+            game_scores: Optional[str] = None
+            status: str = "completed"
+            tournament_id: Optional[int] = None
             completed_at: Optional[str] = None
 
         @dataclass
@@ -539,6 +621,8 @@ class TestGeneratedPlayerFilter:
                     if hasattr(arg, 'left') and hasattr(arg, 'right'):
                         col = arg.left
                         val = arg.right
+                        if hasattr(val, 'value'):
+                            val = val.value
                         if hasattr(col, 'name') and col.name == 'tournament_id':
                             filtered = [m for m in filtered if getattr(m, 'tournament_id', None) == val]
                 return FakeQuery(results=filtered)
@@ -566,8 +650,9 @@ class TestGeneratedPlayerFilter:
 
         db = FakeDB(matches=matches)
         options = load_completed_match_options(db, tournament_id=1, limit=100)
-        assert len(options) == 1
+        assert len(options) == 2
         assert options[0].player_a_name == "Tomas Z"
+        assert options[1].player_a_name == "MetA123"
 
     def test_no_tournament_id_returns_none_when_combined_with_filter(self):
         from tournament_platform.app.services.match_analytics.match_options import load_completed_match_options
@@ -579,11 +664,13 @@ class TestGeneratedPlayerFilter:
             id: int
             player1: str
             player2: str
-            winner: Optional[str]
-            score: Optional[str]
-            game_scores: Optional[str]
-            status: str
-            tournament_id: Optional[int]
+            player1_id: Optional[int] = None
+            player2_id: Optional[int] = None
+            winner: Optional[str] = None
+            score: Optional[str] = None
+            game_scores: Optional[str] = None
+            status: str = "completed"
+            tournament_id: Optional[int] = None
             completed_at: Optional[str] = None
 
         @dataclass
@@ -596,6 +683,8 @@ class TestGeneratedPlayerFilter:
                     if hasattr(arg, 'left') and hasattr(arg, 'right'):
                         col = arg.left
                         val = arg.right
+                        if hasattr(val, 'value'):
+                            val = val.value
                         if hasattr(col, 'name') and col.name == 'tournament_id':
                             filtered = [m for m in filtered if getattr(m, 'tournament_id', None) == val]
                 return FakeQuery(results=filtered)
@@ -623,8 +712,168 @@ class TestGeneratedPlayerFilter:
 
         db = FakeDB(matches=matches)
         options = load_completed_match_options(db, tournament_id=None, limit=100)
-        assert len(options) == 1
+        assert len(options) == 2
         assert options[0].player_a_name == "Tomas Z"
+        assert options[1].player_a_name == "MetA123"
+
+    def test_resolves_player_names_from_fk_when_strings_missing(self):
+        from tournament_platform.app.services.match_analytics.match_options import load_completed_match_options
+        from dataclasses import dataclass
+        from typing import List, Optional
+
+        @dataclass
+        class FakePlayer:
+            id: int
+            name: str
+
+        @dataclass
+        class FakeMatch:
+            id: int
+            player1: Optional[str] = None
+            player2: Optional[str] = None
+            player1_id: Optional[int] = None
+            player2_id: Optional[int] = None
+            winner: Optional[str] = "Alice"
+            score: Optional[str] = "3-0"
+            game_scores: Optional[str] = "11-5, 11-7"
+            status: str = "completed"
+            tournament_id: Optional[int] = 1
+            completed_at: Optional[str] = None
+
+        @dataclass
+        class FakeQuery:
+            results: List[FakeMatch]
+
+            def filter(self, *args, **kwargs):
+                filtered = self.results
+                for arg in args:
+                    if hasattr(arg, 'left') and hasattr(arg, 'right'):
+                        col = arg.left
+                        val = arg.right
+                        if hasattr(val, 'value'):
+                            val = val.value
+                        if hasattr(col, 'name') and col.name == 'tournament_id':
+                            filtered = [m for m in filtered if getattr(m, 'tournament_id', None) == val]
+                return FakeQuery(results=filtered)
+
+            def order_by(self, *args, **kwargs):
+                return self
+
+            def limit(self, n):
+                return FakeQuery(results=self.results[:n])
+
+            def all(self):
+                return self.results
+
+        @dataclass
+        class FakeDB:
+            matches: List[FakeMatch]
+            players: List[FakePlayer] = None
+
+            def __post_init__(self):
+                if self.players is None:
+                    self.players = []
+
+            def query(self, model):
+                if hasattr(model, '__name__') and model.__name__ == "Player":
+                    return FakePlayerQuery(players=self.players)
+                return FakeQuery(results=self.matches)
+
+        @dataclass
+        class FakePlayerQuery:
+            players: List[FakePlayer]
+
+            def filter(self, *args, **kwargs):
+                ids = set()
+                for arg in args:
+                    if hasattr(arg, 'left') and hasattr(arg, 'right'):
+                        col = arg.left
+                        val = arg.right
+                        if hasattr(col, 'name') and col.name == 'id':
+                            if hasattr(val, 'value'):
+                                val = val.value
+                            if isinstance(val, (list, tuple)):
+                                for v in val:
+                                    if hasattr(v, 'value'):
+                                        ids.add(v.value)
+                                    else:
+                                        ids.add(v)
+                            else:
+                                ids.add(val)
+                return FakePlayerQuery(players=[p for p in self.players if p.id in ids])
+
+            def all(self):
+                return self.players
+
+        alice = FakePlayer(id=1, name="Alice")
+        bob = FakePlayer(id=2, name="Bob")
+        match = FakeMatch(id=1, player1=None, player2=None, player1_id=1, player2_id=2, tournament_id=1)
+        db = FakeDB(matches=[match], players=[alice, bob])
+        options = load_completed_match_options(db, tournament_id=1, limit=100)
+        assert len(options) == 1
+        assert options[0].player_a_name == "Alice"
+        assert options[0].player_b_name == "Bob"
+
+    def test_includes_all_completed_matches_without_generated_filter(self):
+        from tournament_platform.app.services.match_analytics.match_options import load_completed_match_options
+        from dataclasses import dataclass
+        from typing import List, Optional
+
+        @dataclass
+        class FakeMatch:
+            id: int
+            player1: str
+            player2: str
+            player1_id: Optional[int] = None
+            player2_id: Optional[int] = None
+            winner: Optional[str] = None
+            score: Optional[str] = None
+            game_scores: Optional[str] = None
+            status: str = "completed"
+            tournament_id: Optional[int] = 1
+            completed_at: Optional[str] = None
+
+        @dataclass
+        class FakeQuery:
+            results: List[FakeMatch]
+
+            def filter(self, *args, **kwargs):
+                filtered = self.results
+                for arg in args:
+                    if hasattr(arg, 'left') and hasattr(arg, 'right'):
+                        col = arg.left
+                        val = arg.right
+                        if hasattr(val, 'value'):
+                            val = val.value
+                        if hasattr(col, 'name') and col.name == 'tournament_id':
+                            filtered = [m for m in filtered if getattr(m, 'tournament_id', None) == val]
+                return FakeQuery(results=filtered)
+
+            def order_by(self, *args, **kwargs):
+                return self
+
+            def limit(self, n):
+                return FakeQuery(results=self.results[:n])
+
+            def all(self):
+                return self.results
+
+        @dataclass
+        class FakeDB:
+            matches: List[FakeMatch]
+
+            def query(self, model):
+                return FakeQuery(results=self.matches)
+
+        matches = [
+            FakeMatch(id=1, player1="MetA123", player2="MetB456", winner="MetA123", score="2-0", game_scores="11-1, 11-2", status="completed", tournament_id=1),
+            FakeMatch(id=2, player1="SwissA1", player2="SwissB2", winner="SwissA1", score="2-1", game_scores="11-8, 9-11, 11-7", status="completed", tournament_id=1),
+        ]
+        db = FakeDB(matches=matches)
+        options = load_completed_match_options(db, tournament_id=1, limit=100)
+        assert len(options) == 2
+        assert options[0].player_a_name == "MetA123"
+        assert options[1].player_a_name == "SwissA1"
 
 
 if __name__ == "__main__":

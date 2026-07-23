@@ -223,6 +223,28 @@ class TestNormalizeBracketMatches:
         assert events_draws.normalize_bracket_matches([]) == []
         assert events_draws.normalize_bracket_matches(None) == []
 
+    def test_bye_detected_when_player2_none(self):
+        matches = [make_match(1, "Alice", None)]
+        result = events_draws.normalize_bracket_matches(matches)
+        assert result[0]["bye"] is True
+
+    def test_bye_detected_when_player2_bye_string(self):
+        matches = [make_match(1, "Alice", "BYE")]
+        result = events_draws.normalize_bracket_matches(matches)
+        assert result[0]["bye"] is True
+
+    def test_not_bye_when_player2_present(self):
+        matches = [make_match(1, "Alice", "Bob")]
+        result = events_draws.normalize_bracket_matches(matches)
+        assert result[0]["bye"] is False
+
+    def test_seed_labels_extracted_from_match(self):
+        matches = [make_match(1, "Alice", "Bob", player1_id=10, player2_id=20)]
+        result = events_draws.normalize_bracket_matches(matches, db=None)
+        # Without db, seeds are not populated from Entry, but keys exist.
+        assert "seed1" in result[0]
+        assert "seed2" in result[0]
+
 
 class TestRenderBracketFallback:
     def _fake_st(self, monkeypatch):
@@ -259,6 +281,38 @@ class TestRenderBracketFallback:
         normalized = events_draws.normalize_bracket_matches(matches)
         # Should not raise even with > 6 rounds.
         events_draws.render_bracket_fallback(normalized)
+
+    def test_seed_labels_rendered_when_present(self, monkeypatch):
+        fake_st = self._fake_st(monkeypatch)
+        normalized = events_draws.normalize_bracket_matches(
+            [make_match(1, "Alice", "Bob", player1_id=10, player2_id=20)]
+        )
+        normalized[0]["seed1"] = 1
+        normalized[0]["seed2"] = 4
+        events_draws.render_bracket_fallback(normalized)
+        markdown_calls = " ".join(str(c.args) for c in fake_st.markdown.call_args_list)
+        assert "[S1]" in markdown_calls
+        assert "[S4]" in markdown_calls
+
+    def test_bye_rendered_as_special_line(self, monkeypatch):
+        fake_st = self._fake_st(monkeypatch)
+        normalized = events_draws.normalize_bracket_matches(
+            [make_match(1, "Alice", None)]
+        )
+        normalized[0]["bye"] = True
+        events_draws.render_bracket_fallback(normalized)
+        markdown_calls = " ".join(str(c.args) for c in fake_st.markdown.call_args_list)
+        assert "BYE" in markdown_calls
+
+    def test_group_name_shown_in_meta(self, monkeypatch):
+        fake_st = self._fake_st(monkeypatch)
+        normalized = events_draws.normalize_bracket_matches(
+            [make_match(1, "Alice", "Bob")]
+        )
+        normalized[0]["group_name"] = "Group A"
+        events_draws.render_bracket_fallback(normalized)
+        caption_calls = " ".join(str(c.args) for c in fake_st.caption.call_args_list)
+        assert "Group A" in caption_calls
 
 
 class TestRenderBracket:
@@ -328,3 +382,105 @@ class TestRenderBracket:
         assert fake_st.container.called
         # ...and a warning was surfaced about the visual bracket.
         assert fake_st.warning.called
+
+
+class TestDetectTournamentFormat:
+    def test_knockout_when_all_have_rounds(self):
+        matches = [
+            make_match(1, "A", "B", round_number=1),
+            make_match(2, "C", "D", round_number=2),
+        ]
+        fmt = events_draws._detect_tournament_format(matches)
+        assert fmt == "knockout"
+
+    def test_groups_when_stage_type_group(self):
+        matches = [make_match(1, "A", "B")]
+        matches[0].stage = SimpleNamespace(stage_type="group")
+        fmt = events_draws._detect_tournament_format(matches)
+        assert fmt == "groups"
+
+    def test_swiss_when_stage_type_swiss(self):
+        matches = [make_match(1, "A", "B")]
+        matches[0].stage = SimpleNamespace(stage_type="swiss")
+        fmt = events_draws._detect_tournament_format(matches)
+        assert fmt == "swiss"
+
+    def test_unknown_when_empty(self):
+        fmt = events_draws._detect_tournament_format([])
+        assert fmt == "unknown"
+
+
+class TestBuildSafeBracketPayload:
+    def test_json_serializable(self):
+        import json
+
+        matches = [
+            make_match(1, "Alice", "Bob", round_number=1, bracket_index=0),
+            make_match(2, "Carol", "BYE", round_number=1, bracket_index=1),
+        ]
+        payload = events_draws.build_safe_bracket_payload(matches, "knockout")
+        json.dumps(payload)  # must not raise
+
+    def test_status_converted_to_string(self):
+        matches = [
+            make_match(1, "Alice", "Bob", status=MatchStatus.completed, score="11-3"),
+        ]
+        payload = events_draws.build_safe_bracket_payload(matches, "knockout")
+        assert payload["matches"][0]["status"] == "completed"
+        assert payload["matches"][0]["score"] == "11-3"
+
+    def test_bye_detected(self):
+        matches = [
+            make_match(1, "Alice", None),
+        ]
+        payload = events_draws.build_safe_bracket_payload(matches, "knockout")
+        assert payload["matches"][0]["is_bye"] is True
+        assert payload["matches"][0]["player2"] == "TBD"
+
+    def test_validate_raises_on_bad_payload(self):
+        with pytest.raises((TypeError, ValueError)):
+            events_draws._validate_bracket_payload({"bad": object()})
+
+
+class TestRenderBracketFormatRouting:
+    def _fake_st(self, monkeypatch):
+        fake_st = MagicMock()
+        fake_st.columns.side_effect = lambda n, *a, **k: [
+            MagicMock() for _ in range(n if isinstance(n, int) else len(n))
+        ]
+        monkeypatch.setattr(events_draws, "st", fake_st)
+        return fake_st
+
+    def test_groups_route_renders_native_and_message(self, monkeypatch):
+        self._fake_st(monkeypatch)
+        matches = [make_match(1, "A", "B")]
+        matches[0].stage = SimpleNamespace(stage_type="group")
+        tournament = SimpleNamespace(id=1, matches=matches, name="Groups Cup")
+        players = [make_player(1, "A"), make_player(2, "B")]
+
+        mock_db = MagicMock()
+        mock_db.query.return_value.get.return_value = None
+        monkeypatch.setattr(events_draws, "SessionLocal", lambda: mock_db)
+
+        mock_component = MagicMock()
+        monkeypatch.setattr(events_draws, "interactive_bracket", mock_component)
+
+        events_draws.render_bracket(tournament, players)
+        assert not mock_component.called
+
+    def test_swiss_route_renders_native_and_message(self, monkeypatch):
+        self._fake_st(monkeypatch)
+        matches = [make_match(1, "A", "B")]
+        matches[0].stage = SimpleNamespace(stage_type="swiss")
+        tournament = SimpleNamespace(id=1, matches=matches, name="Swiss League")
+        players = [make_player(1, "A"), make_player(2, "B")]
+
+        mock_db = MagicMock()
+        mock_db.query.return_value.get.return_value = None
+        monkeypatch.setattr(events_draws, "SessionLocal", lambda: mock_db)
+
+        mock_component = MagicMock()
+        monkeypatch.setattr(events_draws, "interactive_bracket", mock_component)
+
+        events_draws.render_bracket(tournament, players)
+        assert not mock_component.called

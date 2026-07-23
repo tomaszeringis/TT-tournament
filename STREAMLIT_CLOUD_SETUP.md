@@ -75,19 +75,35 @@ VOICE_ASR_COMPUTE_TYPE = "int8"
 # HF_TOKEN = "hf_..."
 ```
 
-### Voice Scoring ASR Notes
+### Voice Scoring on Streamlit Cloud
 
-- The app reads `VOICE_ASR_MODEL_SIZE` / `VOICE_ASR_DEVICE` / `VOICE_ASR_COMPUTE_TYPE`
-  / `HF_TOKEN` from the environment **or** from Streamlit secrets (whichever is
-  set). Streamlit Cloud secrets do **not** automatically become environment
-  variables, so putting them in `[secrets]` is sufficient.
-- `faster-whisper` is declared in `pyproject.toml` (which pulls in
-  `ctranslate2`, `onnxruntime`, `huggingface-hub`, `tokenizers`, `av`). No
-  `requirements.txt`/`packages.txt` is used; dependencies come from `pyproject.toml`.
-- If the model fails to download or a package is missing, the **Voice ASR
-  Diagnostics** expander on the Voice Scorekeeper page reports the exact state
-  (`package_missing`, `model_download_failed`, `model_init_failed`, etc.) and
-  manual scoring continues to work. It never shows only "Status unavailable".
+- **faster-whisper** and **streamlit-webrtc** are installed by default from `pyproject.toml` dependencies.
+- **pyaudio** is NOT available on Streamlit Cloud (PortAudio is unavailable). Push-to-talk uses browser audio via `st.audio_input` (WebRTC) instead.
+- **Model size recommendation**: Use `VOICE_ASR_MODEL_SIZE=tiny.en` on Cloud for fast startup and low memory. Switch to `base.en` once the pipeline is confirmed working.
+- **Browser microphone permissions** must be granted by the user. The app shows a clear prompt if the browser denies access.
+- **`HF_TOKEN` secret** removes Hugging Face rate-limit warnings and download failures for `faster-whisper` model downloads.
+- **Ephemeral filesystem**: Audio files and model caches are stored in ephemeral storage and do not persist between restarts. `faster-whisper` re-downloads the model cache on each restart if not on persistent storage.
+- **Continuous listening**: WebRTC works on Streamlit Cloud when the browser grants microphone/camera permissions. The built-in START/STOP button functions normally.
+
+### Voice Scoring Environment Variables
+
+In Streamlit Cloud **Secrets** (Settings → Secrets):
+
+```toml
+# Voice scoring ASR
+VOICE_ASR_MODEL_SIZE = "tiny.en"
+VOICE_ASR_DEVICE = "cpu"
+VOICE_ASR_COMPUTE_TYPE = "int8"
+
+# Optional: Hugging Face token for faster-whisper model downloads
+HF_TOKEN = "hf_..."
+
+# Optional: ASR backend selection
+VOICE_ASR_BACKEND = "faster_whisper"
+VOICE_ASR_FALLBACK_BACKEND = "faster_whisper"
+```
+
+> **Important:** Streamlit Cloud secrets do **not** automatically become environment variables. The `get_voice_setting()` helper reads from `os.environ` first, then from `st.secrets`, so voice configuration works without explicit env var setup.
 
 ### Important: Set DATABASE_URL Before First Deploy
 

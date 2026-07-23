@@ -58,6 +58,8 @@ from tournament_platform.app.utils import invalidate_tournament_cache
 from tournament_platform.services.authorization import check_permission
 
 # Import the centralized API client
+from tournament_platform.config import settings
+from tournament_platform.app.services.teams_publisher import TeamsPublisher, TeamsEvent
 from tournament_platform.app.api_client import api_client
 from tournament_platform.app.design_system import apply_global_styles
 
@@ -352,7 +354,21 @@ def render_operator_console() -> None:
     selected_id = tournament_options[selected_name]
     st.session_state["active_tournament_id"] = selected_id
 
-    # Manual refresh
+    # Public Board link
+    base_url = settings.PUBLIC_BOARD_BASE_URL.rstrip("/")
+    if base_url:
+        public_url = f"{base_url}/?public=1&tournament={selected_id}"
+    else:
+        public_url = f"/?public=1&tournament={selected_id}"
+
+    col1, col2 = st.columns(2)
+    with col1:
+        st.link_button("📺 Open Public Board", public_url, use_container_width=True)
+    with col2:
+        if st.button("📋 Copy Public Link", use_container_width=True, key="copy_public_link"):
+            st.toast("Public board link copied!", icon="✅")
+
+    st.divider()
     if st.button("🔄 Refresh", key="operator_refresh"):
         invalidate_tournament_cache(selected_id)
         st.rerun()
@@ -403,6 +419,156 @@ def render_operator_console() -> None:
 
     issues = health.get("issues", [])
     callbacks = _build_callbacks()
+
+    # -------------------------------------------------------------------------
+    # Teams Broadcast (Phase 2)
+    # -------------------------------------------------------------------------
+    with st.expander("📢 Teams Broadcast", expanded=False):
+        publisher = TeamsPublisher()
+        status_text = "Configured" if publisher.is_configured() else "Not configured"
+        st.markdown(f"**Teams status:** {status_text}")
+
+        if not completed:
+            st.info("No completed matches to broadcast.")
+        else:
+            match_options = {
+                f"{m.get('player1', 'TBD')} vs {m.get('player2', 'TBD')} (ID: {m['id']})": m
+                for m in completed
+            }
+            selected_match_label = st.selectbox(
+                "Select completed match",
+                options=list(match_options.keys()),
+                key="teams_broadcast_match_select",
+            )
+            selected_match = match_options[selected_match_label]
+
+            p1 = selected_match.get("player1") or "TBD"
+            p2 = selected_match.get("player2") or "TBD"
+            score = selected_match.get("score") or "TBD"
+            winner = selected_match.get("winner") or "TBD"
+            message_text = f"🎾 Match Result: {p1} vs {p2} → Score: {score} (Winner: {winner})"
+
+            preview_event = TeamsEvent(
+                event_type="match_completed",
+                tournament_id=selected_id,
+                match_id=selected_match["id"],
+                title="Match Completed",
+                body=message_text,
+                facts={},
+                created_at=datetime.now(timezone.utc),
+            )
+            preview = publisher.preview_message(preview_event)
+
+            st.caption("Preview:")
+            st.text_area("Message preview", value=preview.text, height=120, key="teams_preview", label_visibility="collapsed")
+
+            if st.button("📤 Post to Teams", key="post_teams_result", use_container_width=True):
+                result = publisher.post_plain_text(preview_event, actor="operator")
+                if result.success:
+                    st.success(result.message)
+                else:
+                    st.warning(result.message)
+                    if st.button("📋 Copy Message", key="copy_teams_message"):
+                        st.session_state["teams_copied_message"] = preview.text
+                        st.toast("Message copied!", icon="✅")
+
+        st.divider()
+        st.caption("Recent Teams posts")
+        try:
+            history = publisher.get_post_history(limit=20)
+        except Exception as e:
+            st.error(f"Failed to load post history: {e}")
+            history = []
+
+        if history:
+            for record in history[:10]:
+                status_icon = "✅" if record.status == "success" else "❌" if record.status == "failed" else "⏭️"
+                st.markdown(f"{status_icon} **{record.status.upper()}** — `{record.id}` {record.error or ''}")
+        else:
+            st.caption("No Teams posts yet.")
+
+    # -------------------------------------------------------------------------
+    # Daily Digest (Phase 4)
+    # -------------------------------------------------------------------------
+    with st.expander("📅 Daily Digest", expanded=False):
+        from tournament_platform.app.services.daily_digest_service import build_daily_digest, post_daily_digest
+
+        digest_tone_opts = ["neutral", "professional", "fun_office_banter", "sport_commentator", "short_teams_update"]
+        digest_tone_labels = {
+            "neutral": "Neutral / No-roast",
+            "professional": "Professional",
+            "fun_office_banter": "Fun office banter",
+            "sport_commentator": "Sport commentator",
+            "short_teams_update": "Short Teams update",
+        }
+        if "digest_tone" not in st.session_state:
+            st.session_state["digest_tone"] = "neutral"
+        cur_digest_tone_idx = digest_tone_opts.index(st.session_state["digest_tone"])
+        sel_digest_tone = st.selectbox(
+            "Digest tone",
+            options=digest_tone_opts,
+            index=cur_digest_tone_idx,
+            format_func=lambda t: digest_tone_labels.get(t, t),
+            key="digest_tone_select",
+        )
+        st.session_state["digest_tone"] = sel_digest_tone
+
+        if st.button("🔄 Generate Digest", key="generate_digest", use_container_width=True):
+            try:
+                db = SessionLocal()
+                text = build_daily_digest(db, selected_id, tone=sel_digest_tone)
+                st.session_state["daily_digest_preview"] = text
+            except Exception as e:
+                st.error(f"Failed to build digest: {e}")
+            finally:
+                if 'db' in locals() and db:
+                    db.close()
+
+        if "daily_digest_preview" in st.session_state:
+            st.text_area("Digest preview", value=st.session_state["daily_digest_preview"], height=300, key="digest_preview_area", label_visibility="collapsed")
+            col_post, col_copy = st.columns(2)
+            with col_post:
+                if st.button("📤 Post Digest to Teams", key="post_daily_digest", use_container_width=True):
+                    db = SessionLocal()
+                    try:
+                        result = post_daily_digest(db, selected_id, actor="operator", tone=sel_digest_tone)
+                        if result.get("success"):
+                            st.success(result.get("message", "Posted"))
+                        else:
+                            st.warning(result.get("message", "Not posted"))
+                    except Exception as e:
+                        st.error(f"Failed to post digest: {e}")
+                    finally:
+                        db.close()
+            with col_copy:
+                if st.button("📋 Copy Digest", key="copy_daily_digest", use_container_width=True):
+                    st.session_state["copied_digest"] = st.session_state.get("daily_digest_preview", "")
+                    st.toast("Digest copied!", icon="✅")
+
+    # -------------------------------------------------------------------------
+    # KPIs & Warnings (Phase 5 polish)
+    # -------------------------------------------------------------------------
+    col_kpi1, col_kpi2, col_kpi3, col_kpi4 = st.columns(4)
+    with col_kpi1:
+        active_count = len([m for m in queue if m.get("call_status") in ("active", "called")])
+        st.metric("Active Matches", active_count)
+    with col_kpi2:
+        delayed_count = len([m for m in queue if m.get("call_status") == "delayed"])
+        st.metric("Delayed", delayed_count)
+    with col_kpi3:
+        completed_count = len([m for m in queue if m.get("status") == "completed"])
+        st.metric("Completed", completed_count)
+    with col_kpi4:
+        publisher = TeamsPublisher()
+        teams_ok = "✅" if publisher.is_configured() else "❌"
+        st.metric("Teams", teams_ok)
+
+    if issues:
+        st.subheader("⚠️ Warnings & Issues")
+        for issue in issues:
+            st.warning(issue)
+
+    st.divider()
 
     # -------------------------------------------------------------------------
     # Lanes

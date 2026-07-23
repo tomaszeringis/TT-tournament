@@ -8,6 +8,7 @@ for the entire application, following the LitIT brand system.
 # ---------------------------------------------------------------------------
 # Brand tokens
 # ---------------------------------------------------------------------------
+import html
 COLORS = {
     # Brand surfaces
     "litit_black": "#1A1C1B",     # Brand black (primary surfaces)
@@ -229,17 +230,17 @@ def render_kpi_card(
 # data (dicts or scalars) so they can be reused by public_board / dashboard.
 # ---------------------------------------------------------------------------
 
-def render_litit_match_card(match: dict, label: str = "Match") -> None:
+def render_litit_match_card(match: dict, label: str = "Match", game_scores: list | None = None, insight=None) -> None:
     """Render a large match card for TV/projector display (brand colors)."""
     import streamlit as st
 
-    p1 = match.get("player1") or "TBD"
-    p2 = match.get("player2") or "TBD"
-    score = match.get("score") or "vs"
-    winner = match.get("winner") or "Pending"
+    p1 = html.escape(match.get("player1") or "TBD")
+    p2 = html.escape(match.get("player2") or "TBD")
+    score = html.escape(match.get("score") or "vs")
+    winner = html.escape(match.get("winner") or "Pending")
     status = match.get("status") or "pending"
     call_status = match.get("call_status") or "not_called"
-    location = match.get("location") or "No table"
+    location = html.escape(match.get("location") or "No table")
     round_num = match.get("round_number")
 
     if status == "completed":
@@ -262,6 +263,17 @@ def render_litit_match_card(match: dict, label: str = "Match") -> None:
     winner_color = COLORS["accent_green"]
     plain = COLORS["text_primary"]
     muted = COLORS["text_secondary"]
+
+    game_scores_strip = ""
+    if game_scores:
+        parts = [f"G{i + 1}: {gs}" for i, gs in enumerate(game_scores)]
+        game_scores_strip = f'<div style="text-align: center; font-size: 14px; color: {muted}; margin-top: 4px;">{" | ".join(parts)}</div>'
+
+    insight_chip = ""
+    if insight and getattr(insight, "point_events_available", False):
+        css_cls = getattr(insight, "momentum_color", "default") or "default"
+        css_cls = "" if css_cls == "default" else f" {css_cls}"
+        insight_chip = f'<div style="text-align: center; margin-top: 8px;"><span class="pb-chip{css_cls}">{insight.momentum_label}</span></div>'
 
     st.markdown(
         f"""
@@ -294,6 +306,8 @@ def render_litit_match_card(match: dict, label: str = "Match") -> None:
                     </div>
                 </div>
             </div>
+            {game_scores_strip}
+            {insight_chip}
             <div style="text-align: center; font-size: 16px; color: {muted}; margin-top: 8px;">
                 Winner: {winner}
             </div>
@@ -303,15 +317,19 @@ def render_litit_match_card(match: dict, label: str = "Match") -> None:
     )
 
 
-def render_litit_coming_up_card(match: dict) -> None:
+def render_litit_coming_up_card(match: dict, call_status: str = "not_called") -> None:
     """Render a smaller card for coming up matches (brand colors)."""
     import streamlit as st
 
-    p1 = match.get("player1") or "TBD"
-    p2 = match.get("player2") or "TBD"
-    location = match.get("location") or "No table"
+    p1 = html.escape(match.get("player1") or "TBD")
+    p2 = html.escape(match.get("player2") or "TBD")
+    location = html.escape(match.get("location") or "No table")
     scheduled = match.get("scheduled_time")
     time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
+
+    called_chip = ""
+    if call_status == "called":
+        called_chip = '<span style="background-color: #FFD600; color: #000; padding: 2px 8px; border-radius: 999px; font-size: 12px; font-weight: bold;">Called to table</span>'
 
     st.markdown(
         f"""
@@ -324,6 +342,7 @@ def render_litit_coming_up_card(match: dict) -> None:
         ">
             <div style="display: flex; justify-content: space-between; align-items: center;">
                 <span style="color: {COLORS['text_secondary']}; font-size: 12px;">{time_str} · Table {location}</span>
+                {called_chip}
                 <span style="font-size: 14px;"><b>{p1}</b> vs <b>{p2}</b></span>
             </div>
         </div>
@@ -336,10 +355,10 @@ def render_litit_delayed_card(match: dict) -> None:
     """Render a card for delayed matches (brand colors)."""
     import streamlit as st
 
-    p1 = match.get("player1") or "TBD"
-    p2 = match.get("player2") or "TBD"
-    location = match.get("location") or "No table"
-    operator_note = match.get("operator_note") or ""
+    p1 = html.escape(match.get("player1") or "TBD")
+    p2 = html.escape(match.get("player2") or "TBD")
+    location = html.escape(match.get("location") or "No table")
+    operator_note = html.escape(match.get("operator_note") or "")
     scheduled = match.get("scheduled_time")
     time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
 
@@ -368,20 +387,23 @@ def render_litit_announcement_card(message: str, created_at: str = "N/A") -> Non
     """Render an announcement card (brand colors)."""
     import streamlit as st
 
+    safe_message = html.escape(message or "")
+    safe_created_at = html.escape(created_at or "N/A")
+
     st.markdown(
         f"""
         <div style="
             border: 2px solid {COLORS['accent_green']};
             border-radius: 8px;
             padding: 12px;
-            margin: 8px 0;
+            margin: 10px 0;
             background-color: {COLORS['surface']};
         ">
             <div style="font-size: 18px; font-weight: bold; color: {COLORS['accent_green']};">
-                📣 {message}
+                📣 {safe_message}
             </div>
             <div style="color: {COLORS['text_secondary']}; font-size: 12px; margin-top: 4px;">
-                {created_at}
+                {safe_created_at}
             </div>
         </div>
         """,
@@ -395,9 +417,20 @@ def render_litit_result_row(
     score: str,
     winner: str,
     time_str: str,
+    game_scores: list | None = None,
 ) -> None:
     """Render a single recent-result row (brand colors)."""
     import streamlit as st
+
+    safe_player1 = html.escape(player1 or "TBD")
+    safe_player2 = html.escape(player2 or "TBD")
+    safe_score = html.escape(score or "vs")
+    safe_winner = html.escape(winner or "Pending")
+
+    game_scores_strip = ""
+    if game_scores:
+        parts = [f"G{i + 1}: {gs}" for i, gs in enumerate(game_scores)]
+        game_scores_strip = f'<div style="text-align: center; font-size: 12px; color: {COLORS["text_muted"]}; margin-top: 2px;">{" | ".join(parts)}</div>'
 
     st.markdown(
         f"""
@@ -410,10 +443,11 @@ def render_litit_result_row(
         ">
             <span style="color: {COLORS['text_secondary']}; font-size: 14px;">{time_str}</span>
             <span style="flex: 1; text-align: center; font-size: 18px;">
-                <b>{player1}</b> {score} <b>{player2}</b>
+                <b>{safe_player1}</b> {safe_score} <b>{safe_player2}</b>
             </span>
-            <span style="color: {COLORS['accent_green']}; font-size: 14px;">🏆 {winner}</span>
+            <span style="color: {COLORS['accent_green']}; font-size: 14px;">🏆 {safe_winner}</span>
         </div>
+        {game_scores_strip}
         """,
         unsafe_allow_html=True,
     )
@@ -636,6 +670,44 @@ def render_chip(label: str, color: str = "default") -> None:
     )
 
 
+def render_status_chip(text: str, color: str = "default") -> None:
+    """Render an explicit status chip using the standard pb-chip CSS classes."""
+    import streamlit as st
+
+    css_class = "" if color == "default" else f" {color}"
+    st.markdown(
+        f'<span class="pb-chip{css_class}">{text}</span>',
+        unsafe_allow_html=True,
+    )
+
+
+def render_match_insight_chip(insight) -> None:
+    """Render a small momentum/insight chip below a match card."""
+    import streamlit as st
+
+    if not getattr(insight, "point_events_available", False):
+        return
+
+    css_class = f" {getattr(insight, 'momentum_color', 'default')}" if getattr(insight, 'momentum_color', 'default') != 'default' else ""
+    label = getattr(insight, "momentum_label", "")
+    if label:
+        st.markdown(
+            f'<span class="pb-chip{css_class}" style="margin-top:6px;">{label}</span>',
+            unsafe_allow_html=True,
+        )
+
+
+def render_game_scores_strip(game_scores: list | None) -> None:
+    """Render a compact game-score strip below the main score."""
+    import streamlit as st
+
+    if not game_scores:
+        return
+
+    parts = [f"G{i + 1}: {gs}" for i, gs in enumerate(game_scores)]
+    st.caption(" | ".join(parts))
+
+
 def render_qr_code(url: str, scale: int = 4) -> None:
     """Render an inline SVG QR code for ``url`` (pure-Python, no Pillow).
 
@@ -653,6 +725,149 @@ def render_qr_code(url: str, scale: int = 4) -> None:
         )
     except Exception:
         st.markdown(f"[Link]({url})")
+
+
+def render_qr_code_visible(url: str, scale: int = 6, width: int = 220) -> None:
+    """Render a visible, scannable QR code as PNG with a white background.
+
+    Uses ``st.image`` so the QR is visible on dark themes. Falls back to a
+    visible warning plus a clickable link if QR generation fails.
+    """
+    import streamlit as st
+
+    try:
+        from tournament_platform.app.services.public_board_service import make_qr_png_bytes
+
+        png_bytes = make_qr_png_bytes(url, scale=scale)
+        if not png_bytes:
+            raise ValueError("QR PNG bytes are empty")
+        st.image(png_bytes, caption="Scan to open", width=width)
+    except Exception as exc:
+        st.warning("QR code could not be generated.")
+        st.markdown(f"[Open link]({url})")
+        try:
+            from tournament_platform.config import settings
+            if settings.DEBUG_UI_ENABLED:
+                st.caption(f"QR error: {exc}")
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
+# Public Board safe card renderers (native Streamlit, no HTML)
+# ---------------------------------------------------------------------------
+
+def render_public_match_card(match: dict, label: str = "Match", game_scores: list | None = None, insight=None) -> None:
+    """Render a Now Playing match card using native Streamlit (no HTML)."""
+    import json
+    import streamlit as st
+
+    p1 = match.get("player1") or "TBD"
+    p2 = match.get("player2") or "TBD"
+    score = match.get("score") or "vs"
+    winner = match.get("winner") or "Pending"
+    status = match.get("status") or "pending"
+    call_status = match.get("call_status") or "not_called"
+    location = match.get("location") or "No table"
+    scheduled = match.get("scheduled_time")
+    time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
+
+    current_game_score = None
+    server = None
+    try:
+        note = match.get("operator_note")
+        if note:
+            data = json.loads(note)
+            if isinstance(data, dict):
+                cgs = data.get("current_game_score")
+                if isinstance(cgs, list) and len(cgs) == 2:
+                    current_game_score = f"{cgs[0]}-{cgs[1]}"
+                server = data.get("server")
+    except Exception:
+        pass
+
+    if status == "completed":
+        status_icon = "🟢"
+        status_label = "Completed"
+    elif call_status == "active" or status == "active":
+        status_icon = "🔴"
+        status_label = "LIVE"
+    elif call_status == "called":
+        status_icon = "🟡"
+        status_label = "CALLED"
+    else:
+        status_icon = "🔵"
+        status_label = "Pending"
+
+    st.markdown(f"**{status_icon} {label}**")
+    st.markdown(f"**{p1}** vs **{p2}**")
+    st.caption(f"{time_str} · Table {location} · {status_label}")
+    if current_game_score and status != "completed":
+        st.markdown(f"**Current game:** {current_game_score}")
+    if score and score != "vs":
+        st.markdown(f"**Games:** {score}")
+    if game_scores:
+        st.caption(" | ".join(f"G{i+1}: {gs}" for i, gs in enumerate(game_scores)))
+    if server and status != "completed":
+        st.caption(f"Serve: {server}")
+    if winner and winner != "Pending":
+        st.markdown(f"🏆 {winner}")
+
+    if insight and getattr(insight, "point_events_available", False):
+        st.caption(insight.momentum_label)
+
+
+def render_public_coming_up_card(match: dict, call_status: str = "not_called") -> None:
+    """Render a Next Match / Coming Up card using native Streamlit (no HTML)."""
+    import streamlit as st
+
+    p1 = match.get("player1") or "TBD"
+    p2 = match.get("player2") or "TBD"
+    location = match.get("location") or "No table"
+    scheduled = match.get("scheduled_time")
+    time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
+
+    if call_status == "called":
+        status_label = "Called to table"
+    else:
+        status_label = "Coming up"
+
+    st.markdown(f"**{p1}** vs **{p2}**")
+    st.caption(f"{time_str} · Table {location} · {status_label}")
+
+
+def render_public_delayed_card(match: dict) -> None:
+    """Render a Delayed match card using native Streamlit (no HTML)."""
+    import streamlit as st
+
+    p1 = match.get("player1") or "TBD"
+    p2 = match.get("player2") or "TBD"
+    location = match.get("location") or "No table"
+    operator_note = match.get("operator_note") or ""
+    scheduled = match.get("scheduled_time")
+    time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
+
+    st.markdown(f"**⏸️ DELAYED**")
+    st.markdown(f"**{p1}** vs **{p2}**")
+    st.caption(f"{time_str} · Table {location}")
+    if operator_note:
+        st.caption(f"Note: {operator_note}")
+
+
+def render_public_result_row(
+    player1: str,
+    player2: str,
+    score: str,
+    winner: str,
+    time_str: str,
+    game_scores: list | None = None,
+) -> None:
+    """Render a Recent Results row using native Streamlit (no HTML)."""
+    import streamlit as st
+
+    st.markdown(f"**{time_str}** — **{player1}** {score} **{player2}** 🏆 {winner}")
+    if game_scores:
+        st.caption(" | ".join(f"G{i+1}: {gs}" for i, gs in enumerate(game_scores)))
 
 
 def apply_global_styles() -> None:

@@ -169,7 +169,9 @@ def get_safe_teams_status() -> tuple[bool, str]:
     Returns:
         Tuple of (is_configured: bool, status_message: str)
     """
-    if settings.TEAMS_WEBHOOK_URL:
+    from tournament_platform.app.services.teams_publisher import TeamsPublisher
+    publisher = TeamsPublisher()
+    if publisher.is_configured():
         return True, "Configured"
     return False, "Not configured"
 

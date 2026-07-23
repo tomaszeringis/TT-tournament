@@ -1346,6 +1346,14 @@ def apply_score_event_and_refresh_ui(
                     if audio_summary and audio_summary.confidence >= 0.55:
                         _append_audio_commentary_line(audio_summary)
 
+            # Persist live match state so the Public Board can see the active match.
+            try:
+                _selected_match_id = st.session_state.get("voice_selected_match_id")
+                if _selected_match_id:
+                    persist_voice_match_to_db(_selected_match_id, mm.engine)
+            except Exception:
+                pass
+
             _request_voice_rerun("applied")
         else:
             st.session_state.last_voice_feedback = msg
@@ -2086,6 +2094,7 @@ def persist_voice_match_to_db(match_id: int, engine) -> None:
     the row is marked ``completed`` with ``winner``/``winner_id``/``completed_at``
     so completed games/matches survive session restarts.
     """
+    import json
     from datetime import datetime, timezone
 
     db = SessionLocal()
@@ -2103,6 +2112,7 @@ def persist_voice_match_to_db(match_id: int, engine) -> None:
 
         if engine.match_status == "match_won":
             match.status = MatchStatus.completed
+            match.call_status = "completed"
             winner_label = "A" if engine.games_won_a > engine.games_won_b else "B"
             match.winner = (
                 engine.player_a_name if winner_label == "A" else engine.player_b_name
@@ -2112,10 +2122,22 @@ def persist_voice_match_to_db(match_id: int, engine) -> None:
             )
             if match.completed_at is None:
                 match.completed_at = datetime.now(timezone.utc)
+            match.operator_note = None
         else:
             match.status = MatchStatus.active
+            match.call_status = "active"
             match.winner = None
             match.winner_id = None
+            match.started_at = match.started_at or datetime.now(timezone.utc)
+            try:
+                live_snapshot = {
+                    "current_game_score": [engine.score_a, engine.score_b],
+                    "games_won": [engine.games_won_a, engine.games_won_b],
+                    "server": getattr(engine, "serving_player", None),
+                }
+                match.operator_note = json.dumps(live_snapshot)
+            except Exception:
+                match.operator_note = None
 
         db.commit()
     except Exception as e:
@@ -4239,7 +4261,7 @@ def format_match_option(match: Dict) -> str:
     parts.append(status)
     if match.get("scheduled_time"):
         try:
-            from datetime import datetime
+            from datetime import datetime, timezone
             dt = datetime.fromisoformat(match["scheduled_time"].replace("Z", "+00:00"))
             parts.append(dt.strftime("%H:%M"))
         except Exception:
@@ -4619,6 +4641,12 @@ def _render_ui() -> None:
                     st.session_state["_pending_audio_summary_for_commentary"] = audio_summary
                     if audio_summary and audio_summary.confidence >= 0.55:
                         _append_audio_commentary_line(audio_summary)
+                try:
+                    _mid = st.session_state.get("voice_selected_match_id")
+                    if _mid:
+                        persist_voice_match_to_db(_mid, st.session_state.match_manager.engine)
+                except Exception:
+                    pass
                 st.rerun()
         with _b2:
             if st.button("➖ A", key="sub_point_a", use_container_width=True):
@@ -4634,6 +4662,12 @@ def _render_ui() -> None:
                         _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
                         if st.session_state.get("tt_sounds_enabled"):
                             _mark_last_audio_summary_action("undo")
+                        try:
+                            _mid = st.session_state.get("voice_selected_match_id")
+                            if _mid:
+                                persist_voice_match_to_db(_mid, st.session_state.match_manager.engine)
+                        except Exception:
+                            pass
                 st.rerun()
     
     with score_colc:
@@ -4756,6 +4790,12 @@ def _render_ui() -> None:
                     st.session_state["_pending_audio_summary_for_commentary"] = audio_summary
                     if audio_summary and audio_summary.confidence >= 0.55:
                         _append_audio_commentary_line(audio_summary)
+                try:
+                    _mid = st.session_state.get("voice_selected_match_id")
+                    if _mid:
+                        persist_voice_match_to_db(_mid, st.session_state.match_manager.engine)
+                except Exception:
+                    pass
                 st.rerun()
         with _b2:
             if st.button("➖ B", key="sub_point_b", use_container_width=True):
@@ -4771,6 +4811,12 @@ def _render_ui() -> None:
                         _build_and_store_commentary("undo", st.session_state.match_manager.state, prev_state)
                         if st.session_state.get("tt_sounds_enabled"):
                             _mark_last_audio_summary_action("undo")
+                        try:
+                            _mid = st.session_state.get("voice_selected_match_id")
+                            if _mid:
+                                persist_voice_match_to_db(_mid, st.session_state.match_manager.engine)
+                        except Exception:
+                            pass
                 st.rerun()
     
     # ============================================================================
@@ -5733,7 +5779,6 @@ def _render_ui() -> None:
                 with col_export:
                     if st.button("📥 Export Audit Log (JSON)", key="export_audit_log"):
                         import json
-                        from datetime import datetime
                         export_data = _audit_events
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         filename = f"voice_audit_{timestamp}.json"
@@ -5920,6 +5965,26 @@ def _render_ui() -> None:
             ])
         finally:
             _db.close()
+    else:
+        _db_all = SessionLocal()
+        try:
+            from tournament_platform.app.services.match_analytics import load_completed_match_options
+            _completed_opts = load_completed_match_options(_db_all, tournament_id=None, limit=100)
+            _options.extend([
+                {
+                    "id": opt.id,
+                    "label": opt.label,
+                    "player_a_name": opt.player_a_name,
+                    "player_b_name": opt.player_b_name,
+                    "winner_name": opt.winner_name,
+                    "match_score": opt.match_score,
+                    "game_scores": opt.game_scores,
+                    "source": "database",
+                }
+                for opt in _completed_opts
+            ])
+        finally:
+            _db_all.close()
 
     if not _options:
         _empty_msg = "No completed matches available yet. Complete or submit a match to see analytics."
@@ -5933,8 +5998,18 @@ def _render_ui() -> None:
                 _tdb.close()
         st.info(_empty_msg)
     else:
+        _db_ids = [o["id"] for o in _options if o["source"] == "database"]
+        _stored_id = st.session_state.get("analytics_selected_match_id")
+        if _stored_id is not None and str(_stored_id) in _db_ids:
+            _default_idx = _db_ids.index(str(_stored_id))
+        elif _db_ids:
+            _default_idx = 0
+            st.session_state["analytics_selected_match_id"] = int(_db_ids[0].split(":")[-1]) if ":" in _db_ids[0] else int(_db_ids[0])
+        else:
+            _default_idx = 0
+
         _labels = [o["label"] for o in _options]
-        _selected_label = st.selectbox("Analyze completed match", _labels, key="match_analytics_select")
+        _selected_label = st.selectbox("Analyze completed match", _labels, index=_default_idx, key="match_analytics_select")
         _selected_idx = _labels.index(_selected_label)
         _selected = _options[_selected_idx]
 
@@ -5944,6 +6019,7 @@ def _render_ui() -> None:
         _sel_p2 = _selected["player_b_name"]
 
         if _sel_source == "database":
+            st.session_state["analytics_selected_match_id"] = int(_sel_id)
             _db2 = SessionLocal()
             try:
                 _match = _db2.query(Match).filter(Match.id == int(_sel_id)).first()
@@ -5967,6 +6043,9 @@ def _render_ui() -> None:
             _render_engine = _engine
 
         if _render_match_id is not None and _render_formatted is not None:
+            if st.session_state.get("voice_debug_mode", False):
+                st.caption(f"Analytics selected match ID: {_render_match_id} | Completed matches loaded: {len(_db_ids)} | Selected tournament ID: {_current_tournament_id}")
+            
             with st.expander("📋 Summary", expanded=True):
                 st.markdown(f"**{_render_formatted.get('title', 'Match Analytics')}**\n\n{_render_formatted.get('summary', 'No summary available.')}")
 
@@ -6025,6 +6104,95 @@ def _render_ui() -> None:
 
             if "voice_ai_summary" in st.session_state and st.session_state.voice_ai_summary:
                 st.markdown(f"**🤖 AI Summary:**\n\n{st.session_state.voice_ai_summary}")
+
+            st.divider()
+            st.subheader("📣 Teams Recap")
+            from tournament_platform.app.services.match_facts import MatchFacts
+            from tournament_platform.app.services.recap_templates import build_recap
+            from tournament_platform.app.services.teams_publisher import TeamsEvent, TeamsPublisher
+
+            _facts = None
+            if _sel_source == "database" and _match:
+                _facts = MatchFacts(
+                    match_id=_match.id,
+                    tournament_id=_match.tournament_id,
+                    player_a=_sel_p1,
+                    player_b=_sel_p2,
+                    winner=_match.winner or _sel_p1,
+                    final_score=_match.score or "TBD",
+                    game_scores=_match.game_scores.split(",") if _match.game_scores else [],
+                    completed_at=_match.completed_at,
+                    tags=[],
+                )
+            else:
+                _facts = MatchFacts(
+                    match_id=_render_match_id,
+                    tournament_id=_current_tournament_id or 0,
+                    player_a=_sel_p1,
+                    player_b=_sel_p2,
+                    winner=_sel_p1 or "Player A",
+                    final_score=f"{_engine.score_a}-{_engine.score_b}" if _engine else "TBD",
+                    game_scores=[],
+                    completed_at=None,
+                    tags=[],
+                )
+
+            if "recap_tone" not in st.session_state:
+                st.session_state["recap_tone"] = "neutral"
+
+            ton_opts = ["neutral", "professional", "fun_office_banter", "sport_commentator", "short_teams_update"]
+            tone_labels = {
+                "neutral": "Neutral / No-roast",
+                "professional": "Professional",
+                "fun_office_banter": "Fun office banter",
+                "sport_commentator": "Sport commentator",
+                "short_teams_update": "Short Teams update",
+            }
+            cur_tone_idx = ton_opts.index(st.session_state["recap_tone"])
+            sel_tone = st.selectbox(
+                "Recap tone",
+                options=ton_opts,
+                index=cur_tone_idx,
+                format_func=lambda t: tone_labels.get(t, t),
+                key="recap_tone_select",
+            )
+            st.session_state["recap_tone"] = sel_tone
+
+            _recap_text = build_recap(_facts, tone=sel_tone)
+
+            if "teams_recap_pending" in st.session_state:
+                st.session_state["teams_recap_preview"] = st.session_state["teams_recap_pending"]
+                del st.session_state["teams_recap_pending"]
+            elif "teams_recap_preview" not in st.session_state:
+                st.session_state["teams_recap_preview"] = _recap_text
+
+            _preview_area = st.text_area("Recap preview", value=_recap_text, height=120, key="teams_recap_preview", label_visibility="collapsed")
+
+            col_gen, col_reg = st.columns(2)
+            with col_gen:
+                if st.button("🔄 Regenerate", key="regenerate_recap", use_container_width=True):
+                    st.session_state["teams_recap_pending"] = build_recap(_facts, tone=st.session_state["recap_tone"])
+                    st.rerun()
+            with col_reg:
+                if st.button("📤 Post to Teams", key="post_recap_to_teams", use_container_width=True):
+                    publisher = TeamsPublisher()
+                    event = TeamsEvent(
+                        event_type="match_completed",
+                        tournament_id=_facts.tournament_id,
+                        match_id=_facts.match_id,
+                        title=f"Match Recap: {_facts.player_a} vs {_facts.player_b}",
+                        body=st.session_state.get("teams_recap_preview", _recap_text),
+                        facts={},
+                        created_at=datetime.now(timezone.utc),
+                    )
+                    result = publisher.post_plain_text(event, actor="operator")
+                    if result.success:
+                        st.success(result.message)
+                    else:
+                        st.warning(result.message)
+                        if st.button("📋 Copy Message", key="copy_recap_message"):
+                            st.session_state["teams_copied_recap"] = st.session_state.get("teams_recap_preview", _recap_text)
+                            st.toast("Message copied!", icon="✅")
     
     if st.session_state.get("tt_sounds_enabled", False):
         _summaries = st.session_state.get("tt_sounds_audio_summaries", [])

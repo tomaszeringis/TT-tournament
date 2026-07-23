@@ -11,15 +11,19 @@ from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 import urllib.parse
 import time
+import os
 
-from tournament_platform.models import SessionLocal
+from tournament_platform.models import SessionLocal, Tournament, TournamentParticipant
+from tournament_platform.app.services.public_board_service import get_public_board_state, build_public_board_url, make_qr_png_bytes
 from tournament_platform.app.utils import render_database_error
 from tournament_platform.services.tournament_read_models import (
     list_tournaments,
     get_public_schedule,
 )
 from tournament_platform.services.standings_service import get_standings
+from tournament_platform.app.services.registration_service import get_registration_link, get_registration_stats
 from tournament_platform.app.components.player_path import render_player_path
+from tournament_platform.app.components.pairing_explanation_component import render_pairing_expander
 from tournament_platform.app.design_system import (
     COLORS,
     BRAND,
@@ -29,8 +33,16 @@ from tournament_platform.app.design_system import (
     render_litit_delayed_card,
     render_litit_announcement_card,
     render_litit_result_row,
+    render_qr_code_visible,
+    render_status_chip,
+    render_game_scores_strip,
+    render_public_match_card,
+    render_public_coming_up_card,
+    render_public_delayed_card,
+    render_public_result_row,
 )
 from tournament_platform.app.components.tour import render_tour
+from tournament_platform.config import settings
 
 
 def is_kiosk_mode() -> bool:
@@ -49,48 +61,53 @@ def is_public_read_mode() -> bool:
     return query_params.get("public_read") == "1"
 
 
-def get_public_url(tournament_id: Optional[int] = None, kiosk: bool = False, public_read: bool = False) -> str:
-    """Generate the public URL for the current page, optionally with tournament context.
+def _get_app_base_url() -> str:
+    """Return the best available base URL for public links."""
+    base = (settings.PUBLIC_BOARD_BASE_URL or "").strip()
+    if base:
+        return base.rstrip("/")
+    try:
+        origin = st.context.headers.get("origin")
+        if origin:
+            return origin.rstrip("/")
+    except Exception:
+        pass
+    env_base = os.environ.get("STREAMLIT_SERVER_BASE_URL") or os.environ.get("STREAMLIT_APP_URL")
+    if env_base:
+        return env_base.rstrip("/")
+    return ""
 
-    The base URL is sourced from ``settings.PUBLIC_BOARD_BASE_URL`` so it can be
-    overridden per deployment (e.g. a public domain) instead of hardcoding localhost.
+
+@st.cache_data(ttl=30)
+def load_registration_stats(tournament_id: int):
+    """Load registration/check-in stats for a tournament.
+
+    Returns a tuple of (stats, registration_open, token_present).
     """
-    from tournament_platform.config import settings
-
-    base_url = settings.PUBLIC_BOARD_BASE_URL.rstrip("/")
-    params = {}
-    if tournament_id:
-        params["tournament"] = str(tournament_id)
-    if kiosk:
-        params["kiosk"] = "1"
-    if public_read:
-        params["public_read"] = "1"
-    if params:
-        query = urllib.parse.urlencode(params)
-        return f"{base_url}?{query}"
-    return base_url
+    db = SessionLocal()
+    try:
+        tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+        registration_open = bool(tournament.registration_open) if tournament else False
+        token_present = bool(tournament.public_registration_token_hash) if tournament else False
+        stats = get_registration_stats(db, tournament_id)
+        return stats, registration_open, token_present
+    finally:
+        db.close()
 
 
 def render_freshness_bar(kiosk: bool) -> None:
-    """Render the data-freshness and auto-refresh-state chips.
-
-    Freshness is measured against ``st.session_state['pb_data_ts']`` which is stamped
-    immediately after each data load (NOT at page top), so it reflects real data age.
-    """
-    import time
+    """Render the data-freshness and auto-refresh-state chips."""
     from tournament_platform.config import settings
-    from tournament_platform.app.design_system import render_chip
+    from tournament_platform.app.services.public_board_service import compute_freshness
+    from tournament_platform.app.design_system import render_status_chip, render_chip
 
     stale_seconds = settings.PUBLIC_BOARD_STALE_SECONDS
     ts = st.session_state.get("pb_data_ts")
-    if ts is None:
-        render_chip("Data: unknown", color="amber")
-    else:
-        age = int(time.time() - ts)
-        if age >= stale_seconds:
-            render_chip(f"⚠ May be stale ({age}s ago)", color="amber")
-        else:
-            render_chip(f"Updated {age}s ago", color="green")
+    loaded_at = datetime.fromtimestamp(ts, tz=timezone.utc) if ts else None
+    freshness = compute_freshness(loaded_at, stale_seconds)
+
+    chip_color = "green" if freshness.state == "fresh" else "amber" if freshness.state == "stale" else "default"
+    render_status_chip(freshness.message, color=chip_color)
 
     refresh_color = "green" if kiosk else "blue"
     refresh_label = "Auto-refresh: ON" if kiosk else "Auto-refresh: OFF"
@@ -119,29 +136,25 @@ def load_tournament_matches(tournament_id: Optional[int], kiosk: bool = False) -
     
     In kiosk mode, uses shorter TTL for more responsive updates.
     """
-    # In kiosk mode, we want faster updates - use 5 second TTL
-    if kiosk:
-        # Clear cache and reload for fresh data
-        st.cache_data.clear()
-    
     db = SessionLocal()
     try:
         matches = get_public_schedule(db, tournament_id=tournament_id)
 
-        # Categorize matches by call_status
-        current_matches = [m for m in matches if m.get("call_status") == "active"]
-        called_matches = [m for m in matches if m.get("call_status") == "called"]
-        next_matches = [m for m in matches if m.get("call_status") in ("queued", "pending", "not_called")]
-        delayed_matches = [m for m in matches if m.get("call_status") == "delayed"]
-        completed_matches = [m for m in matches if m.get("status") == "completed"]
+        from tournament_platform.app.services.public_board_service import classify_public_board_match
 
-        # Next match = first queued/called/pending match
-        next_match = next_matches[0] if next_matches else None
+        lanes = {"now": [], "coming_up": [], "delayed": [], "recent": []}
+        for m in matches:
+            lane = classify_public_board_match(m)
+            lanes[lane].append(m)
 
-        # Coming Up = next 3 pending matches
-        coming_up = next_matches[:3] if len(next_matches) > 1 else []
+        current_matches = lanes["now"]
+        called_matches = [m for m in lanes["coming_up"] if m.get("call_status") == "called"]
+        next_candidates = [m for m in lanes["coming_up"] if m.get("call_status") != "called"]
+        delayed_matches = lanes["delayed"]
+        completed_matches = [m for m in lanes["recent"] if m.get("status") == "completed"]
 
-        # Recent completed = last 5 completed, ordered by scheduled_time desc
+        next_match = next_candidates[0] if next_candidates else None
+        coming_up = next_candidates[1:4] if len(next_candidates) > 1 else []
         recent_completed = sorted(
             completed_matches,
             key=lambda m: m.get("scheduled_time") or "",
@@ -207,19 +220,19 @@ def load_announcements(limit: int = 10) -> List[Dict[str, Any]]:
 # UI Rendering
 # ============================================================================
 
-def render_match_card(match: Dict[str, Any], label: str = "Match") -> None:
+def render_match_card(match: Dict[str, Any], label: str = "Match", insight=None) -> None:
     """Render a large match card for TV/projector display."""
-    render_litit_match_card(match, label=label)
+    render_public_match_card(match, label=label, game_scores=match.get("game_scores"), insight=insight)
 
 
 def render_coming_up_card(match: Dict[str, Any]) -> None:
     """Render a smaller card for coming up matches."""
-    render_litit_coming_up_card(match)
+    render_public_coming_up_card(match, call_status=match.get("call_status", "not_called"))
 
 
 def render_delayed_card(match: Dict[str, Any]) -> None:
     """Render a card for delayed matches."""
-    render_litit_delayed_card(match)
+    render_public_delayed_card(match)
 
 
 def render_public_board() -> None:
@@ -254,50 +267,7 @@ def render_public_board() -> None:
         unsafe_allow_html=True,
     )
     render_tour("public_board")
-    render_freshness_bar(kiosk)
-
-    if not kiosk:
-        with st.sidebar:
-            st.markdown("---")
-            if st.checkbox("📺 Kiosk Mode", value=False, key="kiosk_mode_toggle"):
-                st.session_state["kiosk_mode"] = True
-                st.rerun()
-            st.markdown("---")
-
-            share_url = get_public_url(tournament_id=selected_id, kiosk=True)
-            st.markdown("**Share Live Board**")
-            st.markdown(f"`{share_url}`")
-            if st.button("📋 Copy Public Link", key="copy_link_btn"):
-                st.session_state["copied_url"] = share_url
-                st.toast("Link copied to clipboard!", icon="✅")
-            try:
-                from tournament_platform.app.design_system import render_qr_code
-                render_qr_code(share_url, scale=4)
-                st.caption("Scan to open the live board on a phone/tablet.")
-            except Exception:
-                pass
-    
-    if kiosk:
-        st.markdown(
-            """
-            <script>
-            setTimeout(function() {
-                window.location.reload();
-            }, 5000);
-            </script>
-            """,
-            unsafe_allow_html=True,
-        )
-    
-    if not kiosk:
-        col_refresh, col_spacer = st.columns([1, 5])
-        with col_refresh:
-            if st.button("🔄 Refresh", use_container_width=True, key="public_refresh"):
-                st.cache_data.clear()
-                st.rerun()
-
-    st.divider()
-
+    # --- Tournament selector BEFORE sidebar/header to avoid selected_id crash ---
     try:
         tournaments = load_tournaments()
         st.session_state["pb_data_ts"] = time.time()
@@ -319,6 +289,7 @@ def render_public_board() -> None:
     )
     selected_id = tournament_options[selected_name]
 
+    # --- Data loads ---
     try:
         match_data = load_tournament_matches(selected_id, kiosk=kiosk)
         st.session_state["pb_data_ts"] = time.time()
@@ -328,10 +299,127 @@ def render_public_board() -> None:
 
     try:
         standings_df = load_standings(selected_id)
-        st.session_state["pb_data_ts"] = time.time()
     except Exception as e:
         render_database_error(e, "standings")
         st.stop()
+
+    # --- Live match insights (batch-load point events) ---
+    live_match_ids = [m["id"] for m in match_data.get("current", []) + match_data.get("called", []) if m.get("id")]
+    insights: Dict[int, Any] = {}
+    if live_match_ids:
+        try:
+            from tournament_platform.app.services.live_match_insights_service import batch_compute_insights
+            db_insights = SessionLocal()
+            try:
+                insights = batch_compute_insights(live_match_ids, db_insights)
+            except Exception:
+                insights = {}
+            finally:
+                db_insights.close()
+        except Exception:
+            insights = {}
+
+    # --- Freshness + Action header ---
+    from tournament_platform.app.services.public_board_service import compute_freshness, BoardFreshness
+    from tournament_platform.config import settings
+    from tournament_platform.app.design_system import render_status_chip
+
+    stale_seconds = settings.PUBLIC_BOARD_STALE_SECONDS
+    ts = st.session_state.get("pb_data_ts")
+    loaded_at_dt = datetime.fromtimestamp(ts, tz=timezone.utc) if ts else None
+    freshness = compute_freshness(loaded_at_dt, stale_seconds)
+
+    col_name, col_fresh, col_refresh = st.columns([3, 2, 1])
+    with col_name:
+        st.caption(selected_name)
+    with col_fresh:
+        chip_color = "green" if freshness.state == "fresh" else "amber" if freshness.state == "stale" else "default"
+        render_status_chip(freshness.message, color=chip_color)
+    with col_refresh:
+        auto_on = st.toggle("Auto-refresh", value=kiosk, key="auto_refresh_toggle", label_visibility="collapsed")
+
+    # Action row: Share Live Board + Register/Check-In
+    col_share, col_reg = st.columns(2)
+    with col_share:
+        st.markdown("**Share Live Board**")
+        st.caption("Scan to follow scores on your phone")
+        share_url = build_public_board_url(_get_app_base_url(), tournament_id=selected_id, kiosk=kiosk)
+        st.markdown(f"`{share_url}`")
+        if st.button("📋 Copy", key="copy_link_btn", use_container_width=True):
+            st.session_state["copied_url"] = share_url
+            st.toast("Link copied!", icon="✅")
+        render_qr_code_visible(share_url, width=180)
+
+    if settings.ENABLE_SELF_REGISTRATION:
+        with col_reg:
+            try:
+                db_reg = SessionLocal()
+                tournament = db_reg.query(Tournament).filter(Tournament.id == selected_id).first()
+                registration_open = bool(tournament.registration_open) if tournament else False
+                token_present = bool(tournament.public_registration_token_hash) if tournament else False
+                db_reg.close()
+
+                if registration_open:
+                    reg_link = None
+                    if not token_present:
+                        db_reg2 = SessionLocal()
+                        try:
+                            from tournament_platform.app.services.registration_service import set_registration_token
+                            token = set_registration_token(db_reg2, selected_id)
+                            reg_link = get_registration_link(token, selected_id, base_url=_get_app_base_url())
+                        except Exception:
+                            reg_link = None
+                        finally:
+                            db_reg2.close()
+                    else:
+                        reg_link = build_public_board_url(_get_app_base_url(), tournament_id=selected_id, kiosk=False).replace("public=1", "public=1&register=1")
+
+                    if reg_link:
+                        reg_label = "Register to play" if registration_open else "Check In"
+                        st.markdown(f"**{reg_label}**")
+                        st.caption("Scan to register or check in")
+                        st.markdown(f"`{reg_link}`")
+                        if st.button("📋 Copy", key="copy_reg_link_btn", use_container_width=True):
+                            st.session_state["copied_url"] = reg_link
+                            st.toast("Registration link copied!", icon="✅")
+                        render_qr_code_visible(reg_link, width=180)
+                    else:
+                        st.caption("Registration closed for this tournament.")
+                else:
+                    st.caption("Registration is closed for this tournament.")
+            except Exception:
+                pass
+
+    # --- Sidebar (safe now that selected_id is defined) ---
+    if not kiosk:
+        with st.sidebar:
+            st.markdown("---")
+            if st.checkbox("📺 Kiosk Mode", value=False, key="kiosk_mode_toggle"):
+                st.session_state["kiosk_mode"] = True
+                st.rerun()
+            st.markdown("---")
+
+    # --- Kiosk auto-refresh ---
+    if kiosk and auto_on:
+        st.markdown(
+            """
+            <script>
+            setTimeout(function() {
+                window.location.reload();
+            }, 5000);
+            </script>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # --- Manual refresh ---
+    if not kiosk:
+        col_refresh_btn, col_spacer = st.columns([1, 5])
+        with col_refresh_btn:
+            if st.button("🔄 Refresh", use_container_width=True, key="public_refresh"):
+                st.rerun()
+
+    st.divider()
 
     current_matches = match_data.get("current", [])
     called_matches = match_data.get("called", [])
@@ -351,17 +439,23 @@ def render_public_board() -> None:
     with tab_now:
         if current_matches:
             for m in current_matches:
-                render_match_card(m, label="LIVE")
+                render_match_card(m, label="LIVE", insight=insights.get(m.get("id")))
+                render_pairing_expander(m)
         elif called_matches:
             for m in called_matches:
-                render_match_card(m, label="CALLED")
+                render_match_card(m, label="CALLED", insight=insights.get(m.get("id")))
+                render_pairing_expander(m)
         else:
             st.info("No active matches at the moment.")
 
     with tab_coming:
         if coming_up:
+            active_locations = {m.get("location") for m in current_matches if m.get("location")} | {m.get("location") for m in called_matches if m.get("location")}
             for m in coming_up:
                 render_coming_up_card(m)
+                render_pairing_expander(m)
+                if m.get("location") and m.get("location") in active_locations:
+                    st.caption("⏳ Waiting for previous match on this table")
         else:
             st.info("No upcoming matches scheduled.")
 
@@ -381,7 +475,7 @@ def render_public_board() -> None:
                 winner = m.get("winner") or "Pending"
                 scheduled = m.get("scheduled_time")
                 time_str = scheduled.split("T")[1][:5] if scheduled else "--:--"
-                render_litit_result_row(p1, p2, score, winner, time_str)
+                render_public_result_row(p1, p2, score, winner, time_str, game_scores=m.get("game_scores"))
         else:
             st.info("No completed matches yet.")
 

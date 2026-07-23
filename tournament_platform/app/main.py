@@ -24,6 +24,25 @@ def main() -> None:
         layout="wide",
     )
 
+    # Public-mode bypass: render the read-only board without auth when
+    # the ``public=1`` query parameter is present.
+    query_params = st.query_params
+    if query_params.get("register") == "1" and query_params.get("public") == "1":
+        try:
+            from tournament_platform.app.pages.public_registration import render_public_registration
+            render_public_registration()
+        except Exception as e:
+            st.error(f"Failed to render public registration: {e}")
+        st.stop()
+
+    if query_params.get("public") == "1":
+        try:
+            from tournament_platform.app.pages.public_board_readonly import render_public_board_readonly
+            render_public_board_readonly()
+        except Exception as e:
+            st.error(f"Failed to render public board: {e}")
+        st.stop()
+
     render_sidebar_logo()
 
     if "active_tournament_id" not in st.session_state:

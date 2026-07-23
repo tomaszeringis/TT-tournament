@@ -63,3 +63,5 @@ tournament_platform/data/tts_cache/
 # Audio Rally Assistant models and artifacts
 tt_sounds_models/
 **/tt_sounds_*/
+.mypy_cache/
+~/

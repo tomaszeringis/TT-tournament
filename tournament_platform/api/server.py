@@ -63,6 +63,7 @@ from tournament_platform.services.announcement_service import (
     generate_final_start_message,
 )
 from tournament_platform.config import settings
+from tournament_platform.app.services.teams_publisher import TeamsPublisher, TeamsEvent
 from tournament_platform.services.settings import (
     ENABLE_VOICE_ENTRY,
     ENABLE_RULES_ASSISTANT,
@@ -165,25 +166,27 @@ async def report_match(request: Request, db: Session = Depends(get_db)):
             winner_name = match.winner_rel.name if match.winner_rel else "Unknown"
             logger.warning(f"Skipping ratings update: Missing match data. Winner={winner_name}, P1={p1_name}, P2={p2_name}")
 
-        # Push to Teams webhook asynchronously (only if configured)
+        # Push to Teams webhook via TeamsPublisher (only if configured)
         p1_name = match.player1_rel.name if match.player1_rel else "Unknown"
         p2_name = match.player2_rel.name if match.player2_rel else "Unknown"
         winner_name = match.winner_rel.name if match.winner_rel else "Unknown"
         msg = f"🎾 Match Result: {p1_name} vs {p2_name} → Score: {match.score} (Winner: {winner_name})"
 
-        if settings.TEAMS_WEBHOOK_URL:
-            async with httpx.AsyncClient() as client:
-                try:
-                    await client.post(
-                        settings.TEAMS_WEBHOOK_URL,
-                        json={"text": msg},
-                        timeout=10.0
-                    )
-                    logger.info("Successfully sent notification to Teams")
-                except Exception as e:
-                    logger.warning(f"Failed to send Teams notification: {e}")
+        publisher = TeamsPublisher()
+        event = TeamsEvent(
+            event_type="match_completed",
+            tournament_id=match.tournament_id,
+            match_id=match.id,
+            title="Match Completed",
+            body=msg,
+            facts={},
+            created_at=datetime.now(timezone.utc),
+        )
+        post_result = publisher.post_plain_text(event, actor="api")
+        if post_result.success:
+            logger.info("Successfully sent Teams notification via publisher")
         else:
-            logger.debug("Teams webhook not configured, skipping notification")
+            logger.warning("Teams notification not sent: %s", post_result.message)
 
         return {
             "status": "success",

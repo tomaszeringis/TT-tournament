@@ -126,6 +126,11 @@ def get_public_schedule(
             "bracket_index": m.bracket_index,
             "display_label": display_label,
             "sort_key": sort_key,
+            "game_scores": [s.strip() for s in m.game_scores.split(",") if s.strip()] if m.game_scores else None,
+            "started_at": m.started_at.isoformat() if m.started_at else None,
+            "completed_at": m.completed_at.isoformat() if m.completed_at else None,
+            "delayed_until": m.delayed_until.isoformat() if m.delayed_until else None,
+            "operator_note": m.operator_note,
         })
     
     # Sort by the computed sort_key

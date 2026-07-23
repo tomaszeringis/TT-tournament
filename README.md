@@ -1,6 +1,6 @@
 # 🏓 Tournament Platform
 
-A modern tournament management platform with AI-powered match analysis, real-time standings, and a multi-page Streamlit interface.
+A modern tournament management platform with AI-powered match analysis, real-time standings, and a multi-page Streamlit interface. Supports **local voice scoring** (push-to-talk and experimental continuous listening) using faster-whisper and streamlit-webrtc.
 
 ## 🚀 Quick Start
 
@@ -23,7 +23,9 @@ pip install -e ".[live]"
 cd tournament_platform
 copy .env.example .env
 ```
-Edit `.env` and set at least `OLLAMA_HOST` and `OLLAMA_MODEL` if you plan to use AI features.
+Edit `.env` and set at least `OLLAMA_HOST`, `OLLAMA_MODEL`, and voice ASR
+variables (`VOICE_ASR_MODEL_SIZE`, `VOICE_ASR_DEVICE`, `VOICE_ASR_COMPUTE_TYPE`)
+if you plan to use voice scoring.
 
 ### 3. Initialize the database (from repo root)
 ```powershell
@@ -378,6 +380,16 @@ Copy `tournament_platform/.env.example` to `tournament_platform/.env`. Key varia
 | `CHROMA_DB_PATH` | `data/chroma_db` | ChromaDB storage path |
 | `TEAMS_WEBHOOK_URL` | *(empty)* | Teams notification webhook |
 | `AUTH_COOKIE_KEY` | *(change me)* | Secret key for Streamlit auth |
+| `VOICE_ASR_MODEL_SIZE` | `tiny.en` | faster-whisper model size for voice scoring |
+| `VOICE_ASR_DEVICE` | `cpu` | Device: `cpu`, `cuda`, `auto` |
+| `VOICE_ASR_COMPUTE_TYPE` | `int8` | Compute type: `int8`, `float16`, `float32` |
+| `VOICE_ASR_BACKEND` | `faster_whisper` | ASR backend: `faster_whisper`, `speechbrain`, `vosk` |
+| `VOICE_ENABLE_CONFIRMATION` | `true` | Require confirmation for score-setting commands |
+| `VOICE_ENABLE_NOISE_FILTERING` | `false` | Enable noise gate |
+| `VOICE_NOISE_THRESHOLD` | `0.0` | RMS noise threshold |
+| `HF_TOKEN` | *(empty)* | Hugging Face token for model downloads |
+| `SCORE_ENABLE_SOUNDS` | `false` | Enable browser sound cues |
+| `KEEP_AUDIO_FILES` | `false` | Keep temp audio files for debugging |
 
 For local development, the defaults work out of the box if you have Ollama running.
 
@@ -482,8 +494,10 @@ ollama pull llama3:latest
 
 | Component | Technology |
 |-----------|-----------|
-| Frontend | Streamlit |
-| API | FastAPI + Uvicorn |
-| Database | SQLite / SQLAlchemy + Alembic |
-| AI | Ollama + ChromaDB (RAG) |
-| Auth | Streamlit Authenticator |
+| Frontend | Streamlit >=1.58.0 |
+| API | FastAPI >=0.137.1 + Uvicorn |
+| Database | SQLite / SQLAlchemy >=2.0.51 + Alembic >=1.18.4 |
+| AI | Ollama >=0.6.2 + ChromaDB >=1.5.9 (RAG) |
+| Auth | Streamlit Authenticator ==0.3.2 |
+| Voice ASR | faster-whisper >=1.0.0 (local) |
+| Voice Capture | streamlit-webrtc >=0.75,<0.76 + av >=12.0.0 |
