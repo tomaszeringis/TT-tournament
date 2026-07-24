@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker
 
 from tournament_platform.config import settings
@@ -121,3 +121,59 @@ def get_database_host() -> str:
         return "unknown"
     except Exception:
         return "unknown"
+
+
+# Columns that must exist on the tournaments table for registration to work.
+_TOURNAMENT_REGISTRATION_COLUMNS = {
+    "registration_open": "BOOLEAN NOT NULL DEFAULT FALSE",
+    "public_registration_token": "TEXT",
+    "public_registration_token_hash": "TEXT",
+}
+
+
+def ensure_database_schema(engine) -> dict[str, list[str]]:
+    """Safely add missing columns to existing tables.
+
+    Calls ``ensure_tournament_registration_columns`` and can be extended
+    for other tables in the future.
+
+    Never drops columns, tables, or data.
+    Returns a dict with ``added`` and ``already_present`` lists.
+    """
+    return ensure_tournament_registration_columns(engine)
+
+
+def ensure_tournament_registration_columns(engine) -> dict[str, list[str]]:
+    """Ensure the tournaments table has all registration-related columns.
+
+    This is a safe, additive-only repair that never drops or modifies
+    existing data. It is idempotent — running it multiple times has no
+    side effects.
+    """
+    inspector = inspect(engine)
+    result = {"added": [], "already_present": []}
+
+    try:
+        existing = {col["name"] for col in inspector.get_columns("tournaments")}
+    except Exception:
+        return result
+
+    for col_name, col_type in _TOURNAMENT_REGISTRATION_COLUMNS.items():
+        if col_name in existing:
+            result["already_present"].append(col_name)
+            continue
+
+        db_type = engine.url.get_backend_name()
+        if db_type == "postgresql":
+            sql = f'ALTER TABLE "tournaments" ADD COLUMN IF NOT EXISTS "{col_name}" {col_type}'
+        else:
+            sql = f'ALTER TABLE "tournaments" ADD COLUMN "{col_name}" {col_type}'
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(sql))
+                conn.commit()
+            result["added"].append(col_name)
+        except Exception:
+            pass
+
+    return result

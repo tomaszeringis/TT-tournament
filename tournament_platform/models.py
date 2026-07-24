@@ -669,3 +669,11 @@ def ensure_schema():
 # there is no manual `alembic upgrade head` step, so build the schema here. This
 # runs once per process and is a no-op if the schema is already present.
 ensure_schema()
+
+# After create_all / alembic, repair any missing additive columns so that
+# existing Neon/PostgreSQL databases are upgraded without data loss.
+try:
+    from tournament_platform.core.db_config import ensure_tournament_registration_columns
+    ensure_tournament_registration_columns(engine)
+except Exception:
+    pass

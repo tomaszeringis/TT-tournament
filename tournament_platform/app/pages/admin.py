@@ -35,7 +35,13 @@ from tournament_platform.app.utils import (
 )
 from tournament_platform.config import settings
 from tournament_platform.config.runtime import get_runtime_config
-from tournament_platform.core.db_config import get_database_type, is_cloud_database, get_database_url_masked, get_database_host
+from tournament_platform.core.db_config import (
+    ensure_tournament_registration_columns,
+    get_database_host,
+    get_database_type,
+    get_database_url_masked,
+    is_cloud_database,
+)
 from tournament_platform.app.settings import API_BASE_URL, SHOW_DEBUG_DETAILS
 from tournament_platform.app.design_system import apply_global_styles
 from tournament_platform.app.components.page_header import render_page_header
@@ -388,7 +394,7 @@ with admin_tabs[4]:
         db_type = get_database_type()
         db_url_masked = get_database_url_masked()
         db_host = get_database_host()
-        
+
         db_col1, db_col2 = st.columns(2)
         with db_col1:
             st.metric("Database Backend", db_type)
@@ -398,13 +404,47 @@ with admin_tabs[4]:
                 st.success("Persistent database configured.")
             else:
                 st.warning("Local SQLite is not durable on Streamlit Cloud. Use DATABASE_URL for persistent data.")
-        
+
         with st.expander("Database connection details", expanded=False):
             st.markdown(f"**URL:** `{db_url_masked}`")
             st.caption("Credentials are masked. Full URL is never shown in UI.")
     except Exception as e:
         st.error(f"Database diagnostics failed: {e}")
-    
+
+    # Schema repair status
+    try:
+        db_diag = SessionLocal()
+        try:
+            schema_result = ensure_tournament_registration_columns(db_diag.bind)
+            if schema_result["added"]:
+                st.warning(
+                    f"Schema repair applied: added columns {', '.join(schema_result['added'])}. "
+                    "Restart the app for full effect."
+                )
+            elif schema_result["already_present"]:
+                st.success("Database schema is up to date.")
+        finally:
+            db_diag.close()
+    except Exception:
+        pass
+
+    # Manual schema repair button (admin only)
+    try:
+        if st.button("🔧 Repair database schema", key="admin_repair_schema"):
+            db_repair = SessionLocal()
+            try:
+                result = ensure_tournament_registration_columns(db_repair.bind)
+                if result["added"]:
+                    st.success(f"Added columns: {', '.join(result['added'])}")
+                elif result["already_present"]:
+                    st.info("All required columns already present.")
+                else:
+                    st.warning("No tournament table found or no columns to repair.")
+            finally:
+                db_repair.close()
+    except Exception:
+        pass
+
     # Table counts
     try:
         db_counts = SessionLocal()
