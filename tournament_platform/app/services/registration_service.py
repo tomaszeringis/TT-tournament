@@ -507,12 +507,14 @@ def generate_registration_token() -> str:
 def set_registration_token(db: Session, tournament_id: int, raw_token: Optional[str] = None) -> str:
     """Set (or rotate) the public registration token for a tournament.
 
+    Stores both the raw token (for link generation) and its hash (for validation).
     Returns the raw token that was stored.
     """
     token = raw_token or generate_registration_token()
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
     if not tournament:
         raise ValueError(f"Tournament {tournament_id} not found")
+    tournament.public_registration_token = token
     tournament.public_registration_token_hash = hash_optional(token)
     tournament.registration_open = True
     db.add(tournament)

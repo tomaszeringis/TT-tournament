@@ -3,12 +3,35 @@ Centralized configuration for the Tournament Platform.
 
 Uses pydantic-settings to load values from environment variables,
 with sensible local defaults for non-secret values.
+Also reads from Streamlit Cloud Secrets when available.
 """
 
 import os
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic import model_validator
 from typing import Optional
+
+
+def _to_bool(value: object, default: bool = False) -> bool:
+    """Parse a boolean from environment/secret values."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _read_cloud_secret(key: str, default: Optional[str] = None) -> Optional[str]:
+    """Read a value from Streamlit Cloud Secrets, falling back to default."""
+    try:
+        import streamlit as st
+        if hasattr(st, "secrets") and st.secrets:
+            val = st.secrets.get(key)
+            if val is not None:
+                return str(val)
+    except Exception:
+        pass
+    return default
 
 
 class Settings(BaseSettings):
@@ -189,6 +212,19 @@ class Settings(BaseSettings):
             self.TT_MANIFESTS_DIR = os.path.abspath(self.TT_MANIFESTS_DIR)
         if not os.path.isabs(self.TT_MULTIMODAL_CHROMA_DIR):
             self.TT_MULTIMODAL_CHROMA_DIR = os.path.abspath(self.TT_MULTIMODAL_CHROMA_DIR)
+        return self
+
+    @model_validator(mode='after')
+    def read_cloud_secrets(self):
+        """Read settings from Streamlit Cloud Secrets as a fallback."""
+        if not os.getenv("ENABLE_SELF_REGISTRATION"):
+            cloud_val = _read_cloud_secret("ENABLE_SELF_REGISTRATION")
+            if cloud_val is not None:
+                self.ENABLE_SELF_REGISTRATION = _to_bool(cloud_val)
+        if not self.PUBLIC_BOARD_BASE_URL:
+            cloud_val = _read_cloud_secret("PUBLIC_BOARD_BASE_URL")
+            if cloud_val is not None:
+                self.PUBLIC_BOARD_BASE_URL = str(cloud_val)
         return self
 
 

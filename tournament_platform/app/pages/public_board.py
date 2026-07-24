@@ -385,28 +385,25 @@ def render_public_board() -> None:
                 db_reg = SessionLocal()
                 tournament = db_reg.query(Tournament).filter(Tournament.id == selected_id).first()
                 registration_open = bool(tournament.registration_open) if tournament else False
+                token = tournament.public_registration_token if tournament else None
                 db_reg.close()
 
                 if not registration_open:
                     st.caption("Registration is closed.")
+                elif not token:
+                    st.caption("Registration link is not configured.")
                 else:
-                    session_key = f"registration_token_{selected_id}"
-                    token = st.session_state.get(session_key)
-
-                    if token:
-                        reg_link = get_registration_link(
-                            token, selected_id, base_url=_get_app_base_url()
-                        )
-                        reg_label = "Register to play"
-                        reg_caption = "Scan to register"
-                        _render_public_qr_block(
-                            title=reg_label,
-                            caption=reg_caption,
-                            url=reg_link,
-                            qr_caption=reg_caption,
-                        )
-                    else:
-                        st.caption("Registration link is not configured.")
+                    reg_link = get_registration_link(
+                        token, selected_id, base_url=_get_app_base_url()
+                    )
+                    reg_label = "Register to play"
+                    reg_caption = "Scan to register"
+                    _render_public_qr_block(
+                        title=reg_label,
+                        caption=reg_caption,
+                        url=reg_link,
+                        qr_caption=reg_caption,
+                    )
             except Exception:
                 pass
 

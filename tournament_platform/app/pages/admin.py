@@ -813,75 +813,67 @@ with admin_tabs[5]:
 
                 if not settings.ENABLE_SELF_REGISTRATION:
                     st.warning(
-                        "Self-registration is disabled. In Streamlit Cloud Secrets set:\n"
-                        "ENABLE_SELF_REGISTRATION = true\n"
-                        'PUBLIC_BOARD_BASE_URL = "https://tournament.streamlit.app"\n'
-                        "Then reboot/redeploy the app."
+                        "Self-registration is disabled for public links.\n"
+                        "Set ENABLE_SELF_REGISTRATION = true in Streamlit Cloud Secrets "
+                        "and reboot/redeploy the app."
                     )
+                    if reg_tournament.registration_open:
+                        st.info(
+                            "This tournament is marked open, but Public Board QR links "
+                            "are hidden until the global feature flag is enabled."
+                        )
 
                 st.divider()
 
                 if not reg_tournament.registration_open:
                     st.info("Public registration is closed for this tournament.")
-                    if st.button("✅ Enable public registration for selected tournament", key="admin_enable_reg_btn", type="primary"):
-                        try:
-                            db_reg = SessionLocal()
-                            token = set_registration_token(db_reg, reg_selected_id)
-                            db_reg.close()
-                            base_url = settings.PUBLIC_BOARD_BASE_URL or ""
-                            if not base_url:
-                                try:
-                                    base_url = (st.context.headers.get("origin") or "").rstrip("/")
-                                except Exception:
-                                    base_url = ""
-                            if not base_url:
-                                env_base = os.environ.get("STREAMLIT_SERVER_BASE_URL") or os.environ.get("STREAMLIT_APP_URL") or ""
-                                base_url = env_base.rstrip("/")
-                            reg_link = get_registration_link(token, reg_selected_id, base_url=base_url)
-                            st.session_state[f"admin_reg_link_{reg_selected_id}"] = reg_link
-                            st.session_state[f"admin_reg_token_{reg_selected_id}"] = token
-                            st.success("Public registration enabled successfully!")
-                            st.caption("Copy/save this link. For security, the raw token may not be recoverable later.")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to enable registration: {e}")
+                    if settings.ENABLE_SELF_REGISTRATION:
+                        if st.button("✅ Enable public registration for selected tournament", key="admin_enable_reg_btn", type="primary"):
+                            try:
+                                db_reg = SessionLocal()
+                                token = set_registration_token(db_reg, reg_selected_id)
+                                db_reg.close()
+                                st.success("Public registration enabled successfully!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to enable registration: {e}")
+                    else:
+                        st.caption("Enable the global self-registration flag above to activate this button.")
                 else:
                     st.success("Public registration is open.")
                     st.caption("Players can scan the QR code or open the link to register.")
                     st.caption("Registrations are pending until approved by an operator.")
 
-                    session_key = f"admin_reg_token_{reg_selected_id}"
-                    link_key = f"admin_reg_link_{reg_selected_id}"
-                    token = st.session_state.get(session_key)
-                    reg_link = st.session_state.get(link_key)
+                    db_reg = SessionLocal()
+                    tournament = db_reg.query(Tournament).filter(Tournament.id == reg_selected_id).first()
+                    token = tournament.public_registration_token if tournament else None
+                    db_reg.close()
 
-                    if not token or not reg_link:
-                        st.warning("Registration is open, but the public link token is not available. Rotate/regenerate registration link.")
-                        st.caption("This will replace the old public registration link.")
-                        confirm_rotate = st.checkbox("I understand this replaces the old public registration link.", key=f"admin_confirm_rotate_{reg_selected_id}")
-                        if st.button("🔄 Regenerate registration link", key="admin_regenerate_reg_btn", type="secondary", disabled=not confirm_rotate):
+                    if not token:
+                        st.warning("Registration is open, but no public link token exists.")
+                        st.caption("This can happen after a reboot if the token was not persisted.")
+                        if st.button("🔄 Regenerate registration link", key="admin_regenerate_reg_btn", type="secondary"):
                             try:
                                 db_reg = SessionLocal()
                                 token = set_registration_token(db_reg, reg_selected_id)
                                 db_reg.close()
-                                base_url = settings.PUBLIC_BOARD_BASE_URL or ""
-                                if not base_url:
-                                    try:
-                                        base_url = (st.context.headers.get("origin") or "").rstrip("/")
-                                    except Exception:
-                                        base_url = ""
-                                if not base_url:
-                                    env_base = os.environ.get("STREAMLIT_SERVER_BASE_URL") or os.environ.get("STREAMLIT_APP_URL") or ""
-                                    base_url = env_base.rstrip("/")
-                                reg_link = get_registration_link(token, reg_selected_id, base_url=base_url)
-                                st.session_state[session_key] = token
-                                st.session_state[link_key] = reg_link
                                 st.success("Registration link regenerated successfully!")
-                                st.caption("Copy/save this link. For security, the raw token may not be recoverable later.")
                                 st.rerun()
                             except Exception as e:
                                 st.error(f"Failed to regenerate registration link: {e}")
                     else:
+                        base_url = settings.PUBLIC_BOARD_BASE_URL or ""
+                        if not base_url:
+                            try:
+                                base_url = (st.context.headers.get("origin") or "").rstrip("/")
+                            except Exception:
+                                base_url = ""
+                        if not base_url:
+                            env_base = os.environ.get("STREAMLIT_SERVER_BASE_URL") or os.environ.get("STREAMLIT_APP_URL") or ""
+                            base_url = env_base.rstrip("/")
+
+                        reg_link = get_registration_link(token, reg_selected_id, base_url=base_url)
+
                         link_col, copy_col = st.columns([3, 1])
                         with link_col:
                             st.text_input("Registration link", value=reg_link, key=f"admin_reg_link_{reg_selected_id}", label_visibility="collapsed", disabled=True)
@@ -921,8 +913,6 @@ with admin_tabs[5]:
                                 db_close = SessionLocal()
                                 close_registration(db_close, reg_selected_id)
                                 db_close.close()
-                                st.session_state.pop(f"admin_reg_token_{reg_selected_id}", None)
-                                st.session_state.pop(f"admin_reg_link_{reg_selected_id}", None)
                                 st.success("Registration closed. Existing registrations are preserved.")
                                 st.rerun()
                             except Exception as e:

@@ -66,6 +66,7 @@ class Tournament(Base):
 
     # Self-serve registration
     registration_open = Column(Boolean, default=False)
+    public_registration_token = Column(String, nullable=True, index=True)
     public_registration_token_hash = Column(String(64), nullable=True, index=True)
 
     # Relationship
