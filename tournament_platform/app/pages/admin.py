@@ -356,6 +356,29 @@ with admin_tabs[4]:
     except Exception:
         pass
     
+    # Streamlit Cloud setup guidance
+    if is_cloud_database():
+        st.success("Persistent PostgreSQL database configured.")
+    else:
+        with st.expander("How to configure persistent data on Streamlit Cloud", expanded=False):
+            st.markdown(
+                """
+                Local SQLite data is ephemeral on Streamlit Cloud. To persist data across reboots:
+
+                1. Create a Neon PostgreSQL database (or similar).
+                2. In Streamlit Cloud Secrets, add:
+                   ```
+                   DATABASE_URL = "postgresql+psycopg://USER:PASSWORD@HOST.neon.tech/DBNAME?sslmode=require"
+                   ENABLE_SELF_REGISTRATION = true
+                   PUBLIC_BOARD_BASE_URL = "https://tournament.streamlit.app"
+                   ```
+                3. Reboot/redeploy the app.
+
+                **Note:** Use `postgresql+psycopg://` (psycopg v3). The app will auto-convert
+                `postgresql+psycopg2://` URLs if needed.
+                """
+            )
+    
     # Database persistence diagnostics
     try:
         db_type = get_database_type()
