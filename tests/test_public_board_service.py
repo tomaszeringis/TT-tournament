@@ -270,6 +270,16 @@ class TestBuildPublicBoardUrl:
         assert url.startswith("https://example.com?")
         assert not url.startswith("https://example.com//")
 
+    def test_share_and_registration_links_are_different(self):
+        from tournament_platform.app.services.registration_service import get_registration_link
+
+        share = build_public_board_url("https://example.com", 1, kiosk=False)
+        reg = get_registration_link("token123", 1, base_url="https://example.com")
+        assert share != reg
+        assert "public=1" in share
+        assert "register=1" in reg
+        assert "token=token123" in reg
+
 
 class TestMakeQrPngBytes:
     def test_returns_non_empty_png_bytes(self):
@@ -285,6 +295,15 @@ class TestMakeQrPngBytes:
         png1 = make_qr_png_bytes("https://example.com/?public=1&tournament=1", scale=4)
         png2 = make_qr_png_bytes("https://example.com/?public=1&tournament=2", scale=4)
         assert png1 != png2
+
+    def test_qr_bytes_for_registration_url(self):
+        from tournament_platform.app.services.registration_service import get_registration_link
+
+        reg_url = get_registration_link("token123", 1, base_url="https://example.com")
+        png = make_qr_png_bytes(reg_url, scale=4)
+        assert isinstance(png, bytes)
+        assert len(png) > 100
+        assert png[:4] == b"\x89PNG"
 
 
 class TestBoardFreshness:

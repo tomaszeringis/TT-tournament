@@ -529,6 +529,35 @@ def set_registration_token(db: Session, tournament_id: int, raw_token: Optional[
     return token
 
 
+def close_registration(db: Session, tournament_id: int) -> None:
+    """Close public registration for a tournament without removing the token.
+
+    Keeps the existing token so registration can be re-enabled later without
+    rotating the link. Existing registrations, players, matches, and bracket
+    state are left untouched.
+    """
+    tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
+    if not tournament:
+        raise ValueError("Tournament not found")
+    tournament.registration_open = False
+    db.add(tournament)
+    log_audit(
+        db,
+        action="close_registration",
+        entity_type="tournament",
+        entity_id=tournament.id,
+        actor="operator",
+        payload={"tournament_id": tournament_id},
+    )
+    try:
+        db.commit()
+        db.refresh(tournament)
+    except Exception as exc:
+        db.rollback()
+        logger.error("Failed to close registration: %s", exc, exc_info=True)
+        raise
+
+
 def clear_registration_token(db: Session, tournament_id: int) -> None:
     """Remove the registration token and close registration for a tournament."""
     tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()

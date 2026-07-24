@@ -118,3 +118,9 @@ class TestPublicBoardSafeRenderers:
         ds.render_public_coming_up_card({})
         ds.render_public_delayed_card({})
         ds.render_public_result_row("", "", "", "", "")
+
+    def test_render_qr_code_visible_accepts_custom_caption(self):
+        import inspect
+        source = inspect.getsource(ds.render_qr_code_visible)
+        assert "caption: str" in source
+        assert "caption=caption" in source

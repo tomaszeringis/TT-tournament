@@ -173,3 +173,62 @@ class TestTableStatusCard:
         assert any("Table 4" in line and "busy" in line for line in out)
         assert any("Carol vs Dan" in line for line in out)
         assert any("Eve vs Frank" in line for line in out)
+
+
+class TestAdminRegistrationControl:
+    def test_admin_page_contains_registration_tab(self):
+        admin_path = os.path.join(APP_DIR, "pages", "admin.py")
+        with open(admin_path, encoding="utf-8") as f:
+            source = f.read()
+        assert '"Public Registration"' in source
+
+    def test_admin_page_imports_registration_helpers(self):
+        admin_path = os.path.join(APP_DIR, "pages", "admin.py")
+        with open(admin_path, encoding="utf-8") as f:
+            source = f.read()
+        assert "set_registration_token" in source
+        assert "close_registration" in source
+        assert "get_registration_link" in source
+        assert "get_registration_stats" in source
+
+    def test_admin_page_enable_registration_button(self):
+        admin_path = os.path.join(APP_DIR, "pages", "admin.py")
+        with open(admin_path, encoding="utf-8") as f:
+            source = f.read()
+        assert "Enable public registration for selected tournament" in source
+
+    def test_admin_page_close_registration_button(self):
+        admin_path = os.path.join(APP_DIR, "pages", "admin.py")
+        with open(admin_path, encoding="utf-8") as f:
+            source = f.read()
+        assert "Close registration" in source
+
+    def test_admin_page_shows_registration_link(self):
+        admin_path = os.path.join(APP_DIR, "pages", "admin.py")
+        with open(admin_path, encoding="utf-8") as f:
+            source = f.read()
+        assert "get_registration_link" in source
+        assert "Copy" in source
+
+    def test_admin_page_shows_stats(self):
+        admin_path = os.path.join(APP_DIR, "pages", "admin.py")
+        with open(admin_path, encoding="utf-8") as f:
+            source = f.read()
+        assert "get_registration_stats" in source
+        assert "Registered" in source
+        assert "Checked In" in source
+
+    def test_admin_page_warns_when_self_registration_disabled(self):
+        admin_path = os.path.join(APP_DIR, "pages", "admin.py")
+        with open(admin_path, encoding="utf-8") as f:
+            source = f.read()
+        assert "ENABLE_SELF_REGISTRATION" in source
+        assert "Self-registration is disabled" in source
+
+    def test_admin_page_no_token_hash_exposed(self):
+        admin_path = os.path.join(APP_DIR, "pages", "admin.py")
+        with open(admin_path, encoding="utf-8") as f:
+            source = f.read()
+        assert "public_registration_token_hash" not in source
+        assert "token hash" not in source.lower()
+        assert "raw token" not in source.lower()

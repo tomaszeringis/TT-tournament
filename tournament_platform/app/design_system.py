@@ -727,7 +727,7 @@ def render_qr_code(url: str, scale: int = 4) -> None:
         st.markdown(f"[Link]({url})")
 
 
-def render_qr_code_visible(url: str, scale: int = 6, width: int = 220) -> None:
+def render_qr_code_visible(url: str, scale: int = 6, width: int = 220, caption: str = "Scan to open") -> None:
     """Render a visible, scannable QR code as PNG with a white background.
 
     Uses ``st.image`` so the QR is visible on dark themes. Falls back to a
@@ -741,7 +741,7 @@ def render_qr_code_visible(url: str, scale: int = 6, width: int = 220) -> None:
         png_bytes = make_qr_png_bytes(url, scale=scale)
         if not png_bytes:
             raise ValueError("QR PNG bytes are empty")
-        st.image(png_bytes, caption="Scan to open", width=width)
+        st.image(png_bytes, caption=caption, width=width)
     except Exception as exc:
         st.warning("QR code could not be generated.")
         st.markdown(f"[Open link]({url})")

@@ -21,6 +21,7 @@ from tournament_platform.app.services.registration_service import (
     generate_registration_token,
     set_registration_token,
     clear_registration_token,
+    close_registration,
     get_registration_stats,
     list_pending_duplicates,
     merge_participant_into_player,
@@ -510,6 +511,66 @@ class TestSetAndClearRegistrationToken:
         try:
             with pytest.raises(ValueError):
                 set_registration_token(db, 99999, raw_token="tok")
+        finally:
+            db.close()
+            engine.dispose()
+
+
+class TestCloseRegistration:
+    def test_close_sets_registration_open_false(self):
+        engine, Session = _make_db()
+        db = Session()
+        try:
+            t = _make_tournament(db, registration_open=True, token="tok")
+            close_registration(db, t.id)
+            assert t.registration_open is False
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_close_preserves_token(self):
+        engine, Session = _make_db()
+        db = Session()
+        try:
+            t = _make_tournament(db, registration_open=True, token="tok")
+            close_registration(db, t.id)
+            assert t.registration_open is False
+            assert t.public_registration_token_hash == hash_optional("tok")
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_close_does_not_delete_registrations(self):
+        engine, Session = _make_db()
+        db = Session()
+        try:
+            t = _make_tournament(db, registration_open=True, token="tok")
+            p = Player(name="Alice", rating=1200)
+            db.add(p)
+            db.commit()
+            tp = TournamentParticipant(
+                tournament_id=t.id,
+                player_id=p.id,
+                display_name="Alice",
+                checked_in=True,
+            )
+            db.add(tp)
+            db.commit()
+
+            close_registration(db, t.id)
+
+            participants = db.query(TournamentParticipant).filter(TournamentParticipant.tournament_id == t.id).count()
+            assert participants == 1
+        finally:
+            db.close()
+            engine.dispose()
+
+    def test_close_missing_tournament_raises(self):
+        engine, Session = _make_db()
+        db = Session()
+        try:
+            with pytest.raises(ValueError):
+                close_registration(db, 99999)
         finally:
             db.close()
             engine.dispose()

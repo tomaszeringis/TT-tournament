@@ -62,13 +62,13 @@ class TestPublicBoardRegistrationQr:
         import tournament_platform.app.pages.public_board as pb
 
         source = inspect.getsource(pb.render_public_board)
-        assert "public=1&register=1" in source
+        assert "get_registration_link" in source
 
     def test_public_board_readonly_contains_register_link_pattern(self):
         import tournament_platform.app.pages.public_board_readonly as pbr
 
         source = inspect.getsource(pbr.render_public_board_readonly)
-        assert "public=1&register=1" in source
+        assert "get_registration_link" in source
 
     def test_public_board_uses_register_to_play_label(self):
         import tournament_platform.app.pages.public_board as pb
@@ -115,3 +115,111 @@ class TestPublicBoardRegistrationQr:
 
         source = inspect.getsource(pb.render_public_board)
         assert "render_pairing_expander" in source
+
+    def test_public_board_uses_render_qr_block_helper(self):
+        import tournament_platform.app.pages.public_board as pb
+
+        source = inspect.getsource(pb.render_public_board)
+        assert "_render_public_qr_block" in source
+
+    def test_public_board_has_distinct_qr_captions(self):
+        import tournament_platform.app.pages.public_board as pb
+
+        source = inspect.getsource(pb.render_public_board)
+        assert "Scan to follow scores" in source
+        assert "Scan to register" in source
+        assert "Scan to check in" in source
+
+    def test_public_board_uses_conditional_columns_for_registration(self):
+        import tournament_platform.app.pages.public_board as pb
+
+        source = inspect.getsource(pb.render_public_board)
+        assert "ENABLE_SELF_REGISTRATION" in source
+        assert "st.columns(2)" in source
+
+    def test_public_board_shows_registration_closed_message(self):
+        import tournament_platform.app.pages.public_board as pb
+
+        source = inspect.getsource(pb.render_public_board)
+        assert "Registration is closed" in source
+
+    def test_public_board_no_admin_controls_in_source(self):
+        import tournament_platform.app.pages.public_board as pb
+
+        source = inspect.getsource(pb.render_public_board)
+        forbidden = [
+            "approve_player",
+            "reject_player",
+            "Approve Player",
+            "Reject Player",
+            "merge_duplicate",
+            "Merge Duplicate",
+            "add_player",
+            "Add Player",
+            "generate_bracket",
+            "Generate Bracket",
+            "submit_result",
+            "Submit Result",
+            "st.secrets",
+            "environ",
+            "API base",
+            "Diagnostics",
+            "st.cache_resource",
+        ]
+        lower = source.lower()
+        for label in forbidden:
+            assert label not in lower, f"Forbidden admin/mutation term found in public_board: {label}"
+
+    def test_public_board_readonly_uses_render_qr_block_helper(self):
+        import tournament_platform.app.pages.public_board_readonly as pbr
+
+        source = inspect.getsource(pbr.render_public_board_readonly)
+        assert "_render_public_qr_block" in source
+
+    def test_public_board_readonly_has_distinct_qr_captions(self):
+        import tournament_platform.app.pages.public_board_readonly as pbr
+
+        source = inspect.getsource(pbr.render_public_board_readonly)
+        assert "Scan to follow scores" in source
+        assert "Scan to register" in source
+        assert "Scan to check in" in source
+
+    def test_public_board_readonly_uses_conditional_columns_for_registration(self):
+        import tournament_platform.app.pages.public_board_readonly as pbr
+
+        source = inspect.getsource(pbr.render_public_board_readonly)
+        assert "ENABLE_SELF_REGISTRATION" in source
+        assert "st.columns(2)" in source
+
+    def test_public_board_readonly_shows_registration_closed_message(self):
+        import tournament_platform.app.pages.public_board_readonly as pbr
+
+        source = inspect.getsource(pbr.render_public_board_readonly)
+        assert "Registration is closed" in source
+
+    def test_public_board_readonly_no_admin_controls_in_source(self):
+        import tournament_platform.app.pages.public_board_readonly as pbr
+
+        source = inspect.getsource(pbr.render_public_board_readonly)
+        forbidden = [
+            "approve_player",
+            "reject_player",
+            "Approve Player",
+            "Reject Player",
+            "merge_duplicate",
+            "Merge Duplicate",
+            "add_player",
+            "Add Player",
+            "generate_bracket",
+            "Generate Bracket",
+            "submit_result",
+            "Submit Result",
+            "st.secrets",
+            "environ",
+            "API base",
+            "Diagnostics",
+            "st.cache_resource",
+        ]
+        lower = source.lower()
+        for label in forbidden:
+            assert label not in lower, f"Forbidden admin/mutation term found in public_board_readonly: {label}"

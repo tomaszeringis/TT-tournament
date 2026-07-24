@@ -23,6 +23,12 @@ from tournament_platform.services.test_data_cleanup_service import (
     preview_test_data_cleanup,
     cleanup_test_data,
 )
+from tournament_platform.app.services.registration_service import (
+    set_registration_token,
+    close_registration,
+    get_registration_link,
+    get_registration_stats,
+)
 from tournament_platform.app.utils import (
     render_interactive_table,
     render_status_badge,
@@ -126,6 +132,7 @@ admin_tabs = st.tabs([
     "Import Wizard",
     "Merge Workflow",
     "Audit Dashboard",
+    "Public Registration",
 ])
 
 # Tab 1: Database Overview
@@ -695,5 +702,131 @@ with admin_tabs[5]:
             render_audit_dashboard()
         except Exception as e:
             st.error(f"Audit dashboard error: {e}")
+
+    with admin_tabs[9]:
+        st.subheader("🎟️ Public Registration")
+        st.caption("Enable or close public self-serve registration for a selected tournament")
+
+        try:
+            reg_tournaments = db.query(Tournament).order_by(Tournament.created_at.desc()).all()
+        except Exception as e:
+            st.error(f"Failed to load tournaments: {e}")
+            reg_tournaments = []
+
+        if not reg_tournaments:
+            st.info("No tournaments found. Create a tournament first.")
+        else:
+            reg_options = {t.name: t.id for t in reg_tournaments}
+            reg_selected_name = st.selectbox(
+                "Select Tournament",
+                options=list(reg_options.keys()),
+                index=0,
+                key="admin_reg_tournament_select",
+            )
+            reg_selected_id = reg_options[reg_selected_name]
+            reg_tournament = next((t for t in reg_tournaments if t.id == reg_selected_id), None)
+
+            if reg_tournament:
+                reg_cols = st.columns(2)
+                with reg_cols[0]:
+                    st.metric("Tournament", reg_tournament.name)
+                with reg_cols[1]:
+                    reg_status = "Open" if reg_tournament.registration_open else "Closed"
+                    st.metric("Registration", reg_status)
+
+                if not settings.ENABLE_SELF_REGISTRATION:
+                    st.warning(
+                        "Self-registration is disabled. Set ENABLE_SELF_REGISTRATION=true to show registration links on Public Board."
+                    )
+
+                st.divider()
+
+                if not reg_tournament.registration_open:
+                    st.info("Public registration is closed for this tournament.")
+                    if st.button("✅ Enable public registration for selected tournament", key="admin_enable_reg_btn", type="primary"):
+                        try:
+                            db_reg = SessionLocal()
+                            token = set_registration_token(db_reg, reg_selected_id)
+                            db_reg.close()
+                            st.session_state[f"admin_reg_token_{reg_selected_id}"] = token
+                            st.success("Public registration enabled successfully!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to enable registration: {e}")
+                else:
+                    st.success("Public registration is open.")
+                    st.caption("Players can scan the QR code or open the link to register.")
+                    st.caption("Registrations are pending until approved by an operator.")
+
+                    session_key = f"admin_reg_token_{reg_selected_id}"
+                    token = st.session_state.get(session_key)
+
+                    if not token:
+                        try:
+                            db_reg = SessionLocal()
+                            token = set_registration_token(db_reg, reg_selected_id)
+                            st.session_state[session_key] = token
+                            db_reg.close()
+                        except Exception as e:
+                            st.error(f"Failed to retrieve registration token: {e}")
+                            token = None
+
+                    if token:
+                        base_url = settings.PUBLIC_BOARD_BASE_URL or ""
+                        if not base_url:
+                            try:
+                                base_url = (st.context.headers.get("origin") or "").rstrip("/")
+                            except Exception:
+                                base_url = ""
+                        if not base_url:
+                            env_base = os.environ.get("STREAMLIT_SERVER_BASE_URL") or os.environ.get("STREAMLIT_APP_URL") or ""
+                            base_url = env_base.rstrip("/")
+
+                        reg_link = get_registration_link(token, reg_selected_id, base_url=base_url)
+
+                        link_col, copy_col = st.columns([3, 1])
+                        with link_col:
+                            st.text_input("Registration link", value=reg_link, key=f"admin_reg_link_{reg_selected_id}", label_visibility="collapsed", disabled=True)
+                        with copy_col:
+                            if st.button("📋 Copy", key=f"admin_copy_reg_{reg_selected_id}", use_container_width=True):
+                                st.session_state["copied_url"] = reg_link
+                                st.toast("Link copied!", icon="✅")
+
+                        try:
+                            render_qr_code_visible(reg_link, width=220, caption="Scan to register")
+                        except Exception:
+                            st.warning("QR code could not be generated.")
+
+                        try:
+                            db_stats = SessionLocal()
+                            stats = get_registration_stats(db_stats, reg_selected_id)
+                            db_stats.close()
+                            st.divider()
+                            st.write("**Registration Statistics**")
+                            stat_cols = st.columns(4)
+                            with stat_cols[0]:
+                                st.metric("Registered", stats.registered_count)
+                            with stat_cols[1]:
+                                st.metric("Checked In", stats.checked_in_count)
+                            with stat_cols[2]:
+                                st.metric("Pending Review", stats.duplicate_pending_count)
+                            with stat_cols[3]:
+                                st.metric("Bracket Eligible", stats.bracket_eligible_count)
+                        except Exception:
+                            pass
+
+                        st.divider()
+                        st.caption("Closing registration prevents new public registrations but keeps existing records.")
+                        confirm_close = st.checkbox("I understand this only closes new registrations.", key=f"admin_confirm_close_{reg_selected_id}")
+                        if st.button("🔒 Close registration", key=f"admin_close_reg_{reg_selected_id}", type="secondary", disabled=not confirm_close):
+                            try:
+                                db_close = SessionLocal()
+                                close_registration(db_close, reg_selected_id)
+                                db_close.close()
+                                st.session_state.pop(f"admin_reg_token_{reg_selected_id}", None)
+                                st.success("Registration closed. Existing registrations are preserved.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to close registration: {e}")
 
 db.close()

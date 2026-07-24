@@ -19,7 +19,7 @@ from tournament_platform.models import SessionLocal, Tournament, TournamentParti
 from tournament_platform.app.utils import render_database_error
 from tournament_platform.app.services.public_board_service import get_public_board_state, build_public_board_url, make_qr_png_bytes, BoardFreshness, compute_freshness
 from tournament_platform.app.services.live_match_insights_service import batch_compute_insights
-from tournament_platform.app.services.registration_service import get_registration_link
+from tournament_platform.app.services.registration_service import get_registration_link, set_registration_token
 from tournament_platform.app.components.player_path import render_player_path
 from tournament_platform.app.components.pairing_explanation_component import render_pairing_expander
 from tournament_platform.app.design_system import (
@@ -68,6 +68,29 @@ def _get_app_base_url() -> str:
     if env_base:
         return env_base.rstrip("/")
     return ""
+
+
+# ============================================================================
+# QR Block Rendering
+# ============================================================================
+
+
+def _render_public_qr_block(
+    *,
+    title: str,
+    caption: str,
+    url: str,
+    qr_caption: str,
+) -> None:
+    """Render a compact QR/link block for the Public Board header."""
+    st.markdown(f"**{title}**")
+    st.caption(caption)
+    st.markdown(f"`{url}`")
+    safe_key = title.replace(" ", "_").replace("/", "_").lower()
+    if st.button("📋 Copy", key=f"copy_{safe_key}", use_container_width=True):
+        st.session_state["copied_url"] = url
+        st.toast("Link copied!", icon="✅")
+    render_qr_code_visible(url, width=180, caption=qr_caption)
 
 
 # ============================================================================
@@ -177,54 +200,61 @@ def render_public_board_readonly() -> None:
         render_status_chip(freshness.message, color=chip_color)
 
     # Action row: Share Live Board + Register/Check-In
-    col_share, col_reg = st.columns(2)
-    with col_share:
-        st.markdown("**Share Live Board**")
-        st.caption("Scan to follow scores on your phone")
-        share_url = build_public_board_url(_get_app_base_url(), tournament_id=state.tournament_id, kiosk=kiosk)
-        st.markdown(f"`{share_url}`")
-        if st.button("📋 Copy", key="copy_link_readonly_btn", use_container_width=True):
-            st.session_state["copied_url"] = share_url
-            st.toast("Link copied!", icon="✅")
-        render_qr_code_visible(share_url, width=180)
-
     if settings.ENABLE_SELF_REGISTRATION:
+        col_share, col_reg = st.columns(2)
+    else:
+        col_share, = st.columns(1)
+        col_reg = None
+
+    with col_share:
+        share_url = build_public_board_url(
+            _get_app_base_url(), tournament_id=state.tournament_id, kiosk=kiosk
+        )
+        _render_public_qr_block(
+            title="Share Live Board",
+            caption="Scan to follow scores",
+            url=share_url,
+            qr_caption="Scan to follow scores",
+        )
+
+    if col_reg is not None:
         with col_reg:
             try:
                 db_reg = SessionLocal()
                 tournament = db_reg.query(Tournament).filter(Tournament.id == state.tournament_id).first()
                 registration_open = bool(tournament.registration_open) if tournament else False
-                token_present = bool(tournament.public_registration_token_hash) if tournament else False
                 db_reg.close()
 
-                if registration_open:
-                    reg_link = None
-                    if not token_present:
-                        db_reg2 = SessionLocal()
-                        try:
-                            from tournament_platform.app.services.registration_service import set_registration_token
-                            token = set_registration_token(db_reg2, state.tournament_id)
-                            reg_link = get_registration_link(token, state.tournament_id, base_url=_get_app_base_url())
-                        except Exception:
-                            reg_link = None
-                        finally:
-                            db_reg2.close()
-                    else:
-                        reg_link = build_public_board_url(_get_app_base_url(), tournament_id=state.tournament_id, kiosk=False).replace("public=1", "public=1&register=1")
-
-                    if reg_link:
-                        reg_label = "Register to play" if registration_open else "Check In"
-                        st.markdown(f"**{reg_label}**")
-                        st.caption("Scan to register or check in")
-                        st.markdown(f"`{reg_link}`")
-                        if st.button("📋 Copy", key="copy_reg_link_readonly_btn", use_container_width=True):
-                            st.session_state["copied_url"] = reg_link
-                            st.toast("Registration link copied!", icon="✅")
-                        render_qr_code_visible(reg_link, width=180)
-                    else:
-                        st.caption("Registration closed for this tournament.")
+                if not registration_open:
+                    st.caption("Registration is closed.")
                 else:
-                    st.caption("Registration is closed for this tournament.")
+                    session_key = f"registration_token_{state.tournament_id}"
+                    token = st.session_state.get(session_key)
+
+                    if not token:
+                        db_gen = SessionLocal()
+                        try:
+                            token = set_registration_token(db_gen, state.tournament_id)
+                            st.session_state[session_key] = token
+                        except Exception:
+                            token = None
+                        finally:
+                            db_gen.close()
+
+                    if token:
+                        reg_link = get_registration_link(
+                            token, state.tournament_id, base_url=_get_app_base_url()
+                        )
+                        reg_label = "Register to play" if registration_open else "Check In"
+                        reg_caption = "Scan to register" if registration_open else "Scan to check in"
+                        _render_public_qr_block(
+                            title=reg_label,
+                            caption=reg_caption,
+                            url=reg_link,
+                            qr_caption=reg_caption,
+                        )
+                    else:
+                        st.caption("Registration link is not configured.")
             except Exception:
                 pass
 
