@@ -35,7 +35,7 @@ from tournament_platform.app.utils import (
 )
 from tournament_platform.config import settings
 from tournament_platform.config.runtime import get_runtime_config
-from tournament_platform.core.db_config import get_database_type, is_cloud_database
+from tournament_platform.core.db_config import get_database_type, is_cloud_database, get_database_url_masked, get_database_host
 from tournament_platform.app.settings import API_BASE_URL, SHOW_DEBUG_DETAILS
 from tournament_platform.app.design_system import apply_global_styles
 from tournament_platform.app.components.page_header import render_page_header
@@ -355,6 +355,60 @@ with admin_tabs[4]:
             )
     except Exception:
         pass
+    
+    # Database persistence diagnostics
+    try:
+        db_type = get_database_type()
+        db_url_masked = get_database_url_masked()
+        db_host = get_database_host()
+        
+        db_col1, db_col2 = st.columns(2)
+        with db_col1:
+            st.metric("Database Backend", db_type)
+            st.caption(f"Host: {db_host}")
+        with db_col2:
+            if is_cloud_database():
+                st.success("Persistent database configured.")
+            else:
+                st.warning("Local SQLite is not durable on Streamlit Cloud. Use DATABASE_URL for persistent data.")
+        
+        with st.expander("Database connection details", expanded=False):
+            st.markdown(f"**URL:** `{db_url_masked}`")
+            st.caption("Credentials are masked. Full URL is never shown in UI.")
+    except Exception as e:
+        st.error(f"Database diagnostics failed: {e}")
+    
+    # Table counts
+    try:
+        db_counts = SessionLocal()
+        tournament_count = db_counts.query(Tournament).count()
+        player_count = db_counts.query(Player).count()
+        match_count = db_counts.query(Match).count()
+        participant_count = db_counts.query(TournamentParticipant).count()
+        db_counts.close()
+        
+        st.write("**Database Records**")
+        count_cols = st.columns(5)
+        with count_cols[0]:
+            st.metric("Tournaments", tournament_count)
+        with count_cols[1]:
+            st.metric("Players", player_count)
+        with count_cols[2]:
+            st.metric("Matches", match_count)
+        with count_cols[3]:
+            st.metric("Participants", participant_count)
+        with count_cols[4]:
+            try:
+                db_events = SessionLocal()
+                event_count = db_events.query(MatchPointEvent).count()
+                db_events.close()
+                st.metric("Point Events", event_count)
+            except Exception:
+                st.metric("Point Events", "N/A")
+    except Exception as e:
+        st.error(f"Failed to load database counts: {e}")
+    
+    st.divider()
     
     # Perform real health checks using extracted helpers
     db_healthy, db_status = get_safe_database_status()
@@ -736,7 +790,10 @@ with admin_tabs[5]:
 
                 if not settings.ENABLE_SELF_REGISTRATION:
                     st.warning(
-                        "Self-registration is disabled. Set ENABLE_SELF_REGISTRATION=true to show registration links on Public Board."
+                        "Self-registration is disabled. In Streamlit Cloud Secrets set:\n"
+                        "ENABLE_SELF_REGISTRATION = true\n"
+                        'PUBLIC_BOARD_BASE_URL = "https://tournament.streamlit.app"\n'
+                        "Then reboot/redeploy the app."
                     )
 
                 st.divider()
@@ -748,8 +805,20 @@ with admin_tabs[5]:
                             db_reg = SessionLocal()
                             token = set_registration_token(db_reg, reg_selected_id)
                             db_reg.close()
+                            base_url = settings.PUBLIC_BOARD_BASE_URL or ""
+                            if not base_url:
+                                try:
+                                    base_url = (st.context.headers.get("origin") or "").rstrip("/")
+                                except Exception:
+                                    base_url = ""
+                            if not base_url:
+                                env_base = os.environ.get("STREAMLIT_SERVER_BASE_URL") or os.environ.get("STREAMLIT_APP_URL") or ""
+                                base_url = env_base.rstrip("/")
+                            reg_link = get_registration_link(token, reg_selected_id, base_url=base_url)
+                            st.session_state[f"admin_reg_link_{reg_selected_id}"] = reg_link
                             st.session_state[f"admin_reg_token_{reg_selected_id}"] = token
                             st.success("Public registration enabled successfully!")
+                            st.caption("Copy/save this link. For security, the raw token may not be recoverable later.")
                             st.rerun()
                         except Exception as e:
                             st.error(f"Failed to enable registration: {e}")
@@ -759,31 +828,37 @@ with admin_tabs[5]:
                     st.caption("Registrations are pending until approved by an operator.")
 
                     session_key = f"admin_reg_token_{reg_selected_id}"
+                    link_key = f"admin_reg_link_{reg_selected_id}"
                     token = st.session_state.get(session_key)
+                    reg_link = st.session_state.get(link_key)
 
-                    if not token:
-                        try:
-                            db_reg = SessionLocal()
-                            token = set_registration_token(db_reg, reg_selected_id)
-                            st.session_state[session_key] = token
-                            db_reg.close()
-                        except Exception as e:
-                            st.error(f"Failed to retrieve registration token: {e}")
-                            token = None
-
-                    if token:
-                        base_url = settings.PUBLIC_BOARD_BASE_URL or ""
-                        if not base_url:
+                    if not token or not reg_link:
+                        st.warning("Registration is open, but the public link token is not available. Rotate/regenerate registration link.")
+                        st.caption("This will replace the old public registration link.")
+                        confirm_rotate = st.checkbox("I understand this replaces the old public registration link.", key=f"admin_confirm_rotate_{reg_selected_id}")
+                        if st.button("🔄 Regenerate registration link", key="admin_regenerate_reg_btn", type="secondary", disabled=not confirm_rotate):
                             try:
-                                base_url = (st.context.headers.get("origin") or "").rstrip("/")
-                            except Exception:
-                                base_url = ""
-                        if not base_url:
-                            env_base = os.environ.get("STREAMLIT_SERVER_BASE_URL") or os.environ.get("STREAMLIT_APP_URL") or ""
-                            base_url = env_base.rstrip("/")
-
-                        reg_link = get_registration_link(token, reg_selected_id, base_url=base_url)
-
+                                db_reg = SessionLocal()
+                                token = set_registration_token(db_reg, reg_selected_id)
+                                db_reg.close()
+                                base_url = settings.PUBLIC_BOARD_BASE_URL or ""
+                                if not base_url:
+                                    try:
+                                        base_url = (st.context.headers.get("origin") or "").rstrip("/")
+                                    except Exception:
+                                        base_url = ""
+                                if not base_url:
+                                    env_base = os.environ.get("STREAMLIT_SERVER_BASE_URL") or os.environ.get("STREAMLIT_APP_URL") or ""
+                                    base_url = env_base.rstrip("/")
+                                reg_link = get_registration_link(token, reg_selected_id, base_url=base_url)
+                                st.session_state[session_key] = token
+                                st.session_state[link_key] = reg_link
+                                st.success("Registration link regenerated successfully!")
+                                st.caption("Copy/save this link. For security, the raw token may not be recoverable later.")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Failed to regenerate registration link: {e}")
+                    else:
                         link_col, copy_col = st.columns([3, 1])
                         with link_col:
                             st.text_input("Registration link", value=reg_link, key=f"admin_reg_link_{reg_selected_id}", label_visibility="collapsed", disabled=True)
@@ -824,6 +899,7 @@ with admin_tabs[5]:
                                 close_registration(db_close, reg_selected_id)
                                 db_close.close()
                                 st.session_state.pop(f"admin_reg_token_{reg_selected_id}", None)
+                                st.session_state.pop(f"admin_reg_link_{reg_selected_id}", None)
                                 st.success("Registration closed. Existing registrations are preserved.")
                                 st.rerun()
                             except Exception as e:

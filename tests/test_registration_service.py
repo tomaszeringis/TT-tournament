@@ -75,6 +75,12 @@ class TestHelpers:
         assert "token123" in link
         assert "tournament=1" in link
         assert "register=1" in link
+        assert "public=1" in link
+
+    def test_get_registration_link_uses_urlencode(self):
+        link = get_registration_link("token with spaces", 1)
+        assert "token+with+spaces" in link or "token%20with%20spaces" in link
+        assert "®ister" not in link
 
     def test_get_registration_link_uses_base_url(self):
         link = get_registration_link("token123", 1, base_url="https://example.com")

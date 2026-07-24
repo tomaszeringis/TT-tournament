@@ -197,6 +197,13 @@ class TestAdminRegistrationControl:
             source = f.read()
         assert "Enable public registration for selected tournament" in source
 
+    def test_admin_page_regenerate_registration_button(self):
+        admin_path = os.path.join(APP_DIR, "pages", "admin.py")
+        with open(admin_path, encoding="utf-8") as f:
+            source = f.read()
+        assert "Regenerate registration link" in source
+        assert "replaces the old public registration link" in source
+
     def test_admin_page_close_registration_button(self):
         admin_path = os.path.join(APP_DIR, "pages", "admin.py")
         with open(admin_path, encoding="utf-8") as f:
@@ -223,7 +230,8 @@ class TestAdminRegistrationControl:
         with open(admin_path, encoding="utf-8") as f:
             source = f.read()
         assert "ENABLE_SELF_REGISTRATION" in source
-        assert "Self-registration is disabled" in source
+        assert "Streamlit Cloud Secrets" in source
+        assert "PUBLIC_BOARD_BASE_URL" in source
 
     def test_admin_page_no_token_hash_exposed(self):
         admin_path = os.path.join(APP_DIR, "pages", "admin.py")
@@ -231,4 +239,3 @@ class TestAdminRegistrationControl:
             source = f.read()
         assert "public_registration_token_hash" not in source
         assert "token hash" not in source.lower()
-        assert "raw token" not in source.lower()

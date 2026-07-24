@@ -5,6 +5,7 @@ Verifies that DATABASE_URL is resolved correctly and that models.py
 maintains backward compatibility after the db_config refactor.
 """
 
+import importlib
 import os
 import pytest
 from unittest.mock import patch, MagicMock
@@ -88,3 +89,51 @@ def test_list_tournaments_filters_archived_by_default():
     finally:
         db.close()
         engine.dispose()
+
+
+def test_get_database_url_masked_masks_password():
+    """get_database_url_masked should hide passwords in URLs."""
+    from tournament_platform.core.db_config import get_database_url_masked
+    from unittest.mock import patch
+    
+    with patch("tournament_platform.core.db_config.DATABASE_URL", "postgresql+psycopg2://user:secret@host:5432/db"):
+        masked = get_database_url_masked()
+        assert "secret" not in masked
+        assert "****" in masked
+        assert masked == "postgresql+psycopg2://user:****@host:5432/db"
+
+
+def test_get_database_url_masked_no_password():
+    """get_database_url_masked should return SQLite URLs unchanged."""
+    from tournament_platform.core.db_config import get_database_url_masked
+    from unittest.mock import patch
+    
+    with patch("tournament_platform.core.db_config.DATABASE_URL", "sqlite:///data/tournament.db"):
+        masked = get_database_url_masked()
+        assert masked == "sqlite:///data/tournament.db"
+
+
+def test_get_database_host_postgres():
+    """get_database_host should extract hostname from PostgreSQL URL."""
+    from tournament_platform.core.db_config import get_database_host
+    from unittest.mock import patch
+    
+    with patch("tournament_platform.core.db_config.DATABASE_URL", "postgresql+psycopg2://user:pass@db.example.com:5432/db"):
+        assert get_database_host() == "db.example.com"
+
+
+def test_get_database_host_sqlite():
+    """get_database_host should return local filesystem for SQLite."""
+    from tournament_platform.core.db_config import get_database_host
+    from unittest.mock import patch
+    
+    with patch("tournament_platform.core.db_config.DATABASE_URL", "sqlite:///data/tournament.db"):
+        assert get_database_host() == "local filesystem"
+
+
+def test_postgres_url_no_sqlite_connect_args():
+    """When DATABASE_URL is PostgreSQL, connect_args should be empty."""
+    from tournament_platform.core.db_config import _get_connect_args
+    
+    assert _get_connect_args("postgresql+psycopg2://user:pass@host:5432/db") == {}
+    assert _get_connect_args("sqlite:///data/tournament.db") == {"check_same_thread": False, "timeout": 30}

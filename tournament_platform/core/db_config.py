@@ -2,10 +2,10 @@
 Centralized database configuration.
 
 Resolves the database URL from:
-   1. DATABASE_URL environment variable
-   2. Streamlit secrets (st.secrets["DATABASE_URL"])
-   3. pydantic-settings (settings.DATABASE_URL)
-   4. Fallback local SQLite
+    1. DATABASE_URL environment variable
+    2. Streamlit secrets (st.secrets["DATABASE_URL"])
+    3. pydantic-settings (settings.DATABASE_URL)
+    4. Fallback local SQLite
 
 Creates and caches the SQLAlchemy engine + SessionLocal.
 Never initialize destructive seed/demo data here.
@@ -14,11 +14,23 @@ Never initialize destructive seed/demo data here.
 import os
 from pathlib import Path
 from typing import Optional
+from urllib.parse import urlparse
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from tournament_platform.config import settings
+
+
+def _mask_database_url(url: str) -> str:
+    """Return a UI-safe version of the database URL with credentials masked."""
+    try:
+        parsed = urlparse(url)
+        if parsed.password:
+            return url.replace(f":{parsed.password}@", ":****@")
+        return url
+    except Exception:
+        return url
 
 
 def _get_database_url() -> str:
@@ -48,8 +60,16 @@ def _get_database_url() -> str:
 
 
 DATABASE_URL: str = _get_database_url()
-connect_args = {"check_same_thread": False, "timeout": 30} if DATABASE_URL.startswith("sqlite") else {}
 
+
+def _get_connect_args(url: str) -> dict:
+    """Return SQLAlchemy connect_args appropriate for the database URL."""
+    if url.startswith("sqlite"):
+        return {"check_same_thread": False, "timeout": 30}
+    return {}
+
+
+connect_args = _get_connect_args(DATABASE_URL)
 engine = create_engine(DATABASE_URL, connect_args=connect_args, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
@@ -78,3 +98,21 @@ def get_database_type() -> str:
     if DATABASE_URL.startswith("sqlite"):
         return "SQLite (local)"
     return "Unknown"
+
+
+def get_database_url_masked() -> str:
+    """Return a UI-safe database URL with credentials masked."""
+    return _mask_database_url(DATABASE_URL)
+
+
+def get_database_host() -> str:
+    """Return only the host portion of the database URL for diagnostics."""
+    try:
+        parsed = urlparse(DATABASE_URL)
+        if parsed.hostname:
+            return parsed.hostname
+        if DATABASE_URL.startswith("sqlite"):
+            return "local filesystem"
+        return "unknown"
+    except Exception:
+        return "unknown"

@@ -22,7 +22,7 @@ except ImportError:
             open(DATABASE_PATH, 'a').close()
     except Exception as e:
         print(f"WARNING: Cannot access database file at {DATABASE_PATH}: {e}")
-    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30})
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False, "timeout": 30}, pool_pre_ping=True)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # Backward compatibility for imports that expect DATABASE_PATH

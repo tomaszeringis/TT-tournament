@@ -19,7 +19,7 @@ from tournament_platform.models import SessionLocal, Tournament, TournamentParti
 from tournament_platform.app.utils import render_database_error
 from tournament_platform.app.services.public_board_service import get_public_board_state, build_public_board_url, make_qr_png_bytes, BoardFreshness, compute_freshness
 from tournament_platform.app.services.live_match_insights_service import batch_compute_insights
-from tournament_platform.app.services.registration_service import get_registration_link, set_registration_token
+from tournament_platform.app.services.registration_service import get_registration_link
 from tournament_platform.app.components.player_path import render_player_path
 from tournament_platform.app.components.pairing_explanation_component import render_pairing_expander
 from tournament_platform.app.design_system import (
@@ -231,22 +231,12 @@ def render_public_board_readonly() -> None:
                     session_key = f"registration_token_{state.tournament_id}"
                     token = st.session_state.get(session_key)
 
-                    if not token:
-                        db_gen = SessionLocal()
-                        try:
-                            token = set_registration_token(db_gen, state.tournament_id)
-                            st.session_state[session_key] = token
-                        except Exception:
-                            token = None
-                        finally:
-                            db_gen.close()
-
                     if token:
                         reg_link = get_registration_link(
                             token, state.tournament_id, base_url=_get_app_base_url()
                         )
-                        reg_label = "Register to play" if registration_open else "Check In"
-                        reg_caption = "Scan to register" if registration_open else "Scan to check in"
+                        reg_label = "Register to play"
+                        reg_caption = "Scan to register"
                         _render_public_qr_block(
                             title=reg_label,
                             caption=reg_caption,

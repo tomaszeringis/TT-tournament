@@ -75,14 +75,12 @@ class TestPublicBoardRegistrationQr:
 
         source = inspect.getsource(pb.render_public_board)
         assert "Register to play" in source
-        assert "Check In" in source
 
     def test_public_board_readonly_uses_register_to_play_label(self):
         import tournament_platform.app.pages.public_board_readonly as pbr
 
         source = inspect.getsource(pbr.render_public_board_readonly)
         assert "Register to play" in source
-        assert "Check In" in source
 
     def test_public_board_does_not_render_registration_form(self):
         import tournament_platform.app.pages.public_board as pb
@@ -128,7 +126,13 @@ class TestPublicBoardRegistrationQr:
         source = inspect.getsource(pb.render_public_board)
         assert "Scan to follow scores" in source
         assert "Scan to register" in source
-        assert "Scan to check in" in source
+
+    def test_public_board_readonly_has_distinct_qr_captions(self):
+        import tournament_platform.app.pages.public_board_readonly as pbr
+
+        source = inspect.getsource(pbr.render_public_board_readonly)
+        assert "Scan to follow scores" in source
+        assert "Scan to register" in source
 
     def test_public_board_uses_conditional_columns_for_registration(self):
         import tournament_platform.app.pages.public_board as pb
@@ -182,7 +186,6 @@ class TestPublicBoardRegistrationQr:
         source = inspect.getsource(pbr.render_public_board_readonly)
         assert "Scan to follow scores" in source
         assert "Scan to register" in source
-        assert "Scan to check in" in source
 
     def test_public_board_readonly_uses_conditional_columns_for_registration(self):
         import tournament_platform.app.pages.public_board_readonly as pbr

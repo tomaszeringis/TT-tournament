@@ -17,6 +17,8 @@ from typing import Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from urllib.parse import urlencode
+
 from tournament_platform.config import settings
 from tournament_platform.models import (
     Player,
@@ -83,10 +85,13 @@ def _now() -> datetime:
 def get_registration_link(token: str, tournament_id: int, base_url: str = "") -> str:
     """Build the public registration URL for ``token`` and ``tournament_id``."""
     base = (base_url or settings.PUBLIC_BOARD_BASE_URL or "").rstrip("/")
-    query = f"?public=1&tournament={tournament_id}&register=1&token={token}"
-    if base:
-        return f"{base}{query}"
-    return query
+    query = urlencode({
+        "public": "1",
+        "tournament": str(tournament_id),
+        "register": "1",
+        "token": token,
+    })
+    return f"{base}?{query}" if base else f"?{query}"
 
 
 def validate_registration_token(db: Session, tournament_id: int, token: str) -> Optional[Tournament]:
