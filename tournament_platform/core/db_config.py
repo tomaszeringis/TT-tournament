@@ -43,8 +43,8 @@ def _get_database_url() -> str:
         import streamlit as st
         if hasattr(st, "secrets") and st.secrets:
             secret_url = st.secrets.get("DATABASE_URL")
-            if secret_url:
-                return str(secret_url)
+            if secret_url and isinstance(secret_url, str):
+                return secret_url
     except Exception:
         pass
 

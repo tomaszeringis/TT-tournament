@@ -232,8 +232,8 @@ class Stage(Base):
     """A phase within an event (group, knockout, swiss)."""
     __tablename__ = "stages"
     id = Column(Integer, primary_key=True, index=True)
-    event_id = Column(Integer, ForeignKey("events.id"))
-    stage_type = Column(String)  # 'group', 'knockout', 'swiss'
+    event_id = Column(Integer, ForeignKey("events.id"), nullable=True)
+    stage_type = Column(String)
     name = Column(String)
     order_index = Column(Integer, default=0)
     
@@ -260,7 +260,7 @@ class Entry(Base):
     """Player registration for an event (supports doubles)."""
     __tablename__ = "entries"
     id = Column(Integer, primary_key=True, index=True)
-    event_id = Column(Integer, ForeignKey("events.id"))
+    event_id = Column(Integer, ForeignKey("events.id"), nullable=True)
     group_id = Column(Integer, ForeignKey("groups.id"), nullable=True)
     
     # Player references (singles or doubles)

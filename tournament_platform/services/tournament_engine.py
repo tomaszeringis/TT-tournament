@@ -209,7 +209,6 @@ class GroupsKnockoutStrategy(TournamentStrategy):
         
         # Create group stage
         group_stage = Stage(
-            event_id=tournament_id,
             stage_type="group",
             name="Group Stage",
             order_index=0
@@ -241,7 +240,6 @@ class GroupsKnockoutStrategy(TournamentStrategy):
             # Create entries for this group
             for p_name in group_players:
                 entry = Entry(
-                    event_id=tournament_id,
                     group_id=group.id,
                     player1_id=name_to_id.get(p_name)
                 )
@@ -280,7 +278,6 @@ class GroupsKnockoutStrategy(TournamentStrategy):
         
         # Create knockout stage (placeholders for now)
         knockout_stage = Stage(
-            event_id=tournament_id,
             stage_type="knockout",
             name="Knockout Stage",
             order_index=1
