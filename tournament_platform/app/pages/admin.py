@@ -140,8 +140,12 @@ with admin_tabs[0]:
     st.subheader("📊 Database Overview")
     
     # Use cached summary
-    summary = get_database_summary()
-    
+    try:
+        summary = get_database_summary()
+    except Exception as e:
+        st.error(f"Failed to load database summary: {e}")
+        summary = {}
+
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
