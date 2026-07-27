@@ -10,7 +10,7 @@ import threading
 import tempfile
 import wave
 import logging
-from typing import Any, Optional
+from typing import Optional
 
 from tournament_platform.app.services.voice_vocab import VoiceVocabulary
 from tournament_platform.app.services.voice.hf_token import apply_hf_token, get_hf_token

@@ -202,6 +202,7 @@ class TestAdminRegistrationControl:
         with open(admin_path, encoding="utf-8") as f:
             source = f.read()
         assert "Regenerate registration link" in source
+        assert "replaces the old public registration link" in source
 
     def test_admin_page_close_registration_button(self):
         admin_path = os.path.join(APP_DIR, "pages", "admin.py")

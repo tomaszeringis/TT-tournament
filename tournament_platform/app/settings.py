@@ -60,17 +60,3 @@ API_TIMEOUT_SECONDS: int = _get_env_int("API_TIMEOUT_SECONDS", 10)
 # Show debug details in error messages (for development only).
 # In production, this should be False to avoid exposing sensitive information.
 SHOW_DEBUG_DETAILS: bool = _get_env_bool("SHOW_DEBUG_DETAILS", False)
-
-# ---------------------------------------------------------------------------
-# Voice Latency Diagnostics
-# ---------------------------------------------------------------------------
-# Enable latency tracing data collection. When true, span start/finish
-# events are recorded to a bounded in-memory history.
-VOICE_LATENCY_TRACE: bool = _get_env_bool("VOICE_LATENCY_TRACE", False)
-
-# Enable the latency diagnostics UI on the Voice Scorekeeper page.
-# Requires VOICE_LATENCY_TRACE to be true for data collection.
-VOICE_SHOW_LATENCY: bool = _get_env_bool("VOICE_SHOW_LATENCY", False)
-
-# Bounded history size for latency events. Validated to the range 20–2000.
-VOICE_LATENCY_HISTORY_SIZE: int = _get_env_int("VOICE_LATENCY_HISTORY_SIZE", 200)

@@ -119,29 +119,3 @@ TT_SOUNDS_EVENT_WINDOW_MS: float = _get_env_float("TT_SOUNDS_EVENT_WINDOW_MS", 1
 TT_SOUNDS_MIN_INTERVAL_MS: float = _get_env_float("TT_SOUNDS_MIN_INTERVAL_MS", 30.0)
 TT_SOUNDS_DEBUG: bool = _get_env_bool("TT_SOUNDS_DEBUG", False)
 TT_SOUNDS_MODEL_DIR: str = _get_env_str("TT_SOUNDS_MODEL_DIR", "")
-
-# ---------------------------------------------------------------------------
-# Voice Scorekeeper Latency Optimization (Phase 1)
-# ---------------------------------------------------------------------------
-VOICE_LOW_LATENCY_EXPERIMENTAL: bool = _get_env_bool("VOICE_LOW_LATENCY_EXPERIMENTAL", False)
-VOICE_SHOW_LATENCY: bool = _get_env_bool("VOICE_SHOW_LATENCY", False)
-VOICE_LATENCY_TRACE: bool = _get_env_bool("VOICE_LATENCY_TRACE", False)
-
-
-def _get_env_int(name: str, default: int) -> int:
-    """Parse an integer environment variable."""
-    value = os.environ.get(name, "").strip()
-    if not value:
-        return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
-
-
-VOICE_LATENCY_HISTORY_SIZE: int = _get_env_int("VOICE_LATENCY_HISTORY_SIZE", 200)
-# Clamp to safe range [20, 2000]
-if VOICE_LATENCY_HISTORY_SIZE < 20:
-    VOICE_LATENCY_HISTORY_SIZE = 20
-elif VOICE_LATENCY_HISTORY_SIZE > 2000:
-    VOICE_LATENCY_HISTORY_SIZE = 2000
