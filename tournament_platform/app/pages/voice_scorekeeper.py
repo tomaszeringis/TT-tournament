@@ -73,7 +73,12 @@ from tournament_platform.services.settings import (
     VOICE_ASR_MODEL_SIZE,
     VOICE_ASR_DEVICE,
     VOICE_ASR_COMPUTE_TYPE,
+    VOICE_LOW_LATENCY_EXPERIMENTAL,
+    VOICE_LATENCY_TRACE,
+    VOICE_SHOW_LATENCY,
+    VOICE_LATENCY_HISTORY_SIZE,
 )
+from tournament_platform.app.services.manual_score_events import _apply_manual_score_with_tracing, _queue_side_effect
 from tournament_platform.services.schemas import ActiveMatchResponse
 from tournament_platform.app.services.score_engine import (
     best_of_to_games_to_win,
@@ -449,6 +454,20 @@ from tournament_platform.app.services.audio_cues import (
     maybe_speak_tts,
     tts_mode_options,
 )
+from tournament_platform.app.services.voice_scorekeeper_tracing import trace_span, record_if_enabled
+from tournament_platform.app.services.latency_trace import (
+    get_recent_spans,
+    get_summary,
+    clear_history,
+    export_json,
+    export_csv,
+    get_span_count,
+    get_failed_count,
+    get_all_sources,
+    get_all_stages,
+    resize_history,
+    get_history_maxlen,
+)
 
 # Backwards-compatible aliases used by the scoring handlers below.
 _maybe_speak_tts = maybe_speak_tts
@@ -526,6 +545,13 @@ if 'voice_dataset_recorder' not in st.session_state:
     st.session_state.voice_dataset_recorder = VoiceDatasetRecorder(enabled=VOICE_DATASET_OPT_IN)
 if 'voice_dataset_samples' not in st.session_state:
     st.session_state.voice_dataset_samples = []
+
+# Side-effect queue for deferred commentary/TTS (Phase 2)
+if 'side_effect_queue' not in st.session_state:
+    from tournament_platform.app.services.side_effects import SideEffectQueue
+    st.session_state.side_effect_queue = SideEffectQueue()
+if 'voice_session_epoch' not in st.session_state:
+    st.session_state.voice_session_epoch = 1
 
 # Quick Voice Scoring state
 if 'quick_voice_mode' not in st.session_state:
@@ -706,7 +732,7 @@ def _get_voice_session_epoch() -> int:
 
 def _increment_voice_session_epoch() -> None:
     """Bump epoch to invalidate any queued/stale voice events."""
-    current = st.session_state.get("voice_session_epoch", 1)
+    current = int(st.session_state.get("voice_session_epoch", 1))
     st.session_state.voice_session_epoch = current + 1
 
 
@@ -753,23 +779,30 @@ def _on_quick_voice_mode_changed(old_mode: str, new_mode: str) -> None:
 def _apply_quick_voice_point(player: str, transcript: str) -> None:
     mm = st.session_state.match_manager
     prev_state = copy.deepcopy(mm.state)
-    success, msg = mm._add_point(player)
-    if success:
-        st.session_state.quick_voice_last_player = player
-        st.session_state.quick_voice_last_ts = time.time() * 1000.0
-        st.session_state.quick_voice_last_phrase = transcript
-        st.session_state.quick_voice_last_status = "accepted"
-        st.session_state.last_feedback = msg
-        st.toast(msg, icon="✅")
-        play_cue("point")
-        _maybe_speak_tts(msg, "increment")
-        _build_and_store_commentary("point_a" if player == "A" else "point_b", mm.state, prev_state)
-        if st.session_state.get("tt_sounds_enabled"):
-            audio_summary = finalize_current_audio_rally(reason="point_scored")
-            st.session_state["_pending_audio_summary_for_commentary"] = audio_summary
-            if audio_summary and audio_summary.confidence >= 0.55:
-                _append_audio_commentary_line(audio_summary)
-        _request_voice_rerun("quick_voice_accepted")
+    _trace = trace_span(source="quick_voice", stage="quick_voice_total", action_id=f"quick_voice_{player}")
+    success = False
+    try:
+        success, msg = mm._add_point(player)
+        if success:
+            st.session_state.quick_voice_last_player = player
+            st.session_state.quick_voice_last_ts = time.time() * 1000.0
+            st.session_state.quick_voice_last_phrase = transcript
+            st.session_state.quick_voice_last_status = "accepted"
+            st.session_state.last_feedback = msg
+            st.toast(msg, icon="✅")
+            play_cue("point")
+            _maybe_speak_tts(msg, "increment")
+            _build_and_store_commentary("point_a" if player == "A" else "point_b", mm.state, prev_state)
+            if st.session_state.get("tt_sounds_enabled"):
+                audio_summary = finalize_current_audio_rally(reason="point_scored")
+                st.session_state["_pending_audio_summary_for_commentary"] = audio_summary
+                if audio_summary and audio_summary.confidence >= 0.55:
+                    _append_audio_commentary_line(audio_summary)
+            _request_voice_rerun("quick_voice_accepted")
+    except Exception:
+        raise
+    finally:
+        finish_span(_trace, success=success)
 
 
 def _process_quick_voice_event(transcript: str) -> None:
@@ -1363,7 +1396,7 @@ def apply_score_event_and_refresh_ui(
             st.warning(f"🎤 Voice: {msg}")
             play_cue("reject")
             if st.session_state.get("commentary_engine") == "local":
-                _build_local_commentary("voice_score_rejected", state, None, settings, str(uuid.uuid4()))
+                _build_local_commentary("voice_score_rejected", mm.state, None, _get_commentary_settings(), str(uuid.uuid4()))
     else:
         success = False
         msg = "Unknown command"
@@ -2084,24 +2117,28 @@ class VoiceAudioProcessor(AudioProcessorBase):
         # rally processor so audio-only mode is not interrupted by voice actions.
 
 
-def persist_voice_match_to_db(match_id: int, engine) -> None:
+def persist_live_match_snapshot(match_id: int, engine) -> bool:
     """
     Persist the current voice MatchManager engine state to the DB ``Match`` row.
 
-    The ``score`` column follows the app-wide convention of "gamesWonA-gamesWonB"
-    (the match result). While the match is in progress the row is marked
-    ``active`` and the running games-won tally is stored; when the match is won
-    the row is marked ``completed`` with ``winner``/``winner_id``/``completed_at``
-    so completed games/matches survive session restarts.
+    **IMPORTANT: This function never writes finalized match state.**
+
+    - Always writes ``active`` status.
+    - On ``match_won``, sets ``call_status = "awaiting_result_submission"`` only.
+    - Never writes ``winner``, ``winner_id``, or ``completed_at``.
+    - Only ``finalize_voice_match()`` may transition the row to completed and update ratings.
+
+    This ensures the Public Board can see the active match, while Submit Result
+    remains the single authoritative finalization point.
     """
     import json
-    from datetime import datetime, timezone
+    from datetime import timezone
 
     db = SessionLocal()
     try:
         match = db.query(Match).filter(Match.id == match_id).first()
         if match is None:
-            return
+            return False
 
         match.score = f"{engine.games_won_a}-{engine.games_won_b}"
         match.game_scores = (
@@ -2110,44 +2147,38 @@ def persist_voice_match_to_db(match_id: int, engine) -> None:
             else None
         )
 
-        if engine.match_status == "match_won":
-            match.status = MatchStatus.completed
-            match.call_status = "completed"
-            winner_label = "A" if engine.games_won_a > engine.games_won_b else "B"
-            match.winner = (
-                engine.player_a_name if winner_label == "A" else engine.player_b_name
-            )
-            match.winner_id = (
-                engine.player_a_id if winner_label == "A" else engine.player_b_id
-            )
-            if match.completed_at is None:
-                match.completed_at = datetime.now(timezone.utc)
+        # Live snapshot is NEVER finalized - only marked as awaiting submission
+        match.status = MatchStatus.active
+        match.call_status = "awaiting_result_submission" if engine.match_status == "match_won" else "active"
+        match.winner = None
+        match.winner_id = None
+        match.started_at = match.started_at or datetime.now(timezone.utc)
+
+        try:
+            live_snapshot = {
+                "current_game_score": [engine.score_a, engine.score_b],
+                "games_won": [engine.games_won_a, engine.games_won_b],
+                "server": getattr(engine, "serving_player", None),
+            }
+            match.operator_note = json.dumps(live_snapshot)
+        except Exception:
             match.operator_note = None
-        else:
-            match.status = MatchStatus.active
-            match.call_status = "active"
-            match.winner = None
-            match.winner_id = None
-            match.started_at = match.started_at or datetime.now(timezone.utc)
-            try:
-                live_snapshot = {
-                    "current_game_score": [engine.score_a, engine.score_b],
-                    "games_won": [engine.games_won_a, engine.games_won_b],
-                    "server": getattr(engine, "serving_player", None),
-                }
-                match.operator_note = json.dumps(live_snapshot)
-            except Exception:
-                match.operator_note = None
 
         db.commit()
+        return True
     except Exception as e:
-        logger.error("Failed to persist voice match %s to DB: %s", match_id, e)
+        logger.error("Failed to persist live match snapshot %s to DB: %s", match_id, e)
         try:
             db.rollback()
         except Exception:
             pass
+        return False
     finally:
         db.close()
+
+
+# Keep backward-compatible alias for in-progress work
+persist_voice_match_to_db = persist_live_match_snapshot
 
 
 def _get_persisted_match_meta(match_id: int, engine) -> Dict[str, Any]:
@@ -4627,8 +4658,32 @@ def _render_ui() -> None:
         st.markdown(f"<div style='text-align:center;'><h3>{st.session_state.match_manager.state.player_a}</h3></div>", unsafe_allow_html=True)
         st.markdown(f"<div style='text-align:center; font-size:72px; font-weight:bold; color:#0066FF;'>{st.session_state.match_manager.state.score_a}</div>", unsafe_allow_html=True)
         _b1, _b2 = st.columns(2)
-        with _b1:
-            if st.button("➕ A", key="add_point_a", use_container_width=True):
+    with _b1:
+        if st.button("➕ A", key="add_point_a", use_container_width=True):
+            # Phase 4: Low-latency mode uses side-effect queue for commentary/TTS
+            _mid = st.session_state.get("voice_selected_match_id")
+            
+            if VOICE_LOW_LATENCY_EXPERIMENTAL:
+                # Use the low-latency helper that queues side effects
+                success, msg = _apply_manual_score_with_tracing(
+                    st.session_state.match_manager,
+                    "A",
+                    match_id=_mid,
+                )
+                st.session_state.last_feedback = msg
+                st.toast(msg, icon="✅")
+                play_cue("point")
+                if st.session_state.get("tt_sounds_enabled"):
+                    _pending_audio = st.session_state.get("_pending_audio_summary_for_commentary")
+                    # Audio summary will be processed in fragment drain
+                # Minimal DB snapshot (already done in helper for now)
+                try:
+                    if _mid:
+                        persist_voice_match_to_db(_mid, st.session_state.match_manager.engine)
+                except Exception:
+                    pass
+            else:
+                # Legacy path: synchronous commentary/TTS
                 prev_state = copy.deepcopy(st.session_state.match_manager.state)
                 success, msg = st.session_state.match_manager._add_point("A")
                 st.session_state.last_feedback = msg
@@ -4642,12 +4697,11 @@ def _render_ui() -> None:
                     if audio_summary and audio_summary.confidence >= 0.55:
                         _append_audio_commentary_line(audio_summary)
                 try:
-                    _mid = st.session_state.get("voice_selected_match_id")
                     if _mid:
                         persist_voice_match_to_db(_mid, st.session_state.match_manager.engine)
                 except Exception:
                     pass
-                st.rerun()
+            st.rerun()
         with _b2:
             if st.button("➖ A", key="sub_point_a", use_container_width=True):
                 # Quick undo for Player A
