@@ -41,6 +41,16 @@ class VoiceRuntimeState:
     match_options: List[Dict[str, Any]] = field(default_factory=list)
 
     # ------------------------------------------------------------------ #
+    # Voice enable & control
+    # ------------------------------------------------------------------ #
+    scoring_enabled: bool = False
+    quick_voice_mode: str = "off"  # "off" | "full" | "quick"
+    events_enabled: bool = False
+    session_epoch: int = 0
+    stale_events_ignored: int = 0
+    debug_mode: bool = False
+
+    # ------------------------------------------------------------------ #
     # Listening
     # ------------------------------------------------------------------ #
     listening: bool = False
@@ -94,6 +104,19 @@ class VoiceRuntimeState:
     # Dataset recorder
     # ------------------------------------------------------------------ #
     dataset_record_audio: bool = False
+
+    # ------------------------------------------------------------------ #
+    # Analytics / Teams
+    # ------------------------------------------------------------------ #
+    analytics_selected_match_id: int = 0
+    completed_games: List[Dict[str, Any]] = field(default_factory=list)
+    match_complete: bool = False
+    result_submitted: bool = False
+    pending_result_submission: bool = False
+    voice_ai_summary: str = ""
+    teams_recap_preview: str = ""
+    teams_recap_pending: str = ""
+    recap_tone: str = "neutral"
 
     # ------------------------------------------------------------------ #
     # Commentary / spoken feedback
@@ -184,7 +207,8 @@ def migrate_from_session_state(session_state: Optional[Dict[str, Any]] = None) -
         "voice_selected_player2_name": "selected_player2_name",
         "voice_match_options": "match_options",
         "voice_listening": "listening",
-        "voice_scoring_enabled": None,
+        "voice_scoring_enabled": "scoring_enabled",
+        "quick_voice_mode": "quick_voice_mode",
         "last_voice_transcript": "last_transcript",
         "last_voice_feedback": "last_feedback",
         "voice_noise_filtering": "noise_filtering",
@@ -207,6 +231,13 @@ def migrate_from_session_state(session_state: Optional[Dict[str, Any]] = None) -
         "pending_commentary": "pending_commentary",
         "last_commentary_event_id": "last_commentary_event_id",
         "last_commentary_text": "last_commentary_text",
+        "analytics_selected_match_id": "analytics_selected_match_id",
+        "voice_ai_summary": "voice_ai_summary",
+        "teams_recap_preview": "teams_recap_preview",
+        "teams_recap_pending": "teams_recap_pending",
+        "recap_tone": "recap_tone",
+        "tt_sounds_enabled": "tt_sounds_enabled",
+        "voice_debug_mode": "debug_mode",
     }
 
     migrated = False
@@ -254,3 +285,18 @@ def sync_legacy_keys(state: VoiceRuntimeState, session_state: Optional[Dict[str,
         ss["pending_commentary"] = state.pending_commentary
         ss["last_commentary_event_id"] = state.last_commentary_event_id
         ss["last_commentary_text"] = state.last_commentary_text
+        ss["voice_scoring_enabled"] = state.scoring_enabled
+        ss["quick_voice_mode"] = state.quick_voice_mode
+        ss["voice_events_enabled"] = state.events_enabled
+        ss["voice_session_epoch"] = state.session_epoch
+        ss["voice_stale_events_ignored"] = state.stale_events_ignored
+        ss["voice_debug_mode"] = state.debug_mode
+        ss["analytics_selected_match_id"] = state.analytics_selected_match_id
+        ss["completed_games"] = state.completed_games
+        ss["match_complete"] = state.match_complete
+        ss["result_submitted"] = state.result_submitted
+        ss["pending_result_submission"] = state.pending_result_submission
+        ss["voice_ai_summary"] = state.voice_ai_summary
+        ss["teams_recap_preview"] = state.teams_recap_preview
+        ss["teams_recap_pending"] = state.teams_recap_pending
+        ss["recap_tone"] = state.recap_tone

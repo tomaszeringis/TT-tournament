@@ -520,6 +520,8 @@ if 'voice_confirmation_machine' not in st.session_state:
 
 # Migrate legacy scattered keys to VoiceRuntimeState (Phase 1 / Phase 2)
 migrate_from_session_state()
+state = get_state()
+sync_legacy_keys(state)
 
 # Dataset recorder state (Phase 4)
 if 'voice_dataset_recorder' not in st.session_state:
