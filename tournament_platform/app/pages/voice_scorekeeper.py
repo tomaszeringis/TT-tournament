@@ -107,7 +107,7 @@ from tournament_platform.app.services.voice_vocab import VoiceVocabulary, Transc
 from tournament_platform.app.services.voice_audit import EventLogger
 from tournament_platform.app.services.voice_noise import NoiseFilter, NoiseProfiler
 from tournament_platform.app.services.voice.runtime_state import migrate_from_session_state, get_state, set_state, sync_legacy_keys
-from tournament_platform.app.services.voice_scorekeeper.scoring_actions import ScoreAction, ScoreActionType, apply_manual_score_action
+from tournament_platform.app.services.voice_scorekeeper.scoring_actions import ScoreAction, ScoreActionType, apply_manual_score_action, ScoreApplyResult
 from tournament_platform.app.services.voice.command_router import RouteContext, route_and_update_context, RouteDecision
 from tournament_platform.app.services.voice_scorekeeper.event_drain import (
     _on_quick_voice_mode_changed,
@@ -136,6 +136,15 @@ from tournament_platform.app.services.voice_scorekeeper.commentary import (
     render_commentary_debug,
     render_commentary_log,
 )
+from tournament_platform.app.services.voice_scorekeeper.ui_helpers import (
+    _render_audio_rally_insights,
+    _render_confirm_panel,
+    _render_dataset_panel,
+    _render_match_diagnostics,
+    render_active_match_selector,
+    render_selected_match_summary,
+)
+
 
 from tournament_platform.app.services.voice_scorekeeper.runtime import (
     VoiceAudioProcessor,
@@ -858,52 +867,6 @@ def _append_audio_commentary_line(audio_summary: Any) -> None:
     st.session_state.pending_commentary = text
 
 
-def _render_audio_rally_insights(summaries: List[Any]) -> None:
-    """Render lightweight audio rally analytics from session-state summaries."""
-    if not summaries:
-        st.caption("No audio rallies recorded yet.")
-        return
-    
-    total_impacts = sum(s.impact_count for s in summaries)
-    total_rallies = len(summaries)
-    longest = max(summaries, key=lambda s: s.impact_count) if summaries else None
-    fastest = min(summaries, key=lambda s: s.avg_interval_ms) if summaries else None
-    strongest = max(summaries, key=lambda s: s.strongest_impact_energy) if summaries else None
-    
-    st.markdown("**Audio Rally Insights (experimental)**")
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.metric("Total impacts", total_impacts)
-        st.caption(f"Across {total_rallies} rallies")
-    with c2:
-        if longest:
-            st.metric("Longest rally", f"{longest.impact_count} impacts")
-            st.caption(f"{longest.end_ts - longest.start_ts:.1f}s")
-    with c3:
-        if strongest:
-            st.metric("Strongest impact", f"{strongest.strongest_impact_energy:.3f}")
-    if fastest:
-        st.caption(f"Fastest tempo: {fastest.avg_interval_ms:.0f} ms avg interval")
-    st.caption("⚠️ Experimental — not official scoring data.")
-
-
-# ============================================================================
-# Canonical Score Apply Function
-# ============================================================================
-
-@dataclass
-class ScoreApplyResult:
-    """Outcome of applying a voice score event through the canonical pipeline."""
-    success: bool
-    reason: str
-    previous_score: str
-    new_score: str
-    parsed: Any  # VoiceParseResult
-    route_result: Any  # RouteResult
-    event_key: Optional[str] = None
-    event_ts: float = 0.0
-
-
 def apply_score_event_and_refresh_ui(
     transcript: str,
     source: str = "asr",
@@ -1606,37 +1569,6 @@ def _handle_phase3_intent(event: Any, parsed: VoiceParseResult) -> Optional[Dict
     return None
 
 
-def _render_confirm_panel() -> None:
-    pending = st.session_state.get("pending_confirmations", [])
-    if not pending:
-        _machine = st.session_state.get("voice_confirmation_machine")
-        if _machine and not _machine.is_idle():
-            _machine.reset()
-        return
-
-    st.markdown("### ⏳ Pending Voice Confirmations")
-    for idx, item in enumerate(pending):
-        with st.container(border=True):
-            col_a, col_b, col_c = st.columns([2, 1, 1])
-            with col_a:
-                st.markdown(f"**Intent:** {item['intent']}")
-                st.caption(f"Transcript: {item['raw_transcript']}")
-                st.caption(f"Confidence: {item['confidence']:.0%}")
-                st.caption(f"{item['predicted_score_before']} → {item['predicted_score_after']}")
-            with col_b:
-                if st.button("✅ Confirm", key=f"confirm_voice_{idx}", use_container_width=True):
-                    _apply_pending(idx)
-            with col_c:
-                if st.button("✖ Cancel", key=f"cancel_voice_{idx}", use_container_width=True):
-                    _machine = st.session_state.get("voice_confirmation_machine")
-                    if _machine:
-                        _machine.cancel()
-                        _machine.reset()
-                    st.session_state.pending_confirmations.pop(idx)
-                    st.session_state.last_voice_feedback = "Cancelled"
-                    _request_voice_rerun("cancel")
-
-
 def _apply_pending(idx: int) -> None:
     """Apply a pending confirmed voice command via the canonical pipeline."""
     _machine = st.session_state.get("voice_confirmation_machine")
@@ -1681,115 +1613,6 @@ def _apply_pending(idx: int) -> None:
         st.toast(f"🎤 {result.reason}", icon="✅")
     else:
         st.warning(f"🎤 Voice: {result.reason}")
-
-
-def _render_dataset_panel() -> None:
-    """Render the opt-in dataset recorder panel (Phase 4)."""
-    if not VOICE_DATASET_OPT_IN:
-        st.caption("Dataset recorder is disabled. Set VOICE_DATASET_OPT_IN=1 to enable.")
-        return
-
-    recorder: VoiceDatasetRecorder = st.session_state.get("voice_dataset_recorder")
-    if recorder is None:
-        return
-
-    st.markdown("### 🧪 Voice Dataset Recorder")
-    st.caption(
-        "Opt-in capture of transcripts, parsed intents, and operator corrections "
-        "for grammar evaluation. No audio is stored unless explicitly enabled below."
-    )
-
-    col_opt1, col_opt2, col_opt3 = st.columns(3)
-    with col_opt1:
-        st.session_state.voice_dataset_record_audio = st.checkbox(
-            "Record audio",
-            value=st.session_state.get("voice_dataset_record_audio", False),
-            help="Store audio samples (privacy-sensitive). Disabled by default.",
-        )
-    with col_opt2:
-        match_id = st.session_state.get("voice_selected_match_id")
-        st.caption(f"Match ID: {match_id if match_id else 'None'}")
-    with col_opt3:
-        if st.button("🔄 Refresh samples", key="refresh_dataset_samples"):
-            st.rerun()
-
-    samples = recorder.get_samples(match_id=match_id, limit=200)
-    st.session_state.voice_dataset_samples = samples
-
-    if samples:
-        st.markdown(f"**Recent samples ({len(samples)} shown)**")
-        for idx, sample in enumerate(samples):
-            with st.container(border=True):
-                col_a, col_b, col_c = st.columns([2, 1, 1])
-                with col_a:
-                    st.markdown(f"`{sample.transcript}`")
-                    st.caption(f"Parsed: {sample.parsed_intent} | Expected: {sample.expected_intent or '—'}")
-                    if sample.matched is False:
-                        st.warning(f"Correction: {sample.correction}")
-                with col_b:
-                    expected = st.text_input(
-                        "Expected intent",
-                        value=sample.expected_intent or "",
-                        key=f"dataset_expected_{sample.id}_{idx}",
-                    )
-                    if st.button("💾 Save", key=f"dataset_save_{sample.id}_{idx}", use_container_width=True):
-                        from tournament_platform.app.services.voice.event_log import VoiceCommandRepository
-                        db = VoiceCommandRepository._session()
-                        try:
-                            row = db.query(VoiceCommand).filter(VoiceCommand.id == sample.id).first()
-                            if row:
-                                row.expected_intent = expected
-                                row.matched = expected == sample.parsed_intent
-                                row.correction = expected if sample.parsed_intent != expected else None
-                                db.commit()
-                                st.success("Saved")
-                                st.rerun()
-                        except Exception as exc:
-                            db.rollback()
-                            st.error(f"Save failed: {exc}")
-                        finally:
-                            db.close()
-                with col_c:
-                    st.caption(f"Matched: {sample.matched}")
-                    st.caption(f"Mic: {sample.mic_type or '—'}")
-
-        col_jsonl, col_csv, col_summary = st.columns(3)
-        with col_jsonl:
-            if st.button("📥 Export JSONL", key="export_dataset_jsonl"):
-                jsonl = recorder.export_jsonl(samples=samples)
-                timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
-                st.download_button(
-                    label=f"Download voice_dataset_{timestamp}.jsonl",
-                    data=jsonl,
-                    file_name=f"voice_dataset_{timestamp}.jsonl",
-                    mime="application/x-ndjson",
-                    key="download_dataset_jsonl",
-                )
-        with col_csv:
-            if st.button("📊 Export CSV", key="export_dataset_csv"):
-                csv_data = recorder.export_csv(samples=samples)
-                timestamp = __import__("datetime").datetime.now().strftime("%Y%m%d_%H%M%S")
-                st.download_button(
-                    label=f"Download voice_dataset_{timestamp}.csv",
-                    data=csv_data,
-                    file_name=f"voice_dataset_{timestamp}.csv",
-                    mime="text/csv",
-                    key="download_dataset_csv",
-                )
-        with col_summary:
-            summary = recorder.accuracy_summary(samples=samples)
-            st.markdown(
-                f"**Accuracy:** {summary['accuracy']:.0%}  \n"
-                f"Matched: {summary['matched']} / {summary['total']}"
-            )
-    else:
-        st.caption("No dataset samples recorded yet. Enable VOICE_DATASET_OPT_IN and use voice commands to start collecting.")
-
-
-# ============================================================================
-# Commentary Helpers
-# ============================================================================
-
 
 
 def get_current_match_context() -> Optional[dict]:
@@ -2122,161 +1945,6 @@ def clear_selected_match() -> None:
     st.session_state.voice_score_input = "0-0"
     clear_result_review_state()
 
-
-def _render_match_diagnostics(tournament_id: int, status_filter: List[str], matches: List[Dict]) -> None:
-    """Render a collapsed diagnostics expander for match-loading verification."""
-    with st.expander("🔍 Match loading diagnostics", expanded=False):
-        db = SessionLocal()
-        try:
-            tournament = db.query(Tournament).filter(Tournament.id == tournament_id).first()
-            t_name = tournament.name if tournament else None
-            player_count = db.query(Player).count()
-            generated = list(tournament.matches) if tournament else []
-            generated_count = len(generated)
-            repo_matches = db.query(Match).filter(Match.tournament_id == tournament_id).all()
-            repo_count = len(repo_matches)
-            statuses_found = sorted({_normalize_status(m.status.value) for m in repo_matches})
-        except Exception as e:
-            t_name = None
-            player_count = 0
-            generated_count = 0
-            repo_count = 0
-            statuses_found = [f"error: {e}"]
-        finally:
-            db.close()
-
-        st.write(f"- selected tournament ID: `{tournament_id}`")
-        st.write(f"- selected tournament name: `{t_name}`")
-        st.write(f"- number of players: `{player_count}`")
-        st.write(f"- number of generated matches (Tournament page source): `{generated_count}`")
-        st.write(f"- number of DB/repository matches: `{repo_count}`")
-        st.write(f"- number of pending/active matches after filter: `{len(matches)}`")
-        st.write(f"- statuses found: `{statuses_found}`")
-        st.write(f"- status filter applied: `{status_filter}`")
-
-
-def render_active_match_selector() -> None:
-    """Render the active tournament match selector UI."""
-    st.subheader("🎯 Active Tournament Matches")
-    st.caption("Select a match to prefill players and score the result.")
-
-    tournaments = fetch_active_tournaments()
-    if not tournaments:
-        st.info("No tournaments found. Create a tournament first.")
-        return
-
-    tournament_options = {t["name"]: t["id"] for t in tournaments}
-    current_tournament_id = st.session_state.voice_selected_tournament_id
-
-    # Find index for current selection
-    selected_tournament_name = None
-    for name, tid in tournament_options.items():
-        if tid == current_tournament_id:
-            selected_tournament_name = name
-            break
-
-    col_t, col_f, col_r = st.columns([2, 2, 1])
-    with col_t:
-        selected_tournament_name = st.selectbox(
-            "Tournament",
-            options=list(tournament_options.keys()),
-            index=list(tournament_options.keys()).index(selected_tournament_name) if selected_tournament_name else 0,
-            key="voice_tournament_select",
-        )
-    with col_f:
-        status_filter = st.multiselect(
-            "Status filter",
-            options=["active", "pending"],
-            default=["active", "pending"],
-            key="voice_status_filter",
-        )
-    with col_r:
-        st.write("")
-        st.write("")
-        if st.button("🔄 Refresh", key="voice_refresh_matches", use_container_width=True):
-            fetch_active_matches.clear()
-            fetch_active_tournaments.clear()
-            st.rerun()
-
-    tournament_id = tournament_options[selected_tournament_name]
-    st.session_state.voice_selected_tournament_id = tournament_id
-
-    matches = fetch_active_matches(tournament_id, statuses=status_filter)
-    st.session_state.voice_match_options = matches
-
-    if not matches:
-        # Manual player selection (rendered later on the page) is the fallback
-        # path, but only when the tournament has at least 2 registered players.
-        _players = get_all_players()
-        if len(_players) >= 2:
-            st.info(
-                "No scheduled matches yet. Select two players below to start a "
-                "manual match."
-            )
-        else:
-            st.info("No active or pending matches found for this tournament.")
-        _render_match_diagnostics(tournament_id, status_filter, matches)
-        return
-
-    # Build options list, disabling incomplete matches
-    match_labels = []
-    match_disabled = []
-    for m in matches:
-        label = format_match_option(m)
-        match_labels.append(label)
-        match_disabled.append(m.get("incomplete", False))
-
-    # Find current selection index
-    current_match_id = st.session_state.voice_selected_match_id
-    selected_index = 0
-    for i, m in enumerate(matches):
-        if m.get("match_id") == current_match_id:
-            selected_index = i
-            break
-
-    selected_label = st.selectbox(
-        "Select a match",
-        options=match_labels,
-        index=selected_index,
-        key="voice_match_select",
-        help="Incomplete matches (missing players) are disabled unless byes are supported.",
-    )
-
-    # Find the selected match dict
-    selected_match = None
-    for i, label in enumerate(match_labels):
-        if label == selected_label:
-            selected_match = matches[i]
-            break
-
-    if selected_match:
-        if selected_match.get("incomplete"):
-            st.warning("⚠️ This match is missing a player and cannot be scored yet.")
-        else:
-            apply_selected_match_to_session(selected_match)
-
-    # Clear button
-    if st.button("🗑️ Clear selected match", key="voice_clear_match"):
-        clear_selected_match()
-        st.rerun()
-
-    _render_match_diagnostics(tournament_id, status_filter, matches)
-
-
-def render_selected_match_summary() -> None:
-    """Render a compact summary of the currently selected match."""
-    if not st.session_state.voice_selected_match_id:
-        return
-    p1 = st.session_state.voice_selected_player1_name or "TBD"
-    p2 = st.session_state.voice_selected_player2_name or "TBD"
-    st.info(f"**Selected Match:** {p1} vs {p2} (ID: {st.session_state.voice_selected_match_id})")
-
-
-# ============================================================================
-# Page UI
-# ============================================================================
-
-from tournament_platform.app.components.page_header import render_page_header
 
 def _render_ui() -> None:
     render_page_header(

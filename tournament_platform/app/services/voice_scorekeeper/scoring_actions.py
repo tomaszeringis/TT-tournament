@@ -47,6 +47,20 @@ class ScoreActionResult:
     diagnostics: Optional[Dict[str, Any]] = None
 
 
+@dataclass
+class ScoreApplyResult:
+    """Outcome of applying a voice score event through the canonical pipeline."""
+
+    success: bool
+    reason: str
+    previous_score: str
+    new_score: str
+    parsed: Any
+    route_result: Any
+    event_key: Optional[str] = None
+    event_ts: float = 0.0
+
+
 def apply_manual_score_action(
     action: ScoreAction,
     match_manager: Any,
