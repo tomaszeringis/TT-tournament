@@ -168,6 +168,7 @@ from tournament_platform.app.services.voice.confirmation import VoiceConfirmatio
 from tournament_platform.app.api_client import api_client
 from tournament_platform.app.design_system import apply_global_styles
 from tournament_platform.app.components.tour import render_tour
+from tournament_platform.app.components.page_header import render_page_header
 from tournament_platform.services.commentary_service import (
     CommentaryService,
     CommentarySettings,
@@ -3735,5 +3736,5 @@ def render_voice_sections() -> None:
 
 
 
-if get_script_run_ctx() is not None:
+if __name__ == "__main__":
     _render_ui()

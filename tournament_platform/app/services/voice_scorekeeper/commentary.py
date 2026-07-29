@@ -29,8 +29,40 @@ from tournament_platform.services.commentary_service import (
     ScoreMoment,
     log_commentary_event,
 )
+from tournament_platform.app.services.commentary_voice.piper_runtime import is_piper_available
+from tournament_platform.app.services.ui_feedback import render_sound_toggle
+from tournament_platform.app.services.voice_tts import TTSMode
+from tournament_platform.app.components.spoken_commentary import speak_commentary, speak_commentary_audio_file
+from tournament_platform.app.services.commentary_voice.piper_voice import get_piper_engine, PiperTTSError
+from tournament_platform.app.services.commentary_voice.piper_runtime import find_piper_voices
+from tournament_platform.app.services.commentary.commentary_engine import CommentaryEngine
+from tournament_platform.app.services.audio_cues import tts_mode_options, apply_tts_selection, build_test_tts_message, maybe_speak_tts
 
 logger = logging.getLogger(__name__)
+
+
+def piper_unavailable_session_key() -> str:
+    """Stable session-state key used to surface a one-time Piper notice."""
+    return "voice_piper_unavailable_notice_shown"
+
+
+def notify_piper_unavailable_once(message: str, *, level: str = "info") -> None:
+    """Show a friendly Piper-unavailable notice once per session.
+
+    Avoids warning spam on every score update. ``level`` is ``"info"`` or
+    ``"warning"`` — never ``"error"``.
+    """
+    import streamlit as st
+
+    key = piper_unavailable_session_key()
+    if st.session_state.get(key):
+        return
+    if level == "warning":
+        st.warning(message)
+    else:
+        st.info(message)
+    st.session_state[key] = True
+
 
 _commentary_service = CommentaryService()
 
@@ -705,6 +737,9 @@ def _reconcile_finished_games() -> None:
 
 def render_commentary_settings() -> None:
     """Render the commentary settings UI."""
+    if "webrtc_diag_available" not in st.session_state:
+        st.session_state.webrtc_diag_available = False
+
     with st.expander("🔊 Spoken Commentary", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
@@ -1019,7 +1054,17 @@ def render_commentary_settings() -> None:
 
         # --- Audio diagnostics (collapsed by default) ---
         with st.expander("🩺 Audio diagnostics", expanded=False):
-            ensure_webrtc_diag_state()
+            if "webrtc_diag_available" not in st.session_state:
+                st.session_state.webrtc_diag_available = False
+
+            def _debug_value(value: Any, max_len: int = 300) -> str:
+                if value is None:
+                    return "—"
+                text = str(value).replace("\n", " ").strip()
+                if len(text) > max_len:
+                    return text[:max_len] + "…"
+                return text
+
             _diag_webrtc = (
                 "installed" if st.session_state.get("webrtc_diag_available") else "missing"
             )
@@ -1077,7 +1122,7 @@ def render_commentary_settings() -> None:
             if st.session_state.get("sound_cues_enabled", False):
                 play_cue("point")
             if _tts.enabled and _tts.mode not in (TTSMode.OFF, TTSMode.VISUAL_ONLY):
-                _maybe_speak_tts(build_test_tts_message(st.session_state.match_manager), "increment")
+                maybe_speak_tts(build_test_tts_message(st.session_state.match_manager), "increment")
 
         # Activation hint: browsers may block audio until first interaction.
         st.caption(
