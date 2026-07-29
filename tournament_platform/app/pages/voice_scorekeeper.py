@@ -107,6 +107,7 @@ from tournament_platform.app.services.voice_vocab import VoiceVocabulary, Transc
 from tournament_platform.app.services.voice_audit import EventLogger
 from tournament_platform.app.services.voice_noise import NoiseFilter, NoiseProfiler
 from tournament_platform.app.services.voice.runtime_state import migrate_from_session_state, get_state, set_state, sync_legacy_keys
+from tournament_platform.app.services.voice_scorekeeper.scoring_actions import ScoreAction, ScoreActionType, apply_manual_score_action
 from tournament_platform.app.services.voice.command_router import RouteContext, route_and_update_context, RouteDecision
 from tournament_platform.app.services.voice.confirmation import VoiceConfirmationStateMachine
 from tournament_platform.app.api_client import api_client
@@ -4631,24 +4632,30 @@ def _render_ui() -> None:
         _b1, _b2 = st.columns(2)
         with _b1:
             if st.button("➕ A", key="add_point_a", use_container_width=True):
-                prev_state = copy.deepcopy(st.session_state.match_manager.state)
-                success, msg = st.session_state.match_manager._add_point("A")
-                st.session_state.last_feedback = msg
-                st.toast(msg, icon="✅")
-                play_cue("point")
-                _maybe_speak_tts(msg, "increment")
-                _build_and_store_commentary("point_a", st.session_state.match_manager.state, prev_state)
-                if st.session_state.get("tt_sounds_enabled"):
-                    audio_summary = finalize_current_audio_rally(reason="point_scored")
-                    st.session_state["_pending_audio_summary_for_commentary"] = audio_summary
-                    if audio_summary and audio_summary.confidence >= 0.55:
-                        _append_audio_commentary_line(audio_summary)
-                try:
-                    _mid = st.session_state.get("voice_selected_match_id")
-                    if _mid:
-                        persist_voice_match_to_db(_mid, st.session_state.match_manager.engine)
-                except Exception:
-                    pass
+                result = apply_manual_score_action(
+                    ScoreAction(action_type=ScoreActionType.ADD_POINT_A, match_id=st.session_state.get("voice_selected_match_id")),
+                    st.session_state.match_manager,
+                    st.session_state,
+                )
+                if result.success:
+                    prev_state = copy.deepcopy(st.session_state.match_manager.state)
+                    msg = result.message
+                    st.session_state.last_feedback = msg
+                    st.toast(msg, icon="✅")
+                    play_cue("point")
+                    _maybe_speak_tts(msg, "increment")
+                    _build_and_store_commentary("point_a", st.session_state.match_manager.state, prev_state)
+                    if st.session_state.get("tt_sounds_enabled"):
+                        audio_summary = finalize_current_audio_rally(reason="point_scored")
+                        st.session_state["_pending_audio_summary_for_commentary"] = audio_summary
+                        if audio_summary and audio_summary.confidence >= 0.55:
+                            _append_audio_commentary_line(audio_summary)
+                    try:
+                        _mid = st.session_state.get("voice_selected_match_id")
+                        if _mid:
+                            persist_voice_match_to_db(_mid, st.session_state.match_manager.engine)
+                    except Exception:
+                        pass
                 st.rerun()
         with _b2:
             if st.button("➖ A", key="sub_point_a", use_container_width=True):
