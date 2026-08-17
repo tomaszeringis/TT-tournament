@@ -95,7 +95,7 @@ _streamlit.runtime.metrics_util.gather_metrics = MagicMock(return_value=lambda f
 
 # Force reload of anything already imported
 for mod_name in list(sys.modules.keys()):
-    if "voice_scorekeeper" in mod_name:
+    if "voice_scorekeeper" in mod_name or "event_drain" in mod_name:
         del sys.modules[mod_name]
 
 
@@ -128,7 +128,7 @@ def _import_voice_scorekeeper():
         sys.modules["streamlit.runtime.scriptrunner"] = _scriptrunner_mock
 
         for mod_name in list(sys.modules.keys()):
-            if "voice_scorekeeper" in mod_name:
+            if "voice_scorekeeper" in mod_name or "event_drain" in mod_name:
                 del sys.modules[mod_name]
         with patch(
             "tournament_platform.app.pages.voice_scorekeeper.fetch_active_tournaments",
@@ -166,6 +166,7 @@ def _make_fake_session_state() -> dict:
             player_b_id=2,
         ),
         "voice_scoring_enabled": True,
+        "quick_voice_mode": "full",
         "voice_listening": False,
         "voice_strict_mode": False,
         "voice_noise_filtering": False,
@@ -187,6 +188,7 @@ def _make_fake_session_state() -> dict:
         "voice_tts_adapter": MagicMock(enabled=False),
         "_voice_debug_last_result": None,
         "_voice_p2p_cache": {},
+        "match_complete": False,
     })
 
 
@@ -196,6 +198,12 @@ def fake_session_state():
     vs = _import_voice_scorekeeper()
     state = _make_fake_session_state()
     vs.st.session_state = state
+    
+    # Also patch event_drain if it was imported
+    for mod_name, mod in sys.modules.items():
+        if "event_drain" in mod_name and hasattr(mod, "st"):
+            mod.st.session_state = state
+            
     return state
 
 
@@ -719,6 +727,136 @@ class TestPhase6ContinuousSessionAndStalePrevention:
         _process_voice_events()
         assert fake_session_state.get("voice_stale_events_ignored") == 1
 
+
+class TestLithuanianVoiceCommands:
+    """Phase 2: Lithuanian language support integration tests."""
+
+    def test_taškas_kairė_scores_player_a(self, fake_session_state):
+        from tournament_platform.services.match_manager import MatchManager
+        from tournament_platform.app.services.voice.commands import parse as parse_command, VoiceIntent
+        from tournament_platform.app.services.voice_scorekeeper.scoring_actions import resolve_side_to_player
+        from tournament_platform.app.services.score_engine import create_match
+
+        fake_session_state["voice_scoring_enabled"] = True
+        fake_session_state["voice_selected_match_id"] = 1
+        fake_session_state["voice_listening"] = True
+        fake_session_state["voice_events_enabled"] = True
+        fake_session_state["voice_continuous_session_id"] = "sess-1"
+        fake_session_state["voice_continuous_session_start"] = 0.0
+        fake_session_state["voice_webrtc_streamer_state"] = {"playing": True}
+
+        mm = MatchManager()
+        mm.engine = create_match(player_a_name="Tomas Z", player_b_name="Opponent")
+        fake_session_state["match_manager"] = mm
+
+        parsed = parse_command("taškas kairė")
+        assert parsed.intent == VoiceIntent.SCORE_POINT
+        assert parsed.target_side == "LEFT"
+        assert parsed.slots.get("player") is None
+
+        resolved = resolve_side_to_player(parsed.target_side, mm.engine)
+        assert resolved == "A"
+        parsed.slots["player"] = resolved
+
+        score_event = parsed.to_score_event()
+        assert score_event.player == "A"
+
+    def test_taškas_dešinė_scores_player_b(self, fake_session_state):
+        from tournament_platform.services.match_manager import MatchManager
+        from tournament_platform.app.services.voice.commands import parse as parse_command, VoiceIntent
+        from tournament_platform.app.services.voice_scorekeeper.scoring_actions import resolve_side_to_player
+        from tournament_platform.app.services.score_engine import create_match
+
+        fake_session_state["voice_scoring_enabled"] = True
+        fake_session_state["voice_selected_match_id"] = 1
+        fake_session_state["voice_listening"] = True
+        fake_session_state["voice_events_enabled"] = True
+        fake_session_state["voice_continuous_session_id"] = "sess-1"
+        fake_session_state["voice_continuous_session_start"] = 0.0
+        fake_session_state["voice_webrtc_streamer_state"] = {"playing": True}
+
+        mm = MatchManager()
+        mm.engine = create_match(player_a_name="Tomas Z", player_b_name="Opponent")
+        fake_session_state["match_manager"] = mm
+
+        parsed = parse_command("taškas dešinė")
+        assert parsed.intent == VoiceIntent.SCORE_POINT
+        assert parsed.target_side == "RIGHT"
+
+        resolved = resolve_side_to_player(parsed.target_side, mm.engine)
+        assert resolved == "B"
+        parsed.slots["player"] = resolved
+
+        score_event = parsed.to_score_event()
+        assert score_event.player == "B"
+
+    def test_lithuanian_undo_command(self):
+        from tournament_platform.app.services.voice.commands import parse as parse_command, VoiceIntent
+
+        parsed = parse_command("atšaukti")
+        assert parsed.intent == VoiceIntent.UNDO
+
+        parsed = parse_command("atgal")
+        assert parsed.intent == VoiceIntent.UNDO
+
+    def test_lithuanian_alias_expansion(self):
+        from tournament_platform.app.services.voice_vocab import TranscriptPostProcessor
+
+        proc = TranscriptPostProcessor()
+        assert proc.process("taškas kairė", language="lt") == "point left"
+        assert proc.process("taškas dešinė", language="lt") == "point right"
+        assert proc.process("atšaukti", language="lt") == "undo"
+        assert proc.process("atgal", language="lt") == "undo"
+        assert proc.process("taškas pirmam", language="lt") == "point player one"
+        assert proc.process("taškas antram", language="lt") == "point player two"
+
+    def test_side_resolution_left_to_player_a(self):
+        from tournament_platform.app.services.voice_scorekeeper.scoring_actions import resolve_side_to_player
+        from tournament_platform.app.services.score_engine import create_match
+
+        engine = create_match(player_a_name="A", player_b_name="B")
+        assert resolve_side_to_player("LEFT", engine) == "A"
+        assert resolve_side_to_player("RIGHT", engine) == "B"
+        assert resolve_side_to_player("UNKNOWN", engine) is None
+
+    def test_lithuanian_multi_command_scoring(self, fake_session_state):
+        from tournament_platform.services.match_manager import MatchManager
+        from tournament_platform.app.pages.voice_scorekeeper import apply_score_event_and_refresh_ui
+
+        fake_session_state["voice_scoring_enabled"] = True
+        fake_session_state["voice_selected_match_id"] = 1
+        fake_session_state["voice_listening"] = True
+        fake_session_state["voice_events_enabled"] = True
+        fake_session_state["voice_continuous_session_id"] = "sess-1"
+        fake_session_state["voice_continuous_session_start"] = 0.0
+        fake_session_state["voice_webrtc_streamer_state"] = {"playing": True}
+
+        mm = MatchManager(player_a="Tomas Z", player_b="Opponent")
+        mm.set_player_names("Tomas Z", "Opponent", 101, 102)
+        fake_session_state["match_manager"] = mm
+        fake_session_state["voice_selected_player1_id"] = 101
+        fake_session_state["voice_selected_player2_id"] = 102
+
+        assert mm.state.get_score_string() == "0-0"
+
+        result1 = apply_score_event_and_refresh_ui("taškas kairė", source="continuous", enable_confirmation=False)
+        assert result1.success is True
+        assert mm.state.get_score_string() == "1-0"
+
+        fake_session_state["voice_last_applied_event_key"] = None
+        fake_session_state["voice_last_applied_event_ts"] = 0.0
+
+        result2 = apply_score_event_and_refresh_ui("taškas dešinė", source="continuous", enable_confirmation=False)
+        assert result2.success is True
+        assert mm.state.get_score_string() == "1-1"
+
+        fake_session_state["voice_last_applied_event_key"] = None
+        fake_session_state["voice_last_applied_event_ts"] = 0.0
+
+        result3 = apply_score_event_and_refresh_ui("taškas kairė", source="continuous", enable_confirmation=False)
+        assert result3.success is True
+        assert mm.state.get_score_string() == "2-1"
+
     def test_webrtc_not_playing_rejects_continuous_event(self, fake_session_state):
         from tournament_platform.app.pages.voice_scorekeeper import _process_voice_events
 
@@ -769,7 +907,84 @@ class TestPhase6ContinuousSessionAndStalePrevention:
         assert len(fake_session_state["voice_audit_events"]) == 0
 
 
-class TestPhase7UiAndDiagnostics:
+class _ColumnTracker:
+    """Tracks which column context is active when markdown/button calls are made."""
+
+    def __init__(self):
+        self.columns_created = []
+        self.active_index = None
+        self.markdown_calls = []
+        self.button_calls = []
+
+    def make_columns(self, *args, **kwargs):
+        if args and isinstance(args[0], int):
+            n = args[0]
+        elif args and hasattr(args[0], '__len__'):
+            n = len(args[0])
+        else:
+            n = 2
+        cols = [_ColumnMock(i, self) for i in range(n)]
+        self.columns_created.extend(cols)
+        return cols
+
+
+class _ColumnMock:
+    def __init__(self, index, tracker):
+        self.index = index
+        self.tracker = tracker
+        self._mock = MagicMock()
+
+    def __enter__(self):
+        self.tracker.active_index = self.index
+        return self._mock
+
+    def __exit__(self, *args):
+        self.tracker.active_index = None
+        return False
+
+    def markdown(self, *args, **kwargs):
+        self.tracker.markdown_calls.append((self.index, args[0] if args else ""))
+
+    def button(self, *args, **kwargs):
+        self.tracker.button_calls.append((self.index, args[0] if args else ""))
+
+
+class TestScoreboardInvariant:
+    """Phase 4: Verify scoreboard always renders player_a left, player_b right."""
+
+    def test_score_col1_always_player_a_and_score_col2_always_player_b(self):
+        import inspect
+        from tournament_platform.app.pages.voice_scorekeeper import _render_ui
+
+        source = inspect.getsource(_render_ui)
+
+        score_col1_pos = source.find("score_col1")
+        score_col2_pos = source.find("score_col2")
+
+        assert score_col1_pos != -1, "score_col1 not found in _render_ui"
+        assert score_col2_pos != -1, "score_col2 not found in _render_ui"
+
+        score_colc_pos = source.find("score_colc", score_col1_pos)
+        columns_assign_end = source.find("\n\n", score_col2_pos)
+        if columns_assign_end == -1:
+            columns_assign_end = len(source)
+
+        scoreboard_block = source[score_col1_pos:columns_assign_end]
+
+        assert "player_a" in scoreboard_block, "player_a must appear in scoreboard block"
+        assert "player_b" in scoreboard_block, "player_b must appear in scoreboard block"
+        assert "score_a" in scoreboard_block, "score_a must appear in scoreboard block"
+        assert "score_b" in scoreboard_block, "score_b must appear in scoreboard block"
+
+        col1_player_a = scoreboard_block.find("player_a", score_colc_pos - score_col1_pos)
+        col2_player_b = scoreboard_block.find("player_b", score_col2_pos - score_col1_pos)
+        col1_score_a = scoreboard_block.find("score_a", score_colc_pos - score_col1_pos)
+        col2_score_b = scoreboard_block.find("score_b", score_col2_pos - score_col1_pos)
+
+        assert col1_player_a != -1, "player_a must appear in score_col1 region"
+        assert col2_player_b != -1, "player_b must appear in score_col2 region"
+        assert col1_score_a != -1, "score_a must appear in score_col1 region"
+        assert col2_score_b != -1, "score_b must appear in score_col2 region"
     """Phase 7: UI status, ASR diagnostics, event store unification."""
 
     def test_ui_status_not_active_when_webrtc_not_playing(self, fake_session_state):
@@ -858,7 +1073,7 @@ class TestContinuousPipelineFixes:
         audit = fake_session_state.get("voice_audit_events", [])
         consumed_entries = [e for e in audit if e.get("stage") == "continuous_event_consumed"]
         assert len(consumed_entries) == 1
-        assert "1_events" in consumed_entries[0]["note"]
+        assert consumed_entries[0]["note"] == "1_events"
 
     def test_process_voice_events_calls_shared_processor(self, fake_session_state):
         from tournament_platform.app.pages.voice_scorekeeper import _process_voice_events
@@ -883,7 +1098,7 @@ class TestContinuousPipelineFixes:
         fake_session_state["voice_webrtc_ctx"] = {"processor": processor}
 
         with patch(
-            "tournament_platform.app.pages.voice_scorekeeper._process_voice_transcript"
+            "tournament_platform.app.services.voice_scorekeeper.event_drain._process_voice_transcript"
         ) as mock_shared:
             mock_shared.return_value = {
                 "success": True,
@@ -895,7 +1110,7 @@ class TestContinuousPipelineFixes:
             }
             _process_voice_events()
             mock_shared.assert_called_once_with(
-                "point blue",
+                transcript="point blue",
                 source="continuous",
                 enable_confirmation=True,
             )

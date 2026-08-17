@@ -38,6 +38,7 @@ class VoiceScoreEvent:
     requires_confirmation: bool = False  # Phase 4/7 (TTS/LLM confirmation)
     asr_latency_ms: Optional[float] = None  # Phase 5/9 observability
     noise_rms: Optional[float] = None  # Phase 5 observability
+    target_side: Optional[str] = None  # "LEFT" or "RIGHT"
 
 
 # Number word to digit mapping

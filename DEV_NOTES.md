@@ -41,10 +41,10 @@
 
 ```bash
 # API server
-python tournament_platform/api/server.py
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 
 # Streamlit frontend
-streamlit run tournament_platform/app/main.py
+streamlit run streamlit_app.py
 ```
 
 ## Voice Scorekeeper — Active Match Selection

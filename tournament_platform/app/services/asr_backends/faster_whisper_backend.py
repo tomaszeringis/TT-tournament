@@ -8,11 +8,14 @@ with other ASR backends through the ASRBackend protocol.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import TYPE_CHECKING, Optional, Any
 
-from tournament_platform.app.services.asr_backends.base import ASRBackend, BackendStatus
-from tournament_platform.app.services.voice_asr import LocalASR
+from tournament_platform.app.services.asr_backends.base import ASRBackend, BackendStatus, TranscriptionResult
+from tournament_platform.app.services.voice_calibration.models import AsrExperimentConfig
 from tournament_platform.app.services.voice_vocab import VoiceVocabulary
+
+if TYPE_CHECKING:
+    from tournament_platform.app.services.voice_asr import LocalASR
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +35,7 @@ class FasterWhisperBackend(ASRBackend):
         self._asr: Optional[LocalASR] = None
 
     def _get_asr(self) -> LocalASR:
+        from tournament_platform.app.services.voice_asr import LocalASR
         if self._asr is None:
             self._asr = LocalASR(vocabulary=self.vocabulary)
         return self._asr
@@ -55,6 +59,24 @@ class FasterWhisperBackend(ASRBackend):
         except Exception as e:
             logger.error("FasterWhisperBackend PCM transcription error: %s", e)
             return ""
+
+    def transcribe_experiment(
+        self,
+        *,
+        audio: bytes,
+        config: AsrExperimentConfig,
+    ) -> TranscriptionResult:
+        """Transcribe audio using an explicit experiment configuration.
+
+        Reuses the loaded model and passes only supported parameters.
+        Never mutates production defaults or reloads the model.
+        """
+        asr = self._get_asr()
+        try:
+            return asr.transcribe_experiment(audio=audio, config=config)
+        except Exception as e:
+            logger.error("FasterWhisperBackend experiment transcription error: %s", e)
+            return TranscriptionResult(text="")
 
     def is_available(self) -> bool:
         try:

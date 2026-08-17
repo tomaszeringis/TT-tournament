@@ -23,8 +23,7 @@
 
 **How to Use:**
 ```bash
-cd tournament_platform
-alembic upgrade head
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
 ---
@@ -251,22 +250,20 @@ async def global_exception_handler(request: Request, exc: Exception):
 ## 🚀 Ready to Deploy
 
 ### Pre-Deployment Steps:
-- [ ] Run `pip install -r requirements.txt`
-- [ ] Run `cd tournament_platform && alembic upgrade head`
+- [ ] Run `pip install -e .`
+- [ ] Run `python -m alembic -c tournament_platform/alembic.ini upgrade head`
 - [ ] Run `python initialize_rag.py`
 - [ ] Run `python test_api.py`
-- [ ] Update `app/config.yaml` with real credentials
-- [ ] Update `TEAMS_WEBHOOK_URL` in `api/server.py`
+- [ ] Update `tournament_platform/app/config.yaml` with real credentials
+- [ ] Update `TEAMS_WEBHOOK_URL` in `tournament_platform/config/__init__.py`
 
 ### Deployment Commands:
 ```bash
 # Terminal 1: Start API
-cd tournament_platform
-python api/server.py
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 
 # Terminal 2: Start Streamlit
-cd tournament_platform/app
-streamlit run main.py
+streamlit run streamlit_app.py
 ```
 
 ### Access URLs:
@@ -351,10 +348,9 @@ The tournament platform is now fully refactored with:
 
 **Next Step:** Run the quick start:
 ```bash
-pip install -r requirements.txt
-cd tournament_platform
-alembic upgrade head
-python api/server.py
+pip install -e .
+python -m alembic -c tournament_platform/alembic.ini upgrade head
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ---

@@ -120,5 +120,28 @@ def apply_manual_score_action(
     )
 
 
+def resolve_side_to_player(side: str, engine: Any) -> Optional[str]:
+    """Resolve a display side (LEFT/RIGHT) to the current player identity (A/B).
+
+    The live scoreboard renders player_a on the left column and player_b on
+    the right column.  This helper encodes that invariant so the parser can
+    produce language-neutral ``target_side`` slots while the application
+    layer maps them to the correct player label.
+
+    Args:
+        side: Display side — ``"LEFT"`` or ``"RIGHT"``.
+        engine: Authoritative ``MatchState`` engine (used for future display-
+            order swaps; currently the scoreboard layout is hardcoded).
+
+    Returns:
+        ``"A"`` for LEFT, ``"B"`` for RIGHT, or ``None`` for unknown sides.
+    """
+    if side == "LEFT":
+        return "A"
+    if side == "RIGHT":
+        return "B"
+    return None
+
+
 def _best_of_to_games_to_win(best_of: int) -> int:
     return (best_of // 2) + 1

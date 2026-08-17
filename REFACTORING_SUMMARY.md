@@ -26,14 +26,13 @@ Your tournament platform has been successfully refactored with all the requested
 ### 🚀 How to use:
 ```bash
 # Apply migrations
-cd tournament_platform
-alembic upgrade head
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 
 # View current status
-alembic current
+python -m alembic -c tournament_platform/alembic.ini current
 
 # Create new migration after model changes
-alembic revision --autogenerate -m "Description"
+python -m alembic -c tournament_platform/alembic.ini revision --autogenerate -m "Description"
 ```
 
 ---
@@ -245,8 +244,7 @@ Response:
 
 ### 🚀 Running the API:
 ```bash
-cd tournament_platform
-python api/server.py
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ---
@@ -339,31 +337,27 @@ tournament_platform/
 
 ### 1. Install Dependencies
 ```bash
-pip install -r requirements.txt
+pip install -e .
 ```
 
 ### 2. Initialize Database
 ```bash
-cd tournament_platform
-alembic upgrade head
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
 ### 3. Initialize RAG (Optional)
 ```bash
-cd ..
 python initialize_rag.py
 ```
 
 ### 4. Start API (Terminal 1)
 ```bash
-cd tournament_platform
-python api/server.py
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### 5. Start Streamlit (Terminal 2)
 ```bash
-cd tournament_platform/app
-streamlit run main.py
+streamlit run streamlit_app.py
 ```
 
 ---
@@ -420,10 +414,10 @@ This tests:
 
 ## 🎯 Next Steps
 
-1. **Configure Authentication**: Update `app/config.yaml`
-2. **Set Teams Webhook**: Update `TEAMS_WEBHOOK_URL` in `api/server.py`
+1. **Configure Authentication**: Update `tournament_platform/app/config.yaml`
+2. **Set Teams Webhook**: Update `TEAMS_WEBHOOK_URL` in `tournament_platform/config/__init__.py`
 3. **Initialize RAG**: Run `initialize_rag.py` with your rules
-4. **Run Database Migrations**: `alembic upgrade head`
+4. **Run Database Migrations**: `python -m alembic -c tournament_platform/alembic.ini upgrade head`
 5. **Start Services**: Run API and Streamlit
 6. **Test the Platform**: Use `test_api.py` and the web interface
 

@@ -142,7 +142,7 @@ def render_selected_match_summary() -> None:
 def _render_match_diagnostics(tournament_id: int, status_filter: List[str], matches: List[Dict]) -> None:
     """Render a collapsed diagnostics expander for match-loading verification."""
     from tournament_platform.models import SessionLocal, Tournament, Player, Match
-    from tournament_platform.app.services.voice_scorekeeper.commentary import _normalize_status
+    from tournament_platform.app.components.match_selector import _normalize_status
 
     with st.expander("🔍 Match loading diagnostics", expanded=False):
         db = SessionLocal()

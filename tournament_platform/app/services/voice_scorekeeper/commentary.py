@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json, logging, time, uuid
+from collections import deque
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import streamlit as st
 
@@ -13,7 +15,36 @@ from tournament_platform.services.commentary_templates import (
     SUPPORTED_COMMENTARY_STYLES,
 )
 
-COMMENTARY_STYLE_OPTIONS = list(SUPPORTED_COMMENTARY_STYLES.keys())
+RETAINED_STYLES = ("professional", "coach", "announcer")
+
+STYLE_COMPATIBILITY_MAP = {
+    "neutral": "professional",
+    "minimal": "professional",
+    "kids": "professional",
+    "beginner": "professional",
+    "simple": "professional",
+    "couch": "coach",
+    "commentator": "announcer",
+    "sport_commentator": "announcer",
+    "energetic": "announcer",
+}
+
+STYLE_TO_CATEGORY = {
+    "professional": "play_by_play",
+    "coach": "tactical",
+    "announcer": "contextual",
+}
+
+COMMENTARY_STYLE_OPTIONS = list(RETAINED_STYLES)
+
+
+def normalize_commentary_style_for_ui(raw: object) -> str:
+    normalized = normalize_commentary_style(str(raw or "professional"))
+    mapped = STYLE_COMPATIBILITY_MAP.get(normalized, normalized)
+    if mapped not in RETAINED_STYLES:
+        return "professional"
+    return mapped
+
 
 from tournament_platform.services.commentary_service import (
     CommentaryService,
@@ -30,7 +61,7 @@ from tournament_platform.services.commentary_service import (
     log_commentary_event,
 )
 from tournament_platform.app.services.commentary_voice.piper_runtime import is_piper_available
-from tournament_platform.app.services.ui_feedback import render_sound_toggle
+from tournament_platform.app.services.ui_feedback import render_sound_toggle, play_cue
 from tournament_platform.app.services.voice_tts import TTSMode
 from tournament_platform.app.components.spoken_commentary import speak_commentary, speak_commentary_audio_file
 from tournament_platform.app.services.commentary_voice.piper_voice import get_piper_engine, PiperTTSError
@@ -40,37 +71,124 @@ from tournament_platform.app.services.audio_cues import tts_mode_options, apply_
 
 logger = logging.getLogger(__name__)
 
-
-def piper_unavailable_session_key() -> str:
-    """Stable session-state key used to surface a one-time Piper notice."""
-    return "voice_piper_unavailable_notice_shown"
-
-
-def notify_piper_unavailable_once(message: str, *, level: str = "info") -> None:
-    """Show a friendly Piper-unavailable notice once per session.
-
-    Avoids warning spam on every score update. ``level`` is ``"info"`` or
-    ``"warning"`` — never ``"error"``.
-    """
-    import streamlit as st
-
-    key = piper_unavailable_session_key()
-    if st.session_state.get(key):
-        return
-    if level == "warning":
-        st.warning(message)
-    else:
-        st.info(message)
-    st.session_state[key] = True
-
-
 _commentary_service = CommentaryService()
+
+
+# ============================================================================
+# Accepted Commentary Event Registry
+# ============================================================================
+
+@dataclass
+class AcceptedCommentaryEvent:
+    event_id: str
+    match_id: str | None
+    event_type: str
+    created_at: float
+    score_a: int
+    score_b: int
+    player_a: str
+    player_b: str
+    server: str | None
+    importance: Literal["routine", "notable", "critical"]
+    category: Literal["play_by_play", "tactical", "contextual"]
+    context: dict | None = None
+
+
+class CommentaryEventRegistry:
+    def __init__(self, maxlen: int = 20) -> None:
+        self._events: deque[AcceptedCommentaryEvent] = deque(maxlen=maxlen)
+
+    def record(self, event: AcceptedCommentaryEvent) -> None:
+        self._events.append(event)
+
+    def recent(self, n: int = 5) -> list[AcceptedCommentaryEvent]:
+        return list(self._events)[-n:]
+
+    def clear(self) -> None:
+        self._events.clear()
+
+
+_commentary_event_registry = CommentaryEventRegistry()
+
+
+def classify_importance(event_type: str, context: Any = None) -> str:
+    critical_types = {
+        "deuce", "advantage", "game_point", "match_point",
+        "game_won", "match_won",
+    }
+    notable_types = {
+        "three_point_streak", "lead_change", "score_tied_late", "large_lead",
+        "break_point", "set_point",
+    }
+    if event_type in critical_types:
+        return "critical"
+    if event_type in notable_types:
+        return "notable"
+    return "routine"
+
+
+def _style_to_category(style: str) -> str:
+    return STYLE_TO_CATEGORY.get(style, "play_by_play")
+
+
+# ============================================================================
+# Session-state diagnostic log helpers
+# ============================================================================
+
+def _append_commentary_log_entry(
+    *,
+    event_id: str,
+    status: str,
+    text: str,
+    match_id: str | None,
+    event_type: str,
+    style: str,
+    language: str,
+    provider: str,
+    error: str | None = None,
+) -> None:
+    entry = {
+        "event_id": event_id,
+        "created_at": time.time(),
+        "match_id": match_id,
+        "event_type": event_type,
+        "style": style,
+        "language": language,
+        "provider": provider,
+        "text": text,
+        "status": status,
+        "error": error,
+    }
+    entries = list(st.session_state.get("commentary_log_entries", []))
+    entries.append(entry)
+    st.session_state["commentary_log_entries"] = entries[-10:]
+
+
+def update_commentary_log_status(
+    event_id: str,
+    status: str,
+    error: str | None = None,
+) -> None:
+    entries = list(st.session_state.get("commentary_log_entries", []))
+    for entry in reversed(entries):
+        if entry.get("event_id") == event_id:
+            entry["status"] = status
+            if error is not None:
+                entry["error"] = error
+            break
+    st.session_state["commentary_log_entries"] = entries[-10:]
+
+
+def _reset_commentary_log_for_match() -> None:
+    current_match_id = st.session_state.get("voice_selected_match_id")
+    if st.session_state.get("commentary_log_match_id") != current_match_id:
+        st.session_state["commentary_log_entries"] = []
+        st.session_state["commentary_log_match_id"] = current_match_id
+
 
 def _get_commentary_settings() -> CommentarySettings:
     """Build CommentarySettings from current session state."""
-    # Normalize the style so legacy/typo values ("couch", "commentator") never
-    # raise ValueError when constructing the CommentaryStyle enum.
-    style_value = normalize_commentary_style(
+    style_value = normalize_commentary_style_for_ui(
         st.session_state.get("commentary_style", CommentaryStyle.NEUTRAL.value)
     )
     return CommentarySettings(
@@ -182,19 +300,26 @@ def play_commentary(
     if not text:
         return
 
+    _eid = event_id or str(uuid.uuid4())
+    update_commentary_log_status(_eid, "dispatch_requested")
+
     engine_name = st.session_state.get("commentary_tts_engine", "browser")
     if engine_name != "piper":
         tts_lang = "lt-LT" if settings.language == "lt" else "en-US"
-        speak_commentary(
-            text=text,
-            key=f"commentary_{event_id or uuid.uuid4()}",
-            voice=settings.voice,
-            lang=tts_lang,
-            rate=settings.rate,
-            pitch=settings.pitch,
-            volume=settings.volume,
-            voice_profile_id=settings.voice_profile_id,
-        )
+        try:
+            speak_commentary(
+                text=text,
+                key=f"commentary_{_eid}",
+                voice=settings.voice,
+                lang=tts_lang,
+                rate=settings.rate,
+                pitch=settings.pitch,
+                volume=settings.volume,
+                voice_profile_id=settings.voice_profile_id,
+            )
+            update_commentary_log_status(_eid, "synthesis_completed")
+        except Exception as exc:
+            update_commentary_log_status(_eid, "synthesis_failed", error=str(exc))
         return
 
     piper_voice_id = st.session_state.get("commentary_piper_voice_id")
@@ -204,6 +329,7 @@ def play_commentary(
             "or use Browser speech.",
             level="info",
         )
+        update_commentary_log_status(_eid, "synthesis_failed", error="No Piper voice selected")
         return
 
     from tournament_platform.app.services.commentary_voice.voice_catalog import get_profile
@@ -213,6 +339,7 @@ def play_commentary(
             "Piper voice not found. Browser speech is available as a fallback.",
             level="info",
         )
+        update_commentary_log_status(_eid, "synthesis_failed", error="Piper voice not found")
         return
 
     engine = get_piper_engine()
@@ -222,6 +349,7 @@ def play_commentary(
             "Browser speech is available as a fallback.",
             level="info",
         )
+        update_commentary_log_status(_eid, "synthesis_failed", error="Piper engine unavailable")
         return
 
     voices = engine.list_voices()
@@ -232,6 +360,7 @@ def play_commentary(
             "Piper voice model not found. Browser speech is available as a fallback.",
             level="info",
         )
+        update_commentary_log_status(_eid, "synthesis_failed", error="Piper voice model not found")
         return
 
     try:
@@ -241,23 +370,29 @@ def play_commentary(
             rate=float(settings.rate),
             volume=float(settings.volume),
         )
-        speak_commentary_audio_file(result.audio_path, key=f"piper_{event_id or uuid.uuid4()}")
+        speak_commentary_audio_file(result.audio_path, key=f"piper_{_eid}")
         st.session_state.last_commentary_engine = "piper"
         st.session_state.last_commentary_voice_id = piper_voice_id
         st.session_state.last_commentary_audio_path = str(result.audio_path)
+        update_commentary_log_status(_eid, "synthesis_completed")
     except PiperTTSError as exc:
         st.warning(f"Piper synthesis failed: {exc}. Falling back to browser speech.")
+        update_commentary_log_status(_eid, "synthesis_failed", error=str(exc))
         tts_lang = "lt-LT" if settings.language == "lt" else "en-US"
-        speak_commentary(
-            text=text,
-            key=f"commentary_{event_id or uuid.uuid4()}",
-            voice=settings.voice,
-            lang=tts_lang,
-            rate=settings.rate,
-            pitch=settings.pitch,
-            volume=settings.volume,
-            voice_profile_id=settings.voice_profile_id,
-        )
+        try:
+            speak_commentary(
+                text=text,
+                key=f"commentary_{_eid}",
+                voice=settings.voice,
+                lang=tts_lang,
+                rate=settings.rate,
+                pitch=settings.pitch,
+                volume=settings.volume,
+                voice_profile_id=settings.voice_profile_id,
+            )
+            update_commentary_log_status(_eid, "synthesis_completed")
+        except Exception as fb_exc:
+            update_commentary_log_status(_eid, "playback_failed", error=str(fb_exc))
         st.session_state.last_commentary_engine = "browser"
         st.session_state.last_commentary_voice_id = None
         st.session_state.last_commentary_audio_path = None
@@ -450,6 +585,16 @@ def _build_and_store_commentary(
             "cache_key": getattr(line, "cache_key", None),
             "cache_hit": getattr(line, "cache_hit", False),
         }
+        _append_commentary_log_entry(
+            event_id=event_id,
+            status="generated",
+            text=line.text,
+            match_id=str(st.session_state.get("voice_selected_match_id") or "none"),
+            event_type=event_type,
+            style=settings.style.value,
+            language=settings.language,
+            provider="legacy" if engine_choice == "legacy" else "local",
+        )
     else:
         st.session_state.pending_commentary = None
         st.session_state.pending_local_audio = None
@@ -629,6 +774,16 @@ def _emit_set_win_commentary(game_event: dict, *, speak: bool) -> bool:
     st.session_state.last_set_win_text = getattr(line, "final_text", "")
     st.session_state.last_commentary_debug = debug_info
     st.session_state.commentary_emitted_game_keys = emitted_keys + [dedupe_key]
+    _append_commentary_log_entry(
+        event_id=getattr(line, "event_id", ""),
+        status="generated",
+        text=line.text,
+        match_id=match_id if match_id != "none" else None,
+        event_type="set_win",
+        style=settings.style.value,
+        language=settings.language,
+        provider="legacy" if st.session_state.get("commentary_engine", "legacy") == "legacy" else "local",
+    )
     return True
 
 
@@ -731,6 +886,16 @@ def _reconcile_finished_games() -> None:
                 st.session_state.pending_commentary = line
                 st.session_state.last_commentary_event_id = line.event_id
                 st.session_state.last_commentary_text = line.text
+                _append_commentary_log_entry(
+                    event_id=line.event_id,
+                    status="generated",
+                    text=line.text,
+                    match_id=match_id if match_id != "none" else None,
+                    event_type="match_won",
+                    style=normalize_commentary_style(st.session_state.get("commentary_style", CommentaryStyle.NEUTRAL.value)),
+                    language=st.session_state.get("commentary_language", "en"),
+                    provider="local",
+                )
             st.session_state.commentary_emitted_game_keys = emitted_keys + [dedupe_key]
 
 
@@ -740,21 +905,26 @@ def render_commentary_settings() -> None:
     if "webrtc_diag_available" not in st.session_state:
         st.session_state.webrtc_diag_available = False
 
+    st.session_state.setdefault("commentary_log_entries", [])
+    st.session_state.setdefault("commentary_log_match_id", None)
+    _reset_commentary_log_for_match()
+
     with st.expander("🔊 Spoken Commentary", expanded=False):
         col1, col2 = st.columns(2)
         with col1:
             st.session_state.commentary_enabled = st.toggle(
-                "Enable commentary",
-                value=st.session_state.commentary_enabled,
-                help="Turn spoken commentary on or off.",
+                 "Generate commentary",
+                 value=st.session_state.get("commentary_enabled", False),
+                 help="Turn spoken commentary on or off.",
             )
-            _current_style = normalize_commentary_style(st.session_state.commentary_style)
-            if _current_style not in COMMENTARY_STYLE_OPTIONS:
-                _current_style = COMMENTARY_STYLE_OPTIONS[0]
+            _current_style = normalize_commentary_style_for_ui(
+                st.session_state.get("commentary_style", CommentaryStyle.NEUTRAL.value)
+            )
             st.session_state.commentary_style = st.selectbox(
-                "Voice style",
-                options=COMMENTARY_STYLE_OPTIONS,
-                index=COMMENTARY_STYLE_OPTIONS.index(_current_style),
+                "Style",
+                options=list(RETAINED_STYLES),
+                index=list(RETAINED_STYLES).index(_current_style),
+                help="Professional = play-by-play, Coach = tactical, Announcer = contextual.",
             )
             _engine_options = ["legacy", "local"]
             _engine_labels = {"legacy": "Legacy", "local": "Local template engine"}
@@ -771,12 +941,7 @@ def render_commentary_settings() -> None:
             st.session_state.commentary_verbosity = st.selectbox(
                 "Verbosity",
                 options=[v.value for v in CommentaryVerbosity],
-                index=[v.value for v in CommentaryVerbosity].index(st.session_state.commentary_verbosity),
-            )
-            st.session_state.commentary_voice = st.selectbox(
-                "Voice",
-                options=["default"],
-                index=0,
+                 index=[v.value for v in CommentaryVerbosity].index(st.session_state.get("commentary_verbosity", CommentaryVerbosity.STANDARD.value)),
             )
             _detail_options = ["short", "standard", "tactical"]
             _detail_labels = {"short": "Short", "standard": "Standard", "tactical": "Tactical"}
@@ -790,170 +955,104 @@ def render_commentary_settings() -> None:
                 help="Short = minimal output. Standard = normal play-by-play. Tactical = include tactical commentary when available.",
             )
 
-        col_mute, col_replay = st.columns(2)
-        with col_mute:
-            mute_label = "Unmute" if st.session_state.commentary_muted else "Mute"
-            if st.button(mute_label, use_container_width=True):
-                st.session_state.commentary_muted = not st.session_state.commentary_muted
-                st.rerun()
-        with col_replay:
-            if st.button("🔊 Replay last", use_container_width=True):
-                last_text = st.session_state.get("last_commentary_text")
-                last_engine = st.session_state.get("last_commentary_engine")
-                last_voice_id = st.session_state.get("last_commentary_voice_id")
-                last_audio_path = st.session_state.get("last_commentary_audio_path")
-                if last_text:
-                    if last_engine == "piper" and last_audio_path and Path(last_audio_path).exists():
-                        speak_commentary_audio_file(Path(last_audio_path), key=f"replay_{uuid.uuid4()}")
-                    else:
-                        settings = _get_commentary_settings()
-                        play_commentary(text=last_text, settings=settings, event_id=str(uuid.uuid4()))
+        # --- Generated commentary subsection ---
+        with st.expander("Generated commentary", expanded=True):
+            col_gc1, col_gc2 = st.columns(2)
+            with col_gc1:
+                _lang_options = {
+                    "English": "en",
+                    "Lithuanian": "lt",
+                }
+                _current_lang = st.session_state.get("commentary_language", "en")
+                _normalized_current = CommentaryService._normalize_language(_current_lang)
+                _lang_values = list(_lang_options.values())
+                _selected_idx = _lang_values.index(_normalized_current) if _normalized_current in _lang_values else 0
+                _selected_label = st.selectbox(
+                    "Language",
+                    options=list(_lang_options.keys()),
+                    index=_selected_idx,
+                    key="commentary_language_select",
+                )
+                st.session_state.commentary_language = _lang_options[_selected_label]
+            with col_gc2:
+                _freq_options = [m.value for m in CommentaryMode]
+                _freq_labels = {
+                    "off": "Off",
+                    "visual_only": "Visual only",
+                    "important_only": "Key moments",
+                    "after_every_game": "After every game",
+                    "every_point": "Every point",
+                    "spoken": "Spoken commentary",
+                }
+                _mode_display = [_freq_labels.get(v, v) for v in _freq_options]
+                _current_mode = st.session_state.get("commentary_mode", CommentaryMode.EVERY_POINT.value)
+                _mode_idx = _freq_options.index(_current_mode) if _current_mode in _freq_options else 0
+                _new_mode_label = st.selectbox(
+                    "Frequency",
+                    options=_mode_display,
+                    index=_mode_idx,
+                    key="commentary_mode_select",
+                )
+                _new_mode = _freq_options[_mode_display.index(_new_mode_label)]
+                if _new_mode != _current_mode:
+                    st.session_state.commentary_mode = _new_mode
                     st.rerun()
 
-        st.divider()
-        st.markdown("**Commentary behavior**")
+            _int_col, _speak_col = st.columns(2)
+            with _int_col:
+                _int_options = [i.value for i in CommentaryIntensity]
+                _current_int = st.session_state.get("commentary_intensity", CommentaryIntensity.MEDIUM.value)
+                _int_idx = _int_options.index(_current_int) if _current_int in _int_options else 1
+                st.session_state.commentary_intensity = st.selectbox(
+                    "Intensity",
+                    options=_int_options,
+                    index=_int_idx,
+                    key="commentary_intensity_select",
+                )
+            with _speak_col:
+                st.session_state.commentary_speak_generated = st.checkbox(
+                    "Speak generated commentary",
+                    value=st.session_state.get("commentary_speak_generated", True),
+                    key="commentary_speak_generated_checkbox",
+                )
 
-        _lang_col, _mode_col = st.columns(2)
-        with _lang_col:
-            _lang_options = {
-                "English": "en",
-                "Lithuanian": "lt",
-            }
-            _current_lang = st.session_state.get("commentary_language", "en")
-            _normalized_current = CommentaryService._normalize_language(_current_lang)
-            _lang_values = list(_lang_options.values())
-            _selected_idx = _lang_values.index(_normalized_current) if _normalized_current in _lang_values else 0
-            _selected_label = st.selectbox(
-                "Commentary language",
-                options=list(_lang_options.keys()),
-                index=_selected_idx,
-                key="commentary_language_select",
+        # --- Score feedback subsection ---
+        with st.expander("Score feedback", expanded=False):
+            render_sound_toggle()
+
+            _tts = st.session_state.voice_tts_adapter
+            _tts_mode_values, _tts_options = tts_mode_options()
+            _tts_idx = _tts_mode_values.index(_tts.mode.value) if _tts.mode.value in _tts_mode_values else 0
+            _new_tts_label = st.selectbox(
+                "TTS mode",
+                options=_tts_options,
+                index=_tts_idx,
+                key="tts_mode_select",
+                help="Spoken score announcements (e.g. 'Tomas Z leads 5 to 3'). Choose how often the scoreboard speaks.",
             )
-            st.session_state.commentary_language = _lang_options[_selected_label]
-        with _mode_col:
-            _mode_options = [m.value for m in CommentaryMode]
-            _mode_labels = {
-                "off": "Off",
-                "visual_only": "Visual only",
-                "important_only": "Important events only",
-                "after_every_game": "After every game",
-                "every_point": "Every point",
-                "spoken": "Spoken commentary",
-            }
-            _mode_display = [_mode_labels.get(v, v) for v in _mode_options]
-            _current_mode = st.session_state.get("commentary_mode", CommentaryMode.EVERY_POINT.value)
-            _mode_idx = _mode_options.index(_current_mode) if _current_mode in _mode_options else 0
-            _new_mode_label = st.selectbox(
-                "Mode",
-                options=_mode_display,
-                index=_mode_idx,
-                key="commentary_mode_select",
-            )
-            _new_mode = _mode_options[_mode_display.index(_new_mode_label)]
-            if _new_mode != _current_mode:
-                st.session_state.commentary_mode = _new_mode
+            _new_tts_mode = _tts_mode_values[_tts_options.index(_new_tts_label)]
+            if _new_tts_mode != _tts.mode.value:
+                apply_tts_selection(_tts, _new_tts_mode)
                 st.rerun()
 
-        _int_col, _speak_col = st.columns(2)
-        with _int_col:
-            _int_options = [i.value for i in CommentaryIntensity]
-            _current_int = st.session_state.get("commentary_intensity", CommentaryIntensity.MEDIUM.value)
-            _int_idx = _int_options.index(_current_int) if _current_int in _int_options else 1
-            st.session_state.commentary_intensity = st.selectbox(
-                "Intensity",
-                options=_int_options,
-                index=_int_idx,
-                key="commentary_intensity_select",
-            )
-        with _speak_col:
-            st.session_state.commentary_speak_generated = st.checkbox(
-                "Speak generated commentary",
-                value=st.session_state.get("commentary_speak_generated", True),
-                key="commentary_speak_generated_checkbox",
+            st.divider()
+
+            if st.button("🔊 Test sound", key="audio_test_sound", use_container_width=True):
+                if st.session_state.get("sound_cues_enabled", False):
+                    play_cue("point")
+                if _tts.enabled and _tts.mode not in (TTSMode.OFF, TTSMode.VISUAL_ONLY):
+                    maybe_speak_tts(build_test_tts_message(st.session_state.match_manager), "increment")
+
+            st.caption(
+                "If nothing plays, click once or interact with the scoreboard — "
+                "browsers may block audio until your first click. Ensure the tab isn't muted."
             )
 
-        with st.expander("🎙️ Voice profile", expanded=False):
-            from tournament_platform.app.services.commentary_voice.voice_catalog import profile_choices
-            from tournament_platform.app.services.commentary_voice.voice_settings import init_voice_session_state
+            if not st.session_state.get("sound_cues_enabled", False) and not _tts.enabled:
+                st.info("Audio is off. Scores still update as text.")
 
-            init_voice_session_state()
-
-            _profile_choices = profile_choices()
-            _profile_ids = [c[0] for c in _profile_choices]
-            _profile_labels = [c[1] for c in _profile_choices]
-            _current_profile = st.session_state.get("commentary_voice_profile", "browser_default")
-            _profile_idx = _profile_ids.index(_current_profile) if _current_profile in _profile_ids else 0
-            _new_profile_id = st.selectbox(
-                "Profile",
-                options=_profile_ids,
-                format_func=lambda pid: next((c[1] for c in _profile_choices if c[0] == pid), pid),
-                index=_profile_idx,
-                key="commentary_voice_profile_select",
-            )
-            st.session_state.commentary_voice_profile = _new_profile_id
-
-            _profile_sync_applied = False
-            # Only sync when the profile *selection actually changed* (tracked
-            # via commentary_voice_profile_applied). This avoids an unconditional
-            # st.rerun() every render that would fight the user's style choice
-            # and could make the page appear frozen.
-            _applied_profile = st.session_state.get("commentary_voice_profile_applied")
-            if _new_profile_id != _applied_profile:
-                if _new_profile_id == "sport_commentator":
-                    st.session_state.commentary_style = CommentaryStyle.ANNOUNCER.value
-                    st.session_state.commentary_intensity = CommentaryIntensity.MEDIUM.value
-                    _profile_sync_applied = True
-                elif _new_profile_id == "coach":
-                    st.session_state.commentary_style = CommentaryStyle.COACH.value
-                    _profile_sync_applied = True
-                elif _new_profile_id in ("lt_browser_default",):
-                    st.session_state.commentary_language = "lt"
-                    _profile_sync_applied = True
-                elif _new_profile_id in ("en_browser_default",):
-                    st.session_state.commentary_language = "en"
-                    _profile_sync_applied = True
-                if _profile_sync_applied:
-                    st.session_state.commentary_voice_profile_applied = _new_profile_id
-
-            if _profile_sync_applied:
-                st.rerun()
-
-            _rate_col, _pitch_col = st.columns(2)
-            with _rate_col:
-                st.session_state.commentary_rate = st.slider(
-                    "Rate",
-                    min_value=0.5,
-                    max_value=2.0,
-                    step=0.05,
-                    value=float(st.session_state.get("commentary_rate", 1.0)),
-                    key="commentary_rate_slider",
-                )
-            with _pitch_col:
-                st.session_state.commentary_pitch = st.slider(
-                    "Pitch",
-                    min_value=0.5,
-                    max_value=2.0,
-                    step=0.05,
-                    value=float(st.session_state.get("commentary_pitch", 1.0)),
-                    key="commentary_pitch_slider",
-                )
-            st.session_state.commentary_volume = st.slider(
-                "Volume",
-                min_value=0.0,
-                max_value=1.0,
-                step=0.05,
-                value=float(st.session_state.get("commentary_volume", 1.0)),
-                key="commentary_volume_slider",
-            )
-            if st.button("🔊 Test voice", use_container_width=True, key="test_voice_button"):
-                settings = _get_commentary_settings()
-                play_commentary(
-                    text="Game point for Red. 10 to 8.",
-                    settings=settings,
-                    event_id=str(uuid.uuid4()),
-                )
-
-        with st.expander("🔧 Advanced spoken commentary", expanded=False):
+        # --- TTS provider subsection ---
+        with st.expander("TTS provider", expanded=False):
             _piper_ok = is_piper_available()
             _engine_options = ["browser", "piper"]
             _engine_labels = {
@@ -963,7 +1062,7 @@ def render_commentary_settings() -> None:
             _current_engine = st.session_state.get("commentary_tts_engine", "browser")
             _engine_idx = _engine_options.index(_current_engine) if _current_engine in _engine_options else 0
             _new_engine = st.selectbox(
-                "TTS engine",
+                "Engine",
                 options=_engine_options,
                 format_func=lambda e: _engine_labels.get(e, e),
                 index=_engine_idx,
@@ -1029,6 +1128,42 @@ def render_commentary_settings() -> None:
                                 event_id=str(uuid.uuid4()),
                             )
 
+            _rate_col, _pitch_col = st.columns(2)
+            with _rate_col:
+                st.session_state.commentary_rate = st.slider(
+                    "Rate",
+                    min_value=0.5,
+                    max_value=2.0,
+                    step=0.05,
+                    value=float(st.session_state.get("commentary_rate", 1.0)),
+                    key="commentary_rate_slider",
+                )
+            with _pitch_col:
+                st.session_state.commentary_pitch = st.slider(
+                    "Pitch",
+                    min_value=0.5,
+                    max_value=2.0,
+                    step=0.05,
+                    value=float(st.session_state.get("commentary_pitch", 1.0)),
+                    key="commentary_pitch_slider",
+                )
+            st.session_state.commentary_volume = st.slider(
+                "Volume",
+                min_value=0.0,
+                max_value=1.0,
+                step=0.05,
+                value=float(st.session_state.get("commentary_volume", 1.0)),
+                key="commentary_volume_slider",
+            )
+            if st.button("🔊 Test voice", use_container_width=True, key="test_voice_button"):
+                settings = _get_commentary_settings()
+                play_commentary(
+                    text="Game point for Red. 10 to 8.",
+                    settings=settings,
+                    event_id=str(uuid.uuid4()),
+                )
+
+        # --- Ollama rewrite ---
         with st.expander("🤖 Local Ollama rewrite", expanded=False):
             st.session_state.commentary_ollama_rewrite_enabled = st.checkbox(
                 "Use local Ollama to rewrite commentary",
@@ -1052,8 +1187,9 @@ def render_commentary_settings() -> None:
                     key="commentary_ollama_timeout_input",
                 )
 
-        # --- Audio diagnostics (collapsed by default) ---
+        # --- Audio diagnostics ---
         with st.expander("🩺 Audio diagnostics", expanded=False):
+            _piper_ok = is_piper_available()
             if "webrtc_diag_available" not in st.session_state:
                 st.session_state.webrtc_diag_available = False
 
@@ -1092,47 +1228,31 @@ def render_commentary_settings() -> None:
                 )
             )
 
-        # --- Audio controls (moved from Live Scoreboard, Phase 6 / TTS Phase 4) ---
-        st.divider()
-        st.markdown("**Audio & spoken announcements**")
+        # --- Recent commentary events (diagnostic ring buffer) ---
+        with st.expander("🩺 Recent commentary events (last 10)", expanded=False):
+            _entries = st.session_state.get("commentary_log_entries", [])
+            if not _entries:
+                st.caption("No commentary events yet.")
+            else:
+                for _i, _entry in enumerate(reversed(_entries[-10:]), 1):
+                    _ts = time.strftime("%H:%M:%S", time.localtime(_entry.get("created_at", 0)))
+                    _status = _entry.get("status", "unknown")
+                    _style = _entry.get("style", "—")
+                    _provider = _entry.get("provider", "—")
+                    _text = _entry.get("text", "")
+                    _error = _entry.get("error")
+                    st.caption(f"**{_i}. {_ts} · {_style} · {_provider} · {_status}**")
+                    if _text:
+                        st.caption(f'  "{_text}"')
+                    if _error:
+                        st.caption(f'  ⚠ {_error}')
 
-        # Sound cues toggle (writes the per-session preference).
-        render_sound_toggle()
-
-        # TTS mode selector — friendly labels, internal enum value stored.
-        _tts = st.session_state.voice_tts_adapter
-        _tts_mode_values, _tts_options = tts_mode_options()
-        _tts_idx = _tts_mode_values.index(_tts.mode.value) if _tts.mode.value in _tts_mode_values else 0
-        _new_tts_label = st.selectbox(
-            "🔊 TTS mode",
-            options=_tts_options,
-            index=_tts_idx,
-            key="tts_mode_select",
-            help="Spoken score announcements (e.g. 'Tomas Z leads 5 to 3'). Choose how often the scoreboard speaks.",
-        )
-        _new_tts_mode = _tts_mode_values[_tts_options.index(_new_tts_label)]
-        if _new_tts_mode != _tts.mode.value:
-            apply_tts_selection(_tts, _new_tts_mode)
-            st.rerun()
-
-        st.divider()
-
-        # Test sound — must NOT mutate match state or the DB.
-        if st.button("🔊 Test sound", key="audio_test_sound", use_container_width=True):
-            if st.session_state.get("sound_cues_enabled", False):
-                play_cue("point")
-            if _tts.enabled and _tts.mode not in (TTSMode.OFF, TTSMode.VISUAL_ONLY):
-                maybe_speak_tts(build_test_tts_message(st.session_state.match_manager), "increment")
-
-        # Activation hint: browsers may block audio until first interaction.
-        st.caption(
-            "If nothing plays, click once or interact with the scoreboard — "
-            "browsers may block audio until your first click. Ensure the tab isn't muted."
-        )
-
-        # Informative note when all audio is off.
-        if not st.session_state.get("sound_cues_enabled", False) and not _tts.enabled:
-            st.info("Audio is off. Scores still update as text.")
+        # --- Commentary debug (moved from standalone panel) ---
+        _debug = st.session_state.get("last_commentary_debug")
+        if _debug:
+            with st.expander("🐛 Commentary debug", expanded=False):
+                for k, v in _debug.items():
+                    st.caption(f"**{k}**: `{v}`")
 
 
 
@@ -1171,22 +1291,26 @@ def render_commentary_debug() -> None:
 
 
 def render_commentary_log() -> None:
-    """Show recent commentary events."""
+    """Show recent commentary events from the session-state ring buffer."""
     _match_id = st.session_state.get("voice_selected_match_id")
-    try:
-        from tournament_platform.services.commentary_service import get_recent_commentary_events
-        events = get_recent_commentary_events(_match_id, limit=20) if _match_id else []
-    except Exception:
-        events = []
-    if not events:
+    _reset_commentary_log_for_match()
+    entries = st.session_state.get("commentary_log_entries", [])
+    if not entries:
         st.caption("No commentary events yet.")
         return
     st.markdown("**Recent commentary**")
-    for ev in events:
-        st.caption(
-            f"[{ev.created_at.strftime('%H:%M:%S') if ev.created_at else '--'}] "
-            f"{ev.event_type}: {ev.final_text or ev.generated_text or ''}"
-        )
+    for entry in reversed(entries[-10:]):
+        _ts = time.strftime("%H:%M:%S", time.localtime(entry.get("created_at", 0)))
+        _status = entry.get("status", "unknown")
+        _style = entry.get("style", "—")
+        _provider = entry.get("provider", "—")
+        _text = entry.get("text", "")
+        _error = entry.get("error")
+        st.caption(f"**{_ts} · {_style} · {_provider} · {_status}**")
+        if _text:
+            st.caption(f'  "{_text}"')
+        if _error:
+            st.caption(f'  ⚠ {_error}')
 
 
 # ============================================================================

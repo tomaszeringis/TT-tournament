@@ -1,10 +1,7 @@
 """
 MatchManager - Score management for voice-activated tournament scorekeeper.
-
-A simple, privacy-focused scorekeeping system using keyword matching
-for intent parsing instead of complex AI reasoning.
 """
-
+import time
 import re
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Tuple, Optional
@@ -184,17 +181,8 @@ class MatchManager:
     def _add_point(self, player: str) -> Tuple[bool, str]:
         """
         Add a point to the specified player.
-
-        Delegates scoring rules to the ``score_engine`` (win-by-2, serve
-        switching, deuce, and best-of game/match completion) and keeps the
-        legacy ``self.state`` mirror in sync for the UI.
-
-        Args:
-            player: "A" or "B"
-
-        Returns:
-            Tuple of (success, message)
         """
+        print(f"DEBUG: MatchManager._add_point: player={player} current_score={self.state.score_a}-{self.state.score_b}")
         # Preserve legacy history format expected by the UI's per-player undo.
         self.state.match_history.append({
             "action": "point_added",

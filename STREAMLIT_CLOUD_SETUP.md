@@ -33,7 +33,14 @@ This guide explains how to deploy the Tournament Platform to Streamlit Cloud wit
 1. Push your code to GitHub
 2. Go to https://streamlit.io/cloud and click "New app"
 3. Select your repository and branch
-4. Set the main file path to `tournament_platform/app/main.py`
+4. **Set the Main module to `streamlit_app.py`** (at the repository root).
+   This is the canonical Streamlit entrypoint — it imports and calls
+   `main()` from `tournament_platform/app/main.py`.
+5. **Set the Python version to 3.13** (3.12 also works; the app requires
+   `>=3.11,<3.14`). Select this in "Advanced settings" before the first deploy.
+   If you previously deployed with a different Python version, delete the app
+   and redeploy — Streamlit Cloud keeps the Python version from the original
+   deploy.
 
 ## 3. Configure Secrets
 
@@ -55,13 +62,19 @@ name = "tt_auth_cookie"
 key = "change-me-to-random-32b-key-production"
 expiry_days = 30
 
-# Optional: AI features
-HF_TOKEN = "hf_..."
-OLLAMA_HOST = "http://your-ollama-host:11434"
+# Optional: External FastAPI backend (local Ollama bridge via ngrok)
+# The Streamlit app does NOT start a FastAPI server in-process. See
+# the "Optional local API + ngrok" section below and README.md.
+API_BASE_URL = "https://your-ngrok-url.ngrok-free.app"
+API_REQUIRED = "false"
+API_TOKEN = "your-long-random-token"
 
-# Optional: External API
-API_BASE_URL = "https://your-api.example.com"
-API_TOKEN = "bearer-token-if-needed"
+# Optional: AI features (when API_BASE_URL is set)
+OLLAMA_MODEL = "llama3.1:8b"
+
+# Optional: higher Hugging Face download rate limits. NOT required — the app
+# still works (and degrades gracefully) without it.
+HF_TOKEN = "hf_..."
 
 # Voice scoring ASR (Streamlit Cloud defaults shown)
 # Faster-whisper runs locally in the app. Use tiny.en on Cloud for fast, safe
@@ -69,10 +82,6 @@ API_TOKEN = "bearer-token-if-needed"
 VOICE_ASR_MODEL_SIZE = "tiny.en"
 VOICE_ASR_DEVICE = "cpu"
 VOICE_ASR_COMPUTE_TYPE = "int8"
-
-# Optional: higher Hugging Face download rate limits. NOT required — the app
-# still works (and degrades gracefully) without it.
-# HF_TOKEN = "hf_..."
 ```
 
 ### Voice Scoring on Streamlit Cloud
@@ -138,9 +147,16 @@ export DATABASE_URL="postgresql://user:pass@localhost:5432/tournament_platform"
 # Or use a .env file
 echo 'DATABASE_URL="postgresql://user:pass@localhost:5432/tournament_platform"' >> .env
 
-# Run Streamlit
-streamlit run tournament_platform/app/main.py
+# Run Streamlit (use the root entrypoint — no PYTHONPATH needed)
+streamlit run streamlit_app.py
 ```
+
+### Optional: Local API + ngrok for AI features
+
+Streamlit Cloud **never** talks to Ollama directly. To use AI features (rules
+assistant, commentary, etc.) on Cloud, run the FastAPI backend on your laptop and
+expose it via ngrok. See the "☁️ Streamlit Cloud deployment" → "🔌 Optional local
+API + ngrok" section in [README.md](README.md) for full instructions.
 
 ## Troubleshooting
 

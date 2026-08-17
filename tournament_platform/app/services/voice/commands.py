@@ -161,6 +161,8 @@ _COMMAND_PATTERNS: List[tuple] = [
     (VoiceIntent.UNDO, r"\btake\s+back\b", 0.85, {}),
     (VoiceIntent.UNDO, r"\bremove\s+point\b", 0.85, {}),
     (VoiceIntent.UNDO, r"\btake\s+that\s+back\b", 0.85, {}),
+    (VoiceIntent.UNDO, r"\batšaukti\b", 0.85, {}),
+    (VoiceIntent.UNDO, r"\batgal\b", 0.85, {}),
     (VoiceIntent.REPEAT_SCORE, r"\bwhat'?s\s+the\s+score\b", 0.9, {}),
     (VoiceIntent.REPEAT_SCORE, r"\brepeat\s+score\b", 0.9, {}),
     (VoiceIntent.START_MATCH, r"\bstart\s+match\b", 0.85, {}),
@@ -205,6 +207,22 @@ _COLOR_ALIAS_PATTERNS = [
     (r"\b(melynas|mėlynas|zalia|žalia|zalias|žalias)\b", "A"),
     (r"\b(raudonas|raudona|oranzinis|oranžinis)\b", "B"),
 ]
+
+_POINT_COLOR_PATTERNS = [
+    (r"\bpoint\s+(red|blue|teal|green|orange|read)\b", None),
+    (r"\bpoints?\s+(red|blue|teal|green|orange|read)\b", None),
+    (r"\b(red|blue|teal|green|orange|read)\s+point\b", None),
+    (r"\bpoint\s+to\s+(red|blue|teal|green|orange|read)\b", None),
+]
+
+_PLAYER_COLOR_MAP = {
+    "red": "B",
+    "orange": "B",
+    "read": "B",
+    "blue": "A",
+    "teal": "A",
+    "green": "A",
+}
 
 
 class VoiceCommandGrammar:
@@ -321,6 +339,22 @@ class VoiceCommandGrammar:
                     normalized_text=normalized,
                 )
 
+        # Point + color patterns (e.g. "point red", "red point", "points blue")
+        for pattern, _ in _POINT_COLOR_PATTERNS:
+            match = re.search(pattern, text)
+            if match:
+                color = match.group(1).lower()
+                player = _PLAYER_COLOR_MAP.get(color)
+                if player:
+                    return VoiceParseResult(
+                        intent=VoiceIntent.SCORE_POINT,
+                        slots={"player": player, "target": color},
+                        confidence=0.85,
+                        safety_level=_SAFETY_MAP[VoiceIntent.SCORE_POINT],
+                        raw_transcript=raw,
+                        normalized_text=normalized,
+                    )
+
         # Point/increment patterns
         _POINT_PATTERNS = [
             (r"\bpoint\s+to\s+player\s+(one|1|a)\b", "A"),
@@ -342,6 +376,82 @@ class VoiceCommandGrammar:
                     intent=VoiceIntent.SCORE_POINT,
                     slots={"player": player},
                     confidence=0.8,
+                    safety_level=_SAFETY_MAP[VoiceIntent.SCORE_POINT],
+                    raw_transcript=raw,
+                    normalized_text=normalized,
+                )
+
+        # Lithuanian point patterns with target side
+        # Using strict matching to ensure these are primary commands, not conversational fragments.
+        _LT_SIDE_PATTERNS = [
+            (r"^\s*taškas\s+kairė\s*$", "LEFT"),
+            (r"^\s*taškas\s+kairėje\s*$", "LEFT"),
+            (r"^\s*taškas\s+kairės\s*$", "LEFT"),
+            (r"^\s*taškas\s+kairį\s*$", "LEFT"),
+            (r"^\s*taškas\s+kairi\s*$", "LEFT"),
+            (r"^\s*taskas\s+kaire\s*$", "LEFT"),
+            (r"^\s*taskas\s+kaireje\s*$", "LEFT"),
+            (r"^\s*taskas\s+kairi\s*$", "LEFT"),
+            (r"^\s*kairė\s*$", "LEFT"),
+            (r"^\s*kairėje\s*$", "LEFT"),
+            (r"^\s*kairės\s*$", "LEFT"),
+            (r"^\s*kairį\s*$", "LEFT"),
+            (r"^\s*kairi\s*$", "LEFT"),
+            (r"^\s*kaire\s*$", "LEFT"),
+            (r"^\s*kaireje\s*$", "LEFT"),
+            (r"^\s*taškas\s+dešinė\s*$", "RIGHT"),
+            (r"^\s*taškas\s+dešinėje\s*$", "RIGHT"),
+            (r"^\s*taškas\s+dešinės\s*$", "RIGHT"),
+            (r"^\s*taskas\s+desine\s*$", "RIGHT"),
+            (r"^\s*taskas\s+desineje\s*$", "RIGHT"),
+            (r"^\s*dešinė\s*$", "RIGHT"),
+            (r"^\s*dešinėje\s*$", "RIGHT"),
+            (r"^\s*dešinės\s*$", "RIGHT"),
+            (r"^\s*desine\s*$", "RIGHT"),
+            (r"^\s*desineje\s*$", "RIGHT"),
+        ]
+        for pattern, side in _LT_SIDE_PATTERNS:
+            if re.search(pattern, text):
+                return VoiceParseResult(
+                    intent=VoiceIntent.SCORE_POINT,
+                    slots={},
+                    target_side=side,
+                    confidence=0.85,
+                    safety_level=_SAFETY_MAP[VoiceIntent.SCORE_POINT],
+                    raw_transcript=raw,
+                    normalized_text=normalized,
+                )
+
+        # English side patterns (also covers normalized Lithuanian "point left/right")
+        _EN_SIDE_PATTERNS = [
+            (r"\bpoint\s+left\b", "LEFT"),
+            (r"\bpoint\s+right\b", "RIGHT"),
+            (r"\bscore\s+left\b", "LEFT"),
+            (r"\bscore\s+right\b", "RIGHT"),
+        ]
+        for pattern, side in _EN_SIDE_PATTERNS:
+            if re.search(pattern, text):
+                return VoiceParseResult(
+                    intent=VoiceIntent.SCORE_POINT,
+                    slots={},
+                    target_side=side,
+                    confidence=0.85,
+                    safety_level=_SAFETY_MAP[VoiceIntent.SCORE_POINT],
+                    raw_transcript=raw,
+                    normalized_text=normalized,
+                )
+
+        # Lithuanian point patterns with player name
+        _LT_PLAYER_PATTERNS = [
+            (r"\btaškas\s+pirmam\b", "A"),
+            (r"\btaškas\s+antram\b", "B"),
+        ]
+        for pattern, player in _LT_PLAYER_PATTERNS:
+            if re.search(pattern, text):
+                return VoiceParseResult(
+                    intent=VoiceIntent.SCORE_POINT,
+                    slots={"player": player},
+                    confidence=0.85,
                     safety_level=_SAFETY_MAP[VoiceIntent.SCORE_POINT],
                     raw_transcript=raw,
                     normalized_text=normalized,

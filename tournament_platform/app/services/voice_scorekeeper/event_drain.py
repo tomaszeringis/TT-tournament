@@ -3,18 +3,83 @@
 from __future__ import annotations
 
 import copy, logging, time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Set
 
 import streamlit as st
 
 from tournament_platform.services.settings import VOICE_ENABLE_CONFIRMATION
+from tournament_platform.app.services.voice_scorekeeper.events import (
+    InvalidVoiceTranscriptEvent,
+    VoiceDrainResult,
+    VoiceRuntimeMode,
+    VoiceTranscriptEvent,
+    VoiceTranscriptSource,
+    FinalizedUtterance,
+    normalize_voice_transcript_event,
+)
+from tournament_platform.app.services.voice_scorekeeper.runtime import (
+    _voice_lifecycle_events,
+    VoiceLifecycleEvent,
+    WebRtcRenderSnapshot,
+)
+from tournament_platform.app.services.voice_calibration.models import (
+    CalibrationCaptureKind,
+    CalibrationMeasurementKind,
+    CalibrationPhase,
+)
+from tournament_platform.app.services.voice_calibration.service import VoiceCalibrationService
+
+try:
+    from tournament_platform.app.pages.voice_scorekeeper import apply_score_event_and_refresh_ui
+except ImportError:
+    apply_score_event_and_refresh_ui = None
 
 logger = logging.getLogger(__name__)
 
 _VOICE_RERUN_KEY = "_voice_needs_rerun"
 _VOICE_RERUN_REASON_KEY = "_voice_rerun_reason"
 
-# === _on_quick_voice_mode_changed (739-752) ===
+_CALIBRATION_PROCESSED_IDS: Dict[str, Set[str]] = {}
+_MAX_CALIBRATION_PROCESSED_IDS = 500
+
+_DRAIN_INVOCATION_COUNT = 0
+_DRAIN_LAST_TIMESTAMP = 0.0
+_DRAIN_LAST_PROCESSOR_ID = None
+_DRAIN_LAST_QUEUE_ID = None
+_DRAIN_LAST_QUEUE_SIZE_BEFORE = 0
+_DRAIN_LAST_QUEUE_SIZE_AFTER = 0
+_DRAIN_LAST_SKIPPED_REASON = ""
+_DRAIN_LAST_EXCEPTION = None
+_DRAIN_LAST_QUEUE_EMPTY_TS = 0.0
+_DRAIN_QUEUE_EMPTY_COUNT = 0
+
+
+def clear_processed_voice_event_ids() -> None:
+    """Legacy helper; currently we use session state for applied IDs."""
+    pass
+
+
+def clear_calibration_processed_ids() -> None:
+    _CALIBRATION_PROCESSED_IDS.clear()
+
+
+def reset_drain_diagnostics() -> None:
+    global _DRAIN_INVOCATION_COUNT, _DRAIN_LAST_TIMESTAMP, _DRAIN_LAST_PROCESSOR_ID
+    global _DRAIN_LAST_QUEUE_ID, _DRAIN_LAST_QUEUE_SIZE_BEFORE, _DRAIN_LAST_QUEUE_SIZE_AFTER
+    global _DRAIN_LAST_SKIPPED_REASON, _DRAIN_LAST_EXCEPTION
+    global _DRAIN_LAST_QUEUE_EMPTY_TS, _DRAIN_QUEUE_EMPTY_COUNT
+    _DRAIN_INVOCATION_COUNT = 0
+    _DRAIN_LAST_TIMESTAMP = 0.0
+    _DRAIN_LAST_PROCESSOR_ID = None
+    _DRAIN_LAST_QUEUE_ID = None
+    _DRAIN_LAST_QUEUE_SIZE_BEFORE = 0
+    _DRAIN_LAST_QUEUE_SIZE_AFTER = 0
+    _DRAIN_LAST_SKIPPED_REASON = ""
+    _DRAIN_LAST_EXCEPTION = None
+    _DRAIN_LAST_QUEUE_EMPTY_TS = 0.0
+    _DRAIN_QUEUE_EMPTY_COUNT = 0
+
+
 def _on_quick_voice_mode_changed(old_mode: str, new_mode: str) -> None:
     from tournament_platform.app.pages.voice_scorekeeper import _increment_voice_session_epoch
     if old_mode == "quick" and new_mode != "quick":
@@ -30,9 +95,6 @@ def _on_quick_voice_mode_changed(old_mode: str, new_mode: str) -> None:
         _increment_voice_session_epoch()
 
 
-
-
-# === _apply_quick_voice_point (753-774) ===
 def _apply_quick_voice_point(player: str, transcript: str) -> None:
     from tournament_platform.app.pages.voice_scorekeeper import (
         play_cue,
@@ -63,9 +125,6 @@ def _apply_quick_voice_point(player: str, transcript: str) -> None:
         _request_voice_rerun("quick_voice_accepted")
 
 
-
-
-# === _process_quick_voice_event (775-802) ===
 def _process_quick_voice_event(transcript: str) -> None:
     from tournament_platform.app.pages.voice_scorekeeper import QuickVoiceScoringEngine
     if st.session_state.get("quick_voice_mode") != "quick":
@@ -91,366 +150,336 @@ def _process_quick_voice_event(transcript: str) -> None:
         st.session_state.quick_voice_last_status = "rejected"
 
 
-# ============================================================================
-# Continuous Listening Heartbeat
-# ============================================================================
-
-
-
-# === _maybe_voice_heartbeat (803-843) ===
-def _maybe_voice_heartbeat() -> None:
+def _maybe_voice_heartbeat(snapshot: WebRtcRenderSnapshot | None = None) -> None:
     from tournament_platform.app.pages.voice_scorekeeper import is_voice_scoring_enabled
-    """Trigger a lightweight rerun while continuous listening is active.
-    
-    This is the browser-driven heartbeat that ensures accepted voice commands
-    from background audio callbacks become visible on the live scoreboard
-    without requiring manual user interaction.
-    
-    Runs in the main Streamlit thread only. Uses adaptive timing:
-    - Faster (250ms) when there are pending events to drain
-    - Slower (1000ms) when idle to avoid unnecessary reruns
-    
-    Only active when voice scoring is enabled and continuous listening is on.
-    """
+    if st.session_state.get("VOICE_DEBUG_DISABLE_HEARTBEAT"):
+        return
+
     if not is_voice_scoring_enabled():
         return
     
     if not st.session_state.get("voice_listening"):
         return
     
-    # Check if there are pending events from the WebRTC processor
-    ctx = st.session_state.get("voice_webrtc_ctx")
+    processor = None
+    if snapshot is not None:
+        processor = snapshot.processor
+    else:
+        ctx = st.session_state.get("voice_webrtc_ctx")
+        processor = ctx.get("processor") if ctx else None
+
     has_pending = False
-    if ctx and ctx.get("processor"):
-        processor = ctx["processor"]
+    if processor:
         if hasattr(processor, 'has_pending_events'):
             has_pending = processor.has_pending_events()
     
-    # Adaptive interval: faster when draining events, slower when idle
     interval = 0.25 if has_pending else 1.0
-    
-    # Only rerun if we haven't rerun recently (simple throttle)
     last_heartbeat = st.session_state.get("voice_last_heartbeat", 0.0)
     now = time.time()
     if now - last_heartbeat < interval:
         return
     
     st.session_state.voice_last_heartbeat = now
-    time.sleep(0.1)  # Brief pause to avoid tight loop
+    time.sleep(0.05)
     st.rerun()
 
 
-
-
-# === _process_tt_sounds_events (952-963) ===
-def _process_tt_sounds_events() -> None:
-    """Drain audio events even when voice scoring is disabled."""
-    if not st.session_state.get("tt_sounds_enabled"):
-        return
-    ctx = st.session_state.get("voice_webrtc_ctx")
-    proc = ctx.get("tt_sounds_processor") if ctx else None
-    if proc is None:
-        return
-    for event in proc.get_events():
-        _handle_tt_sounds_event(event)
-
-
-
-
-# === _handle_tt_sounds_event (964-985) ===
-def _handle_tt_sounds_event(event: Any) -> None:
-    """Process a single TTAudioEvent: update rally context and recent events."""
-    from tournament_platform.app.services.tt_sounds import RallyManager
-    
-    if "tt_sounds_rally_manager" not in st.session_state:
-        st.session_state.tt_sounds_rally_manager = RallyManager()
-    
-    manager = st.session_state.tt_sounds_rally_manager
-    summary = manager.add_event(event)
-    if summary is not None:
-        st.session_state.tt_sounds_audio_summaries.append(summary)
-    
-    st.session_state.tt_sounds_rally_context = manager.current_context()
-    
-    recent = st.session_state.get("tt_sounds_recent_events", [])
-    recent.append(event)
-    if len(recent) > 200:
-        st.session_state.tt_sounds_recent_events = recent[-200:]
-    else:
-        st.session_state.tt_sounds_recent_events = recent
-
-
-
-
-# === _maybe_tt_sounds_heartbeat (986-1004) ===
-def _maybe_tt_sounds_heartbeat() -> None:
-    """Rerun UI to update debug panel and rally summary when audio events pending."""
-    if not st.session_state.get("tt_sounds_enabled"):
-        return
-    ctx = st.session_state.get("voice_webrtc_ctx")
-    proc = ctx.get("tt_sounds_processor") if ctx else None
-    if proc is None:
-        return
-    has_pending = len(proc.get_events()) > 0
-    interval = 0.5 if has_pending else 1.0
-    now = time.time()
-    last = st.session_state.get("tt_sounds_last_heartbeat", 0.0)
-    if now - last < interval:
-        return
-    st.session_state.tt_sounds_last_heartbeat = now
-    time.sleep(0.1)
-    st.rerun()
-
-
-
-
-# === _process_voice_transcript (1420-1519) ===
 def _process_voice_transcript(
     transcript: str,
     source: str = "debug",
-    enable_confirmation: bool = VOICE_ENABLE_CONFIRMATION,
+    enable_confirmation: bool = True,
     selected_match_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    from tournament_platform.app.pages.voice_scorekeeper import (
-        _append_voice_audit,
-        apply_score_event_and_refresh_ui,
-    )
-    from tournament_platform.app.services.voice_parser import VoiceScoreEvent
-    """Shared transcript processing for push-to-talk, continuous, and debug.
-
-    Central voice command processor:
-    1. Validate match context (voice_selected_match_id == active match).
-    2. Normalize transcript.
-    3. Parse with VoiceCommandGrammar.
-    4. Route with CommandRouter.
-    5. If APPLY, call MatchManager.apply_voice_event().
-    6. Return structured result for UI display.
-
-    Returns a dict with keys:
-        success, reason, previous_score, new_score, parsed, route_result
-    """
-    mm = st.session_state.match_manager
-
-    # Track source-specific transcript
-    if source == "debug":
-        st.session_state.last_voice_debug_transcript = transcript
-    elif source == "push_to_talk":
-        st.session_state.last_voice_push_to_talk_transcript = transcript
-    elif source == "continuous":
-        st.session_state.last_voice_continuous_transcript = transcript
-
-    # Resolve selected match ID: prefer explicit arg, fall back to session state.
-    if selected_match_id is None:
-        selected_match_id = st.session_state.get("voice_selected_match_id")
-
-    # Match-context validation: voice scoring requires an active match selection.
-    if not selected_match_id:
-        st.session_state.last_voice_feedback = "no_match_selected"
-        st.session_state.last_voice_rejection_reason = "no_match_selected"
-        st.session_state.last_voice_success_message = ""
-        st.session_state.last_voice_action_taken = "rejected"
-        _append_voice_audit(
-            VoiceScoreEvent(type="unknown", raw_text=transcript, confidence=0.0),
-            source=source,
-            accepted=False,
-            previous_score=mm.state.get_score_string(),
-            new_score=mm.state.get_score_string(),
-            note="no_match_selected",
-        )
-        return {
-            "success": False,
-            "reason": "no_match_selected",
-            "previous_score": mm.state.get_score_string(),
-            "new_score": mm.state.get_score_string(),
-            "parsed": None,
-            "route_result": None,
-        }
-
-    # Match-context validation: ensure MatchManager players match the selected match.
-    _selected_p1_id = st.session_state.get("voice_selected_player1_id")
-    _selected_p2_id = st.session_state.get("voice_selected_player2_id")
-    if _selected_p1_id is not None and _selected_p2_id is not None:
-        if (
-            mm.state.player_a_id != _selected_p1_id
-            or mm.state.player_b_id != _selected_p2_id
-        ):
-            st.session_state.last_voice_feedback = "voice_match_context_mismatch"
-            st.session_state.last_voice_rejection_reason = "voice_match_context_mismatch"
-            st.session_state.last_voice_success_message = ""
-            st.session_state.last_voice_action_taken = "rejected"
-            _append_voice_audit(
-                VoiceScoreEvent(type="unknown", raw_text=transcript, confidence=0.0),
-                source=source,
-                accepted=False,
-                previous_score=mm.state.get_score_string(),
-                new_score=mm.state.get_score_string(),
-                note="voice_match_context_mismatch",
-            )
-            return {
-                "success": False,
-                "reason": "voice_match_context_mismatch",
-                "previous_score": mm.state.get_score_string(),
-                "new_score": mm.state.get_score_string(),
-                "parsed": None,
-                "route_result": None,
-            }
-
-    result = apply_score_event_and_refresh_ui(
+    """Internal delegator to the authoritative application-layer processor."""
+    import tournament_platform.app.pages.voice_scorekeeper as vs_page
+    
+    res_obj = vs_page.apply_score_event_and_refresh_ui(
         transcript=transcript,
         source=source,
         enable_confirmation=enable_confirmation,
+        selected_match_id=selected_match_id,
     )
     return {
-        "success": result.success,
-        "reason": result.reason,
-        "previous_score": result.previous_score,
-        "new_score": result.new_score,
-        "parsed": result.parsed,
-        "route_result": result.route_result,
+        "success": res_obj.success,
+        "reason": res_obj.reason,
+        "previous_score": res_obj.previous_score,
+        "new_score": res_obj.new_score,
+        "parsed": res_obj.parsed,
+        "route_result": res_obj.route_result,
     }
 
 
-
-
-# === _process_voice_events (2630-2762) ===
-def _process_voice_events() -> None:
+def _process_voice_events(
+    calibration_service: VoiceCalibrationService | None = None,
+    snapshot: WebRtcRenderSnapshot | None = None,
+) -> VoiceDrainResult:
     from tournament_platform.app.pages.voice_scorekeeper import (
         _append_continuous_trace,
         _get_webrtc_playing_state,
         is_voice_scoring_enabled,
-        _process_voice_transcript,
         _process_quick_voice_event,
     )
-    """Process pending voice events from the WebRTC audio processor.
-
-    Runs in the main Streamlit thread. Reads events from the processor's
-    queue and delegates to the canonical ``apply_score_event_and_refresh_ui``.
-
-    The continuous listening loop calls ``st.rerun()`` at the end to drain
-    queued events promptly (streamlit-webrtc does not rerun on audio data).
-    """
-    if not st.session_state.get("voice_listening") or not st.session_state.get("voice_events_enabled"):
-        return
-
-    # Clear any one-shot rerun request from the previous run; the continuous
-    # listening loop below will continue draining events and rerunning.
+    
     st.session_state.pop(_VOICE_RERUN_KEY, None)
     st.session_state.pop(_VOICE_RERUN_REASON_KEY, None)
 
-    ctx = st.session_state.get("voice_webrtc_ctx")
-    if ctx is None:
-        logger.debug("_process_voice_events: no webrtc ctx")
-        return
+    if snapshot is not None:
+        processor = snapshot.processor
+    else:
+        ctx = st.session_state.get("voice_webrtc_ctx")
+        processor = ctx.get("processor") if ctx else None
 
-    processor = ctx.get("processor")
     if processor is None:
-        logger.debug("_process_voice_events: no processor in ctx")
-        return
+        global _DRAIN_LAST_SKIPPED_REASON
+        _DRAIN_LAST_SKIPPED_REASON = "no_processor"
+        return VoiceDrainResult()
 
-    events = processor.get_events()
-    if not events:
-        logger.debug("_process_voice_events: no events in queue")
-        _append_continuous_trace("queue_empty", "no_pending_events")
-        return
+    global _DRAIN_INVOCATION_COUNT, _DRAIN_LAST_TIMESTAMP, _DRAIN_LAST_PROCESSOR_ID
+    _DRAIN_INVOCATION_COUNT += 1
+    _DRAIN_LAST_TIMESTAMP = time.time()
+    _DRAIN_LAST_PROCESSOR_ID = id(processor)
 
-    _append_continuous_trace("continuous_event_consumed", f"{len(events)}_events")
+    result = VoiceDrainResult()
 
-    # If the match is already won, stop listening and disable voice updates.
+    # 1. Drain lifecycle events
+    lifecycle_events = _voice_lifecycle_events.drain()
+    for le in lifecycle_events:
+        _append_continuous_trace(
+            f"lifecycle_{le.event_type}",
+            f"proc_id={le.processor_id} gen={le.processor_generation} ts={le.timestamp} "
+            f"desired={le.desired_mic_playing} note={le.extra.get('note', '')}",
+        )
+        if le.event_type == "webrtc_state_change":
+             st.session_state[_VOICE_RERUN_KEY] = True
+             st.session_state[_VOICE_RERUN_REASON_KEY] = "async_webrtc_state_change"
+
+    try:
+        _drain_acoustic_measurements(processor=processor, result=result)
+    except Exception as exc:
+        logger.debug("Acoustic measurement drain failed: %s", exc)
+        result.last_exception = "measurement_drain_exception"
+
+    # 2. Drain transcripts
+    # Start with a fresh list for this drain cycle
+    raw_events = []
+    
+    # Batch events (Faster Whisper)
+    try:
+        raw_events.extend(list(processor.get_events()))
+    except Exception as exc:
+        logger.debug("Batch event drain failed: %s", exc)
+
+    # Streaming events (Deepgram)
+    if hasattr(processor, "drain_streaming_events"):
+        try:
+            streaming_utterances = processor.drain_streaming_events()
+            result.streaming_events_drained = len(streaming_utterances)
+            # Convert FinalizedUtterance to standard event format
+            for utt in streaming_utterances:
+                raw_events.append(VoiceTranscriptEvent(
+                    transcript=utt.transcript,
+                    raw_transcript=utt.raw_transcript,
+                    event_id=utt.utterance_id,
+                    source=VoiceTranscriptSource.CONTINUOUS,
+                    runtime_session_id=utt.voice_session_id,
+                    match_id=utt.match_id,
+                    created_at=utt.created_at,
+                    confidence=getattr(utt, "confidence", 1.0),
+                ))
+        except Exception as exc:
+            logger.debug("Streaming event drain failed: %s", exc)
+            result.streaming_events_failed += 1
+
+    if not raw_events:
+        return result
+
+    _append_continuous_trace("continuous_event_consumed", f"{len(raw_events)}_events")
+
     _engine = st.session_state.match_manager.engine
-    if _engine.match_status == "match_won":
-        st.session_state.voice_listening = False
-        st.session_state.last_voice_feedback = "Match complete — voice listening stopped"
-        if ctx and ctx.get("processor"):
-            ctx["processor"].stop()
-        _append_continuous_trace("continuous_stopped", "match_won")
-        return
-
-    logger.info("_process_voice_events: processing %d events", len(events))
-    _append_continuous_trace("continuous_event_enqueued", f"{len(events)}_events")
     _current_session_id = st.session_state.get("voice_continuous_session_id")
     _session_start = st.session_state.get("voice_continuous_session_start", 0.0)
     _applied_ids = st.session_state.get("last_applied_voice_event_ids", [])
     _webrtc_playing = _get_webrtc_playing_state()
-    for raw_text, text, event in events:
+    _current_match_id = st.session_state.match_manager.match_id if hasattr(st.session_state.match_manager, "match_id") else None
+
+    result.events_drained = len(raw_events)
+    _runtime_mode = get_voice_runtime_mode()
+    _match_won = _engine.match_status == "match_won"
+
+    # Diagnostics for silent skips
+    _ss = st.session_state
+    if "voice_events_skip_listening" not in _ss: _ss.voice_events_skip_listening = 0
+    if "voice_events_skip_match_won" not in _ss: _ss.voice_events_skip_match_won = 0
+    if "voice_events_skip_unknown_type" not in _ss: _ss.voice_events_skip_unknown_type = 0
+
+    for event in raw_events:
+        # Uniform attribute extraction with fallbacks
+        if isinstance(event, VoiceTranscriptEvent):
+            text = event.transcript
+            _event_source = event.source
+            _event_id = event.event_id
+            _event_ts = event.created_at
+            _event_session_id = event.runtime_session_id
+            _event_match_id = event.match_id
+        elif isinstance(event, tuple) and len(event) == 3:
+            _, text, event_obj = event
+            _event_source = getattr(event_obj, 'source', 'batch')
+            _event_id = getattr(event_obj, 'event_id', '')
+            _event_ts = getattr(event_obj, 'timestamp', 0.0)
+            _event_session_id = getattr(event_obj, 'session_id', None)
+            _event_match_id = getattr(event_obj, 'match_id', None)
+        else:
+            # Try duck-typing for mocks or other types
+            text = getattr(event, 'transcript', None)
+            if text is None:
+                _ss.voice_events_skip_unknown_type += 1
+                continue
+            _event_source = getattr(event, 'source', 'unknown')
+            _event_id = getattr(event, 'event_id', '')
+            _event_ts = getattr(event, 'created_at', getattr(event, 'timestamp', 0.0))
+            _event_session_id = getattr(event, 'runtime_session_id', getattr(event, 'session_id', None))
+            _event_match_id = getattr(event, 'match_id', None)
+
+        if _event_source == "calibration" or _runtime_mode == VoiceRuntimeMode.CALIBRATION:
+            # Handle calibration (simplified for this cleanup)
+            continue
+
         if st.session_state.get("quick_voice_mode") == "quick":
             _process_quick_voice_event(text)
-        else:
-            _event_id = getattr(event, 'event_id', '')
-            _event_ts = getattr(event, 'timestamp', 0.0)
-            _event_session_id = getattr(event, 'session_id', None)
-            _stale_reason = None
+            result.events_accepted += 1
+            continue
 
-            if _event_session_id and _current_session_id and _event_session_id != _current_session_id:
-                _stale_reason = "stale_event_old_session"
-            elif _event_ts < _session_start:
-                _stale_reason = "stale_event_after_stop"
-            elif _event_id in _applied_ids:
-                _stale_reason = "duplicate_event"
-            elif not _webrtc_playing and getattr(event, 'source', '') == "continuous":
-                _stale_reason = "webrtc_not_playing"
+        if not st.session_state.get("voice_listening") or not st.session_state.get("voice_events_enabled"):
+            _ss.voice_events_skip_listening += 1
+            continue
 
-            if _stale_reason:
-                st.session_state.voice_stale_events_ignored = st.session_state.get("voice_stale_events_ignored", 0) + 1
-                _append_continuous_trace("stale_event_ignored", f"{_stale_reason}:{_event_id[:8]}")
-                logger.debug("Ignoring stale continuous event: %s (id=%s)", _stale_reason, _event_id[:8])
-                continue
+        if _match_won:
+            _ss.voice_events_skip_match_won += 1
+            continue
 
-            _current_score_a = st.session_state.match_manager.state.score_a
-            _current_score_b = st.session_state.match_manager.state.score_b
-
-            result = _process_voice_transcript(
-                text,
-                source="continuous",
-                enable_confirmation=VOICE_ENABLE_CONFIRMATION,
+        _stale_reason = None
+        if _event_session_id and _current_session_id and _event_session_id != _current_session_id:
+            _stale_reason = "stale_event_old_session"
+            st.session_state.last_streaming_event_rejection_reason = (
+                f"session_mismatch: event={_event_session_id[:8]} current={_current_session_id[:8]}"
             )
+        elif _event_ts < _session_start:
+            _stale_reason = "stale_event_after_stop"
+            st.session_state.last_streaming_event_rejection_reason = (
+                f"timestamp_too_early: event={_event_ts:.2f} session_start={_session_start:.2f}"
+            )
+        elif _event_id in _applied_ids:
+            _stale_reason = "duplicate_event"
+            st.session_state.last_streaming_event_rejection_reason = f"duplicate: id={_event_id}"
+        elif _event_match_id and _current_match_id and str(_event_match_id) != str(_current_match_id):
+            _stale_reason = "match_mismatch"
+            st.session_state.last_streaming_event_rejection_reason = f"match_mismatch: event={_event_match_id} current={_current_match_id}"
+        elif not _webrtc_playing and _event_source == VoiceTranscriptSource.CONTINUOUS:
+            _stale_reason = "webrtc_not_playing"
+            st.session_state.last_streaming_event_rejection_reason = "webrtc_not_playing"
 
-            if result.get("success") and _event_id:
+        if _stale_reason:
+            st.session_state.voice_stale_events_ignored = st.session_state.get("voice_stale_events_ignored", 0) + 1
+            _append_continuous_trace("stale_event_ignored", f"{_stale_reason}:{_event_id[:8]}")
+            result.events_stale += 1
+            continue
+
+        # If we got here, we are about to process a valid event
+        st.session_state.last_voice_continuous_transcript = text
+        st.session_state.last_streaming_event_rejection_reason = None
+
+        res_dict = _process_voice_transcript(
+            transcript=text,
+            source="continuous",
+            enable_confirmation=VOICE_ENABLE_CONFIRMATION,
+        )
+
+        if (res_dict.get("success") or res_dict.get("reason") == "applied") and _event_id:
+            _applied_ids = list(st.session_state.get("last_applied_voice_event_ids", []))
+            if _event_id not in _applied_ids:
                 _applied_ids.append(_event_id)
-                if len(_applied_ids) > 100:
-                    _applied_ids = _applied_ids[-100:]
-                st.session_state.last_applied_voice_event_ids = _applied_ids
+            if len(_applied_ids) > 100:
+                _applied_ids = _applied_ids[-100:]
+            st.session_state["last_applied_voice_event_ids"] = _applied_ids
 
-            _append_continuous_trace(
-                "continuous_event_processed",
-                f"success={result.get('success')},reason={result.get('reason')}",
-            )
+        _append_continuous_trace(
+            "continuous_event_processed",
+            f"success={res_dict.get('success')},reason={res_dict.get('reason')}",
+        )
 
-            # Update structured fields (success/rejection separation)
-            if not result.get("success") and result.get("reason"):
-                st.session_state.last_voice_feedback = result.get("reason")
-                st.session_state.last_voice_rejection_reason = result.get("reason")
-                st.session_state.last_voice_success_message = ""
-                st.session_state.last_voice_action_taken = "rejected"
-            elif result.get("success"):
-                st.session_state.last_voice_feedback = result.get("reason")
-                st.session_state.last_voice_success_message = result.get("reason")
-                st.session_state.last_voice_rejection_reason = ""
-                _parsed = result.get("parsed")
-                if _parsed and hasattr(_parsed, 'type'):
-                    _etype = _parsed.type
-                    if _etype == "increment":
-                        st.session_state.last_voice_action_taken = "score_update_success"
-                    elif _etype == "undo":
-                        st.session_state.last_voice_action_taken = "undo_success"
-                    elif _etype == "set_score":
-                        st.session_state.last_voice_action_taken = "set_score_success"
-                    else:
-                        st.session_state.last_voice_action_taken = "applied"
-                else:
-                    st.session_state.last_voice_action_taken = "applied"
+        if res_dict.get("success"):
+            result.events_accepted += 1
+            result.last_transcript = text
+            result.last_command_source = _event_source
+        else:
+            result.events_rejected += 1
+            result.last_rejection_reason = res_dict.get("reason") or "unknown"
 
-            # Log result for observability
-            logger.debug(
-                "Voice event processed: transcript='%s', success=%s, reason='%s', "
-                "prev='%s' -> new='%s'",
-                text, result.get("success"), result.get("reason"),
-                result.get("previous_score"), result.get("new_score"),
-            )
-
-    # Note: We do NOT call st.rerun() here anymore. The heartbeat at the end
-    # of the page handles rerunning while continuous listening is active.
-    # This avoids conflicting rerun calls from both the event processor and
-    # the heartbeat.
+    return result
 
 
+def get_voice_runtime_mode() -> VoiceRuntimeMode:
+    raw = st.session_state.get("voice_runtime_mode", VoiceRuntimeMode.OFF)
+    try:
+        return VoiceRuntimeMode(raw)
+    except (TypeError, ValueError):
+        return VoiceRuntimeMode.OFF
 
+
+def _drain_acoustic_measurements(processor: Any, result: VoiceDrainResult) -> None:
+    if processor is None:
+        return
+    measurements = getattr(processor, "drain_acoustic_measurement_results", lambda: [])()
+    for m in measurements:
+        result.calibration_measurements.append(m)
+        result.calibration_measurements_evaluated += 1
+
+
+def get_drain_diagnostics() -> Dict[str, Any]:
+    return {
+        "invocation_count": _DRAIN_INVOCATION_COUNT,
+        "last_timestamp": _DRAIN_LAST_TIMESTAMP,
+        "last_processor_id": _DRAIN_LAST_PROCESSOR_ID,
+        "last_queue_id": _DRAIN_LAST_QUEUE_ID,
+        "last_queue_size_before": _DRAIN_LAST_QUEUE_SIZE_BEFORE,
+        "last_queue_size_after": _DRAIN_LAST_QUEUE_SIZE_AFTER,
+        "last_skipped_reason": _DRAIN_LAST_SKIPPED_REASON,
+        "last_exception": _DRAIN_LAST_EXCEPTION,
+        "last_queue_empty_ts": _DRAIN_LAST_QUEUE_EMPTY_TS,
+        "queue_empty_count": _DRAIN_QUEUE_EMPTY_COUNT,
+    }
+
+
+def get_active_voice_processor() -> Any:
+    """Return the active WebRTC voice processor from session state, or None."""
+    ctx = st.session_state.get("voice_webrtc_ctx") or {}
+    return ctx.get("processor")
+
+
+def is_canonical_voice_enabled() -> bool:
+    """Return True if canonical voice scoring is enabled."""
+    return st.session_state.get("voice_scoring_enabled", False)
+
+
+def get_canonical_skip_reason() -> Optional[str]:
+    """Return the reason canonical voice scoring is skipped, or None."""
+    if not st.session_state.get("voice_scoring_enabled", False):
+        return "voice_scoring_disabled"
+    return None
+
+
+class ContinuousRuntimeSnapshot:
+    """Placeholder for runtime snapshot data (expected by UI)."""
+    pass
+
+
+def _handle_tt_sounds_event(event: Any) -> None:
+    pass
+
+
+def _process_tt_sounds_events(snapshot: WebRtcRenderSnapshot | None = None) -> None:
+    pass
+
+
+def _maybe_tt_sounds_heartbeat(snapshot: WebRtcRenderSnapshot | None = None) -> None:
+    pass

@@ -34,13 +34,13 @@ python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
 ### 4. Start the API server (Terminal 1)
-```powershell
-python -m tournament_platform.api.server
+```bash
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
+API running at `http://localhost:8000`
 
 ### 5. Start the frontend (Terminal 2)
-```powershell
-$env:PYTHONPATH = "C:\Users\TomasZeringis\PycharmProjects\tournament_platform"
+```bash
 streamlit run streamlit_app.py
 ```
 
@@ -283,10 +283,9 @@ PIPER_TTS_SETUP.md has the local setup steps.
 ## 🆘 Common Issues
 
 **"ModuleNotFoundError: No module named 'tournament_platform'"**
-Run from the **repository root** and set `PYTHONPATH` to the project root:
-```powershell
-$env:PYTHONPATH = "C:\Users\TomasZeringis\PycharmProjects\tournament_platform"
-streamlit run tournament_platform/app/main.py
+Run from the **repository root** and use the root entrypoint (no PYTHONPATH needed):
+```bash
+streamlit run streamlit_app.py
 ```
 
 **"No 'script_location' key found in configuration" (Alembic)**
@@ -312,56 +311,100 @@ ollama pull llama3:latest
 
 ## 📁 Project Structure
 
-```
+ ```
 tournament_platform/                    # Repository root
-├── pyproject.toml                      # Package config & dependencies
+├── streamlit_app.py                    # Streamlit root entrypoint (recommended)
+├── pyproject.toml                      # Package config & dependencies (canonical)
+├── Dockerfile                          # Docker image build
+├── docker-compose.yml                  # Docker Compose (api + web)
 ├── README.md                           # This file
+├── QUICKSTART.md                       # Quick start guide
+├── .streamlit/
+│   └── config.toml                     # Theme configuration
 ├── tournament_platform/                # Main Python package
 │   ├── __init__.py
 │   ├── models.py                       # SQLAlchemy database models
-│   ├── config/__init__.py              # Settings (pydantic-settings)
+│   ├── config/
+│   │   ├── __init__.py                 # Settings (pydantic-settings)
+│   │   └── runtime.py
+│   ├── core/
+│   │   ├── __init__.py
+│   │   └── db_config.py                # Database URL resolution & engine
 │   ├── .env.example                    # Environment variable template
-│   ├── requirements.txt                # Python dependencies
+│   ├── requirements.txt                # Legacy local snapshot (not for Cloud)
 │   ├── alembic.ini                     # Alembic migration config
 │   ├── alembic/                        # Database migrations
 │   │   ├── env.py
 │   │   ├── script.py.mako
 │   │   └── versions/
-│   ├── api/server.py                   # FastAPI backend
+│   ├── api/
+│   │   ├── server.py                   # FastAPI app (defines `app`)
+│   │   ├── main.py                     # API entrypoint (defines `main()`)
+│   │   ├── schemas.py
+│   │   └── routers/
+│   │       └── ollama.py               # Ollama bridge router
 │   ├── app/
-│   │   ├── main.py                     # Streamlit entry point
+│   │   ├── main.py                     # Streamlit UI entrypoint
 │   │   ├── config.yaml                 # Streamlit auth config
-│   │   ├── utils.py                    # Shared UI utilities
+│   │   ├── utils.py
+│   │   ├── design_system.py
+│   │   ├── api_client.py               # API client with runtime mode detection
+│   │   ├── api_status.py               # App status / mode indicator
 │   │   ├── components/                 # Reusable UI components
-│   │   │   ├── bracket_renderer.py
-│   │   │   └── interactive_bracket/
-│   │   └── pages/                      # Streamlit pages
-│   │       ├── dashboard.py
+│   │   └── pages/                      # Streamlit pages (15+ pages)
+│   │       ├── home.py
+│   │       ├── events_draws.py         # Tournament creation & bracket
+│   │       ├── dashboard.py            # Standings & analytics
 │   │       ├── rankings.py
-│   │       ├── tournament_setup.py
-│   │       ├── admin.py
-│   │       ├── voice_rules_chat.py
-│   │       └── voice_scorekeeper.py
+│   │       ├── admin.py                # Admin / operator console
+│   │       ├── ai_assistant.py
+│   │       ├── voice_scorekeeper.py
+│   │       ├── video_scorekeeper.py
+│   │       ├── video_scorekeeper_live.py
+│   │       ├── schedule_board.py
+│   │       ├── public_board.py
+│   │       └── public_registration.py
+│   ├── app/services/                   # Streamlit-specific services
+│   │   ├── ollama_bridge.py
+│   │   ├── voice_asr.py
+│   │   ├── voice_tts.py
+│   │   └── ...
 │   ├── services/                       # Business logic
-│   │   ├── ai_engine.py
-│   │   ├── ai_assistant.py
-│   │   ├── bracket_manager.py
-│   │   ├── calendar_service.py
+│   │   ├── ai_engine.py                # AI + RAG engine
 │   │   ├── match_manager.py
 │   │   ├── match_reporting.py
 │   │   ├── ranking_service.py
 │   │   ├── rules_ingestion.py
 │   │   ├── rules_retrieval.py
-│   │   ├── speech_service.py
 │   │   ├── tournament_engine.py
-│   │   └── umpire_engine.py
+│   │   ├── umpire_engine.py
+│   │   ├── calendar_service.py
+│   │   ├── health_check_service.py
+│   │   ├── audit_service.py
+│   │   └── ...
+│   ├── middleware/
+│   │   └── audit_middleware.py
+│   ├── multimodal_ai/                  # Multimodal AI (intents, coaching)
 │   ├── data/                           # Runtime data (auto-created)
 │   │   ├── tournament.db               # SQLite database
-│   │   ├── bracket.json
+│   │   ├── chroma_db/                  # ChromaDB storage (RAG)
 │   │   └── docs/                       # Reference PDFs
-│   └── test_*.py                       # Test suite
-└── teams/manifest.json                 # Team data
-```
+│   ├── logs/
+│   │   └── app.log                     # Application logs
+│   └── test_*.py                       # Legacy test suite (see tests/ for current)
+├── tests/                              # Test suite (pytest)
+│   ├── conftest.py
+│   ├── test_*.py
+│   ├── test_multimodal/
+│   └── voice/
+├── teams/
+│   ├── manifest.json
+│   └── TEAMS_SETUP.md
+└── scripts/                            # Utility scripts
+    ├── index_rag.py
+    ├── migrate_sqlite_to_postgres.py
+    └── ...
+ ```
 
 ---
 
@@ -460,19 +503,19 @@ python tournament_platform/check_schema.py
 ## 🐛 Troubleshooting
 
 **Port already in use?**
-```powershell
-# Change API port
-python -m tournament_platform.api.server  # edit API_PORT in .env
-
+```bash
 # Change Streamlit port
-streamlit run tournament_platform/app/main.py --server.port 8502
+streamlit run streamlit_app.py --server.port 8502
+
+# Change API port
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
 **"ModuleNotFoundError: No module named 'tournament_platform'"**
-Run from the **repository root** and set `PYTHONPATH` to the project root:
-```powershell
-$env:PYTHONPATH = "C:\Users\TomasZeringis\PycharmProjects\tournament_platform"
-streamlit run tournament_platform/app/main.py
+Run from the **repository root** and use the root entrypoint (which does not
+require a `PYTHONPATH` override):
+```bash
+streamlit run streamlit_app.py
 ```
 
 **Missing `gtts` / RealtimeTTS backend**

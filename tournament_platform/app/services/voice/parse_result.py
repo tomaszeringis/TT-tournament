@@ -32,6 +32,7 @@ class VoiceParseResult:
     speaker_label: Optional[str] = None
     language: str = "en"
     disposition: Optional[str] = None
+    target_side: Optional[str] = None
 
     def to_score_event(self) -> "VoiceScoreEvent":
         """Convert to the legacy wire type used by MatchManager."""
@@ -132,6 +133,7 @@ class VoiceParseResult:
             requires_confirmation=self.requires_confirmation,
             asr_latency_ms=self.asr_latency_ms,
             noise_rms=self.noise_rms,
+            target_side=self.target_side,
         )
 
 

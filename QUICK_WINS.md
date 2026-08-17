@@ -24,9 +24,8 @@ This document describes the quick-win features added to the Tournament Platform 
 
 ```powershell
 # From the repository root
-cd tournament_platform
-python -m alembic upgrade head
-python api/server.py
+python -m alembic -c tournament_platform/alembic.ini upgrade head
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 The API will be available at `http://localhost:8000` by default.
@@ -35,7 +34,7 @@ The API will be available at `http://localhost:8000` by default.
 
 ```powershell
 # From the repository root
-streamlit run tournament_platform/app/main.py
+streamlit run streamlit_app.py
 ```
 
 Open `http://localhost:8501` in your browser.
@@ -182,10 +181,10 @@ python -m alembic -c tournament_platform/alembic.ini upgrade head
 python seed_quick_win_demo.py
 
 # 3. Start the API server (Terminal 1)
-python tournament_platform/api/server.py
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 
 # 4. Start Streamlit (Terminal 2)
-streamlit run tournament_platform/app/main.py
+streamlit run streamlit_app.py
 
 # 5. Visit in browser:
 #    - http://localhost:8501 (Streamlit app)

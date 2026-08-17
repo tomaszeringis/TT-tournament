@@ -55,14 +55,19 @@
 ### 7. ✓ Project Structure
 ```
 tournament_platform/
-├── [√] models.py              - ORM models
-├── [√] alembic.ini            - Migration config
-├── [√] alembic/env.py         - Migration environment
-├── [√] api/server.py          - Async FastAPI
-├── [√] app/main.py            - Streamlit
-├── [√] services/ai_engine.py  - AI + RAG
-├── [√] data/                  - SQLite + ChromaDB
-└── [√] logs/                  - Application logs
+├── [√] streamlit_app.py          - Root Streamlit entrypoint
+├── [√] pyproject.toml             - Package config & dependencies
+├── [√] tournament_platform/
+│   ├── [√] models.py              - ORM models
+│   ├── [√] alembic.ini            - Migration config
+│   ├── [√] alembic/env.py         - Migration environment
+│   ├── [√] api/server.py          - FastAPI app
+│   ├── [√] api/main.py            - API entrypoint
+│   ├── [√] app/main.py            - Streamlit UI
+│   ├── [√] app/config.yaml        - Auth config
+│   ├── [√] services/ai_engine.py  - AI + RAG
+│   ├── [√] data/                  - SQLite + ChromaDB
+│   └── [√] logs/                  - Application logs
 ```
 
 ---
@@ -84,24 +89,21 @@ RAG System:        OK  ✓ (15 rules loaded)
 ## Quick Start Commands
 
 ### Start API Server
-```powershell
-cd tournament_platform
-python api/server.py
+```bash
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 - Runs at: `http://localhost:8000`
 - API Docs: `http://localhost:8000/docs`
 
 ### Start Streamlit Frontend
-```powershell
-cd tournament_platform
-python -m streamlit run app/main.py
+```bash
+streamlit run streamlit_app.py
 ```
 - Opens at: `http://localhost:8501`
 
 ### Apply Database Migrations
-```powershell
-cd tournament_platform
-python -m alembic upgrade head
+```bash
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
 ### Initialize RAG System
@@ -280,19 +282,18 @@ Health check endpoint
 
 ### Issue: Port Already in Use
 **Solution**: Use different ports
-```powershell
+```bash
 # API on different port
-python api/server.py --port 8001
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8001 --reload
 
 # Streamlit on different port
-python -m streamlit run app/main.py --server.port 8502
+streamlit run streamlit_app.py --server.port 8502
 ```
 
 ### Issue: Database Not Initialized
 **Solution**: Apply migrations
-```powershell
-cd tournament_platform
-python -m alembic upgrade head
+```bash
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
 ### Issue: RAG Not Working
@@ -314,11 +315,11 @@ ollama pull llama3:latest
 
 1. **Update Configuration**
    - Edit `tournament_platform/app/config.yaml` with real credentials
-   - Update `TEAMS_WEBHOOK_URL` in `api/server.py`
+   - Update `TEAMS_WEBHOOK_URL` in `tournament_platform/config/__init__.py`
 
 2. **Start the Application**
-   - Terminal 1: `cd tournament_platform && python api/server.py`
-   - Terminal 2: `cd tournament_platform && python -m streamlit run app/main.py`
+   - Terminal 1: `uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload`
+   - Terminal 2: `streamlit run streamlit_app.py`
 
 3. **Create a Tournament**
    - Go to "Tournament Setup" page

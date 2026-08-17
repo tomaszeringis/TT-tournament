@@ -125,7 +125,61 @@ class TranscriptPostProcessor:
     domain-specific cleanup. Never mutates scoring state directly.
     """
 
-    def __init__(self, vocabulary: Optional[VoiceVocabulary] = None) -> None:
+    _DEFAULT_CORRECTIONS: Dict[str, str] = {
+        "points": "point",
+        "point read": "point red",
+        "points read": "point red",
+        "point red": "point red",
+        "points red": "point red",
+        "point blue": "point blue",
+        "points blue": "point blue",
+        "red point": "point red",
+        "blue point": "point blue",
+        "point to red": "point red",
+        "point to blue": "point blue",
+    }
+
+    _LT_ALIAS_MAP: Dict[str, str] = {
+        # LEFT variants (Deepgram & common variants)
+        "taškas kairė": "point left",
+        "taškas kairėje": "point left",
+        "taškas kairės": "point left",
+        "taškas kairi": "point left",
+        "taškas kairį": "point left",
+        "taskas kaire": "point left",
+        "taskas kaireje": "point left",
+        "taskas kairi": "point left",
+        "taskas kairi.": "point left",  # Safety for internal dots if \b fails
+
+        # RIGHT variants (Deepgram & common variants)
+        "taškas dešinė": "point right",
+        "taškas dešinėje": "point right",
+        "taškas dešinės": "point right",
+        "taskas desine": "point right",
+        "taskas desineje": "point right",
+
+        # Side only
+        "kairė": "point left",
+        "kairėje": "point left",
+        "kairės": "point left",
+        "kairi": "point left",
+        "kairį": "point left",
+        "kaire": "point left",
+        "kaireje": "point left",
+        "dešinė": "point right",
+        "dešinėje": "point right",
+        "dešinės": "point right",
+        "desine": "point right",
+        "desineje": "point right",
+
+        # Commands & Players
+        "taškas pirmam": "point player one",
+        "taškas antram": "point player two",
+        "atšaukti": "undo",
+        "atgal": "undo",
+    }
+
+    def __init__(self, vocabulary: Optional[VoiceVocabulary] = None):
         """
         Initialize with an optional vocabulary.
 
@@ -133,18 +187,30 @@ class TranscriptPostProcessor:
             vocabulary: VoiceVocabulary instance. If None, uses empty defaults.
         """
         self.vocabulary = vocabulary or VoiceVocabulary()
+        self._compiled_defaults: Dict[Pattern, str] = {}
+        for wrong, right in self._DEFAULT_CORRECTIONS.items():
+            pattern = re.compile(rf"\b{re.escape(wrong)}\b", re.IGNORECASE)
+            self._compiled_defaults[pattern] = right
+        self._compiled_lt_aliases: Dict[Pattern, str] = {}
+        for lt, en in self._LT_ALIAS_MAP.items():
+            # Use strict matching for Lithuanian aliases to avoid conversational false positives
+            pattern = re.compile(rf"^\s*{re.escape(lt)}\s*$", re.IGNORECASE)
+            self._compiled_lt_aliases[pattern] = en
 
-    def process(self, transcript: str) -> str:
+    def process(self, transcript: str, language: str = "en") -> str:
         """
         Apply post-processing to an ASR transcript.
 
         Steps:
-        1. Apply vocabulary corrections (e.g., "read" → "red").
-        2. Normalize player/team names for display/audit.
-        3. Clean up extra whitespace.
+         1. Apply built-in safe corrections (homophones, plural normalization).
+         2. Apply language-aware alias expansion (Lithuanian → English canonical).
+         3. Apply vocabulary corrections (e.g., "read" → "red").
+         4. Normalize player/team names for display/audit.
+         5. Clean up extra whitespace.
 
         Args:
             transcript: Raw ASR transcript text.
+            language: Language code (e.g. "en", "lt") for canonicalization.
 
         Returns:
             Processed transcript string.
@@ -152,9 +218,20 @@ class TranscriptPostProcessor:
         if not transcript:
             return transcript
 
+        # Strip terminal punctuation (.,!?) to ensure deterministic alias matching
         text = transcript.strip()
+        text = re.sub(r'[.,!?]+$', '', text)
 
-        # Apply corrections
+        # Apply built-in corrections first (most specific)
+        for pattern, replacement in self._compiled_defaults.items():
+            text = pattern.sub(replacement, text)
+
+        # Language-aware alias expansion
+        if language and language.lower() == "lt":
+            for pattern, replacement in self._compiled_lt_aliases.items():
+                text = pattern.sub(replacement, text)
+
+        # Apply vocabulary corrections
         for pattern, replacement in self.vocabulary._compiled_corrections.items():
             text = pattern.sub(replacement, text)
 

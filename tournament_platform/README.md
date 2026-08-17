@@ -7,15 +7,13 @@ A modern, fully-featured tournament management platform with AI-powered match an
 ## 🚀 Quick Start (1 minute)
 
 ### Terminal 1: Start API Server
-```powershell
-cd tournament_platform
-python api/server.py
+```bash
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ### Terminal 2: Start Frontend
-```powershell
-cd tournament_platform
-streamlit run app/main.py
+```bash
+streamlit run streamlit_app.py
 ```
 
 Then open your browser to `http://localhost:8501`
@@ -100,16 +98,14 @@ tournament_platform/
 
 ### Database
 ```powershell
-cd tournament_platform
-
 # Check migrations
-python -m alembic current
+python -m alembic -c tournament_platform/alembic.ini current
 
 # Apply migrations
-python -m alembic upgrade head
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 
 # Create new migration
-python -m alembic revision --autogenerate -m "Your description"
+python -m alembic -c tournament_platform/alembic.ini revision --autogenerate -m "description"
 ```
 
 ### Setup & Testing
@@ -222,7 +218,7 @@ python initialize_rag.py
 ```
 
 ### Configure API Webhook
-Edit `tournament_platform/api/server.py`:
+Edit `tournament_platform/config/__init__.py`:
 ```python
 TEAMS_WEBHOOK_URL = "https://your-webhook-url"
 ```
@@ -232,14 +228,13 @@ TEAMS_WEBHOOK_URL = "https://your-webhook-url"
 ### Port already in use?
 ```powershell
 # Use different ports
-python api/server.py --port 8001
-streamlit run app/main.py --server.port 8502
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8001 --reload
+streamlit run streamlit_app.py --server.port 8502
 ```
 
 ### Database not initialized?
 ```powershell
-cd tournament_platform
-python -m alembic upgrade head
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
 ### RAG not working?
@@ -260,8 +255,7 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for more solutions.
 The environment is already set up. To reinstall dependencies:
 
 ```powershell
-cd tournament_platform
-python -m pip install -r requirements.txt
+python -m pip install -e .
 ```
 
 ## 📦 Deployment Secrets
@@ -326,9 +320,9 @@ Expected: **7/7 checks passed** ✓
 
 Your tournament platform is fully configured and ready to use.
 
-**Next Steps:**
-1. Start the API: `cd tournament_platform && python api/server.py`
-2. Start frontend: `streamlit run tournament_platform/app/main.py`
+- **Next Steps**
+1. Start the API: `uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload`
+2. Start frontend: `streamlit run streamlit_app.py`
 3. Open browser: `http://localhost:8501`
 4. Register players and create tournaments!
 

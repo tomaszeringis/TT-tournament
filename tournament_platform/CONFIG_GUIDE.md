@@ -122,18 +122,17 @@ if hasattr(st, 'secrets') and 'credentials' in st.secrets:
 
 ### Before (hardcoded):
 ```python
-# In api/server.py
+# In tournament_platform/api/server.py
 TEAMS_WEBHOOK_URL = "YOUR_TEAMS_WEBHOOK_URL_HERE"
-uvicorn.run(app, host="0.0.0.0", port=8000)
 ```
 
 ### After (environment-backed):
 ```python
-# In api/server.py
-from config.settings import settings
+# In tournament_platform/config/__init__.py
+from tournament_platform.config import settings
 
 # Use settings.TEAMS_WEBHOOK_URL
-uvicorn.run(app, host=settings.API_HOST, port=settings.API_PORT)
+# Server is started via: uvicorn tournament_platform.api.main:app --host settings.API_HOST --port settings.API_PORT
 ```
 
 ## Quick Start
@@ -160,7 +159,7 @@ uvicorn.run(app, host=settings.API_HOST, port=settings.API_PORT)
 
 4. **Verify configuration loads correctly:**
    ```bash
-   python -c "from config.settings import settings; print(settings.dict())"
+    python -c "from tournament_platform.config import settings; print(settings.model_dump())"
    ```
 
 ## Troubleshooting

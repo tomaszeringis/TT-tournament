@@ -193,12 +193,15 @@ class VoiceAudioBuffer:
         num_samples = len(frame_bytes) / (bytes_per_sample * self.channels)
         return (num_samples / self.sample_rate) * 1000.0
     
-    def push_frame(self, frame_bytes: bytes) -> Optional[AudioChunk]:
+    def push_frame(self, frame_bytes: bytes, decision: Optional["AudioFrameDecision"] = None) -> Optional[AudioChunk]:
         """
         Push an audio frame into the buffer.
         
         Args:
             frame_bytes: Raw audio frame bytes from WebRTC (float32 interleaved)
+            decision: Optional pre-computed frame decision. When provided, the
+                buffer skips its own noise-gate and VAD checks and uses
+                decision.is_speech directly.
             
         Returns:
             AudioChunk if a complete utterance was detected, None otherwise.
@@ -210,14 +213,14 @@ class VoiceAudioBuffer:
             now = time.time()
             frame_duration_ms = self._get_frame_duration_ms(frame_bytes)
             rms = self._compute_rms(frame_bytes)
-            # Noise gate: a frame must exceed the minimum speech-energy floor
-            # to count as speech (Phase 5).
-            passes_noise_gate = self.noise_gate_rms <= 0.0 or rms >= self.noise_gate_rms
-            # VAD (Phase 3): if a VAD is configured, let it decide speech first.
-            vad_speech = False
-            if passes_noise_gate and self.vad is not None:
-                vad_speech = self.vad.is_speech(frame_bytes, self.sample_rate)
-            is_speech = vad_speech or (passes_noise_gate and rms > self.silence_threshold)
+            if decision is None:
+                passes_noise_gate = self.noise_gate_rms <= 0.0 or rms >= self.noise_gate_rms
+                vad_speech = False
+                if passes_noise_gate and self.vad is not None:
+                    vad_speech = self.vad.is_speech(frame_bytes, self.sample_rate)
+                is_speech = vad_speech or (passes_noise_gate and rms > self.silence_threshold)
+            else:
+                is_speech = decision.is_speech
             # Accumulate RMS for per-chunk mean energy reporting.
             self._rms_sum += rms
             self._rms_frames += 1

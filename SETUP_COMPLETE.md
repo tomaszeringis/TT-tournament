@@ -33,9 +33,8 @@ Your tournament platform is fully configured and ready to use. All 7 verificatio
 
 ### 1. Start the FastAPI Server
 
-```powershell
-cd tournament_platform
-python api/server.py
+```bash
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Server will run at: `http://localhost:8000`
@@ -43,9 +42,8 @@ API Docs: `http://localhost:8000/docs`
 
 ### 2. Start Streamlit Frontend (in a new terminal)
 
-```powershell
-cd tournament_platform/app
-python -m streamlit run main.py
+```bash
+streamlit run streamlit_app.py
 ```
 
 Frontend will open at: `http://localhost:8501`
@@ -66,22 +64,20 @@ Check `tournament_platform/app/config.yaml` to update authentication credentials
 ### Database Migrations
 
 ```powershell
-cd tournament_platform
-
 # Check current migration status
-python -m alembic current
+python -m alembic -c tournament_platform/alembic.ini current
 
 # View migration history
-python -m alembic history
+python -m alembic -c tournament_platform/alembic.ini history
 
 # Create new migration (after changing models.py)
-python -m alembic revision --autogenerate -m "Your description"
+python -m alembic -c tournament_platform/alembic.ini revision --autogenerate -m "Your description"
 
 # Apply pending migrations
-python -m alembic upgrade head
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 
 # Undo last migration
-python -m alembic downgrade -1
+python -m alembic -c tournament_platform/alembic.ini downgrade -1
 ```
 
 ### RAG System
@@ -101,45 +97,50 @@ python test_api.py
 python verify_setup.py
 
 # Check database tables
-cd tournament_platform
-python check_tables.py
+python tournament_platform/check_tables.py
 
 # Check database schema
-python check_schema.py
+python tournament_platform/check_schema.py
 
 # Test models directly
-python test_models.py
+python -m pytest tournament_platform/test_models.py -q
 ```
 
 ## 📂 Project Structure
 
 ```
 tournament_platform/
-├── main.py                          # Entry point
-├── models.py                        # SQLAlchemy ORM models
-├── requirements.txt                 # Python dependencies (updated)
-├── alembic.ini                      # Alembic configuration ✅
-├── alembic/                         # Database migrations ✅
-│   ├── env.py
-│   ├── script.py.mako
-│   └── versions/
-│       └── 001_initial.py
-├── api/
-│   └── server.py                    # Async FastAPI server ✅
-├── app/
-│   ├── main.py                      # Streamlit with st.navigation ✅
-│   ├── config.yaml                  # Auth config
-│   └── pages/
-│       ├── dashboard.py             # Stats & charts (AG-Grid + Plotly) ✅
-│       ├── tournament_setup.py       # Tournament management ✅
-│       └── admin.py                 # Admin panel ✅
-├── services/
-│   └── ai_engine.py                 # Pydantic models + RAG + JSON mode ✅
-├── data/
-│   ├── tournament.db                # SQLite database
-│   └── chroma_db/                   # RAG knowledge base
+├── streamlit_app.py                   # Streamlit root entrypoint
+├── pyproject.toml                     # Package config & dependencies
+├── Dockerfile                         # Docker image
+├── docker-compose.yml                 # Docker Compose (api + web)
+├── tournament_platform/               # Main Python package
+│   ├── models.py                      # SQLAlchemy ORM models
+│   ├── alembic.ini                    # Alembic configuration
+│   ├── alembic/
+│   │   ├── env.py
+│   │   ├── script.py.mako
+│   │   └── versions/
+│   ├── api/
+│   │   ├── server.py                  # FastAPI app (defines `app`)
+│   │   └── main.py                    # API entrypoint (defines `main()`)
+│   ├── app/
+│   │   ├── main.py                    # Streamlit UI entrypoint
+│   │   ├── config.yaml                # Auth config
+│   │   ├── components/
+│   │   └── pages/
+│   │       ├── dashboard.py
+│   │       ├── events_draws.py
+│   │       └── admin.py
+│   ├── services/                      # Business logic
+│   │   ├── ai_engine.py
+│   │   └── ...
+│   ├── app/services/                  # Streamlit-specific services
+│   └── data/
+│       ├── tournament.db              # SQLite database
+│       └── chroma_db/                 # RAG knowledge base
 └── logs/
-    └── app.log                      # Application logs
+    └── app.log                        # Application logs
 ```
 
 ## 🎯 Features Overview
@@ -220,28 +221,26 @@ curl http://localhost:8000/health
 ### Issue: "ModuleNotFoundError" in Streamlit
 
 **Solution**: Run from the correct directory:
-```powershell
-cd tournament_platform/app
-python -m streamlit run main.py
+```bash
+streamlit run streamlit_app.py
 ```
 
 ### Issue: Database "no such table"
 
 **Solution**: Apply migrations:
-```powershell
-cd tournament_platform
-python -m alembic upgrade head
+```bash
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
 ### Issue: Port already in use
 
 **Solution**: Use different ports:
-```powershell
-# Change API port
-python api/server.py --port 8001
-
+```bash
 # Change Streamlit port
-python -m streamlit run app/main.py --server.port 8502
+streamlit run streamlit_app.py --server.port 8502
+
+# Change API port
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8001 --reload
 ```
 
 ### Issue: RAG not working

@@ -7,6 +7,6 @@
   "lt": {
     "point red": ["taškas raudona", "raudona taškas"],
     "undo": ["atgal", "atšaukti"],
-    "score point": ["taškas pirmam", "taškas antram"]
+    "score point": ["taškas pirmam", "taškas antram", "taškas kairė", "taškas dešinė", "kairė", "dešinė"]
   }
 }

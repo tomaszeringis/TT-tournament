@@ -56,7 +56,7 @@
 **Solution:**
 ```bash
 # Reinstall all requirements
-python -m pip install -r requirements.txt
+python -m pip install -e .
 
 # Or install specifically
 python -m pip install ollama chromadb streamlit-aggrid
@@ -107,7 +107,7 @@ python -m pip install streamlit-aggrid
 **Solution:**
 ```bash
 cd tournament_platform
-python -m alembic upgrade head
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
 Make sure you see output like:
@@ -127,7 +127,7 @@ INFO [alembic.runtime.migration] Running upgrade 001_initial
 mv data/tournament.db data/tournament.db.backup
 
 # Run migration fresh
-python -m alembic upgrade head
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
 ---
@@ -142,7 +142,7 @@ python -m alembic upgrade head
 ```bash
 # In one terminal, start the API
 cd tournament_platform
-python api/server.py
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 
 # You should see: "Uvicorn running on http://0.0.0.0:8000"
 ```
@@ -173,7 +173,7 @@ python api/server.py
 
 **Solution:**
 ```python
-# In api/server.py, verify webhook URL
+# In tournament_platform/api/server.py, verify webhook URL
 TEAMS_WEBHOOK_URL = "https://outlook.webhook.office.com/webhookb2/..."
 
 # Test with curl
@@ -204,9 +204,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 **Cause:** Files not in correct location or naming
 
 **Solution:**
-- Ensure files are in `app/pages/`
+- Ensure files are in `tournament_platform/app/pages/`
 - File names: `dashboard.py`, `tournament_setup.py`, `admin.py`
-- Check `app/main.py` paths match exactly
+- Check `tournament_platform/app/main.py` paths match exactly
 
 ---
 
@@ -238,7 +238,7 @@ python -m pip install streamlit-aggrid
 
 **Solution:**
 ```yaml
-# app/config.yaml
+# tournament_platform/app/config.yaml
 credentials:
   usernames:
     your_username:
@@ -348,7 +348,7 @@ python -m alembic revision --autogenerate -m "Add new column"
 cat alembic/versions/002_add_new_column.py
 
 # Apply
-python -m alembic upgrade head
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
 ---
@@ -367,7 +367,7 @@ rm alembic/versions/*.py  # Keep __init__.py
 rm data/tournament.db
 
 # Reinitialize
-python -m alembic upgrade head
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
 ---
@@ -386,8 +386,8 @@ netstat -ano | findstr :8501
 taskkill /PID <PID> /F
 
 # Or use different ports
-python api/server.py --port 8001
-streamlit run app/main.py --server.port 8502
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8001 --reload
+streamlit run streamlit_app.py --server.port 8502
 ```
 
 ---
@@ -464,7 +464,7 @@ mkdir logs
 
 **Solution:**
 ```python
-# Verify in api/server.py
+# Verify in tournament_platform/api/server.py
 logging.basicConfig(
     level=logging.INFO,  # Or DEBUG for more detail
     handlers=[

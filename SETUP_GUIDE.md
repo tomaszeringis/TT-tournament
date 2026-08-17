@@ -16,7 +16,7 @@ This document provides step-by-step instructions for setting up and using the re
 ### 1. Install Dependencies
 
 ```bash
-python -m pip install -r requirements.txt
+pip install -e .
 ```
 
 ### 2. Initialize Database with Alembic
@@ -24,11 +24,8 @@ python -m pip install -r requirements.txt
 If you're starting fresh, initialize the database:
 
 ```bash
-# Navigate to the project directory
-cd tournament_platform
-
-# Create the database and apply initial migration
-python -m alembic upgrade head
+# From the repository root
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 ```
 
 **What this does:**
@@ -61,7 +58,7 @@ Alembic is a lightweight database migration tool. All migrations live in `alembi
 After modifying `models.py`, create a new migration:
 
 ```bash
-python -m alembic revision --autogenerate -m "Description of your change"
+python -m alembic -c tournament_platform/alembic.ini revision --autogenerate -m "Description of your change"
 ```
 
 This creates a new file in `alembic/versions/` with up/down functions.
@@ -70,13 +67,13 @@ This creates a new file in `alembic/versions/` with up/down functions.
 
 ```bash
 # Apply all pending migrations
-python -m alembic upgrade head
+python -m alembic -c tournament_platform/alembic.ini upgrade head
 
 # Downgrade one migration
-python -m alembic downgrade -1
+python -m alembic -c tournament_platform/alembic.ini downgrade -1
 
 # View current migration status
-python -m alembic current
+python -m alembic -c tournament_platform/alembic.ini current
 ```
 
 ### Current Models
@@ -161,7 +158,7 @@ RAG allows the AI to retrieve relevant tournament rules as context before genera
 ### Setup RAG
 
 ```python
-from services.ai_engine import AIEngine
+from tournament_platform.services.ai_engine import AIEngine
 
 ai = AIEngine()
 
@@ -214,8 +211,7 @@ app/
 ### Running the App
 
 ```bash
-cd app
-python -m streamlit run main.py
+streamlit run streamlit_app.py
 ```
 
 ### Pages Overview
@@ -270,7 +266,7 @@ When you select a player in the Dashboard:
 ### Running the API
 
 ```bash
-python api/server.py
+uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 Server starts at `http://localhost:8000`
@@ -315,7 +311,7 @@ Health check endpoint.
 
 ```python
 from fastapi import Depends
-from models import SessionLocal, Session
+from tournament_platform.models import SessionLocal, Session
 
 def get_db():
     db = SessionLocal()
@@ -410,7 +406,7 @@ ollama pull llama3:latest
 ### Create a Match with Tournament
 
 ```python
-from models import SessionLocal, Match, Tournament
+from tournament_platform.models import SessionLocal, Match, Tournament
 
 db = SessionLocal()
 
@@ -435,7 +431,7 @@ db.commit()
 ### Generate AI Report with RAG
 
 ```python
-from services.ai_engine import AIEngine
+from tournament_platform.services.ai_engine import AIEngine
 
 ai = AIEngine()
 
@@ -474,11 +470,11 @@ curl http://localhost:8000/health
 
 ## 📝 Next Steps
 
-1. **Configure Auth**: Update `app/config.yaml` with your credentials
+1. **Configure Auth**: Update `tournament_platform/app/config.yaml` with your credentials
 2. **Add Tournament Rules**: Initialize RAG with your rules
-3. **Run Migrations**: `python -m alembic upgrade head`
-4. **Start API**: `python api/server.py`
-5. **Start Frontend**: `python -m streamlit run app/main.py`
+3. **Run Migrations**: `python -m alembic -c tournament_platform/alembic.ini upgrade head`
+4. **Start API**: `uvicorn tournament_platform.api.main:app --host 0.0.0.0 --port 8000 --reload`
+5. **Start Frontend**: `streamlit run streamlit_app.py`
 6. **Create Tournaments**: Use the Tournament Setup page
 
 ---

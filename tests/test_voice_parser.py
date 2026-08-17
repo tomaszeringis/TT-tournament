@@ -408,3 +408,109 @@ class TestGoldenTranscripts:
             for key, value in expected_slots.items():
                 attr = slot_map.get(key, key)
                 assert getattr(event, attr) == value, f"Slot mismatch for: {transcript}"
+
+
+class TestPointColorPatterns:
+    """Explicit point + color command patterns."""
+
+    def test_point_red_scores_b(self, parser):
+        event = parser.parse("point red")
+        assert event.type == "increment"
+        assert event.player == "B"
+
+    def test_point_blue_scores_a(self, parser):
+        event = parser.parse("point blue")
+        assert event.type == "increment"
+        assert event.player == "A"
+
+    def test_points_red_scores_b(self, parser):
+        event = parser.parse("points red")
+        assert event.type == "increment"
+        assert event.player == "B"
+
+    def test_points_blue_scores_a(self, parser):
+        event = parser.parse("points blue")
+        assert event.type == "increment"
+        assert event.player == "A"
+
+    def test_red_point_scores_b(self, parser):
+        event = parser.parse("red point")
+        assert event.type == "increment"
+        assert event.player == "B"
+
+    def test_blue_point_scores_a(self, parser):
+        event = parser.parse("blue point")
+        assert event.type == "increment"
+        assert event.player == "A"
+
+    def test_point_to_red_scores_b(self, parser):
+        event = parser.parse("point to red")
+        assert event.type == "increment"
+        assert event.player == "B"
+
+    def test_point_to_blue_scores_a(self, parser):
+        event = parser.parse("point to blue")
+        assert event.type == "increment"
+        assert event.player == "A"
+
+    def test_point_read_homophone_scores_b(self, parser):
+        event = parser.parse("point read")
+        assert event.type == "increment"
+        assert event.player == "B"
+
+    def test_buying_trend_is_unknown(self, parser):
+        event = parser.parse("buying trend")
+        assert event.type == "unknown"
+
+
+class TestConservativeNormalization:
+    """Post-processor corrections for common ASR errors."""
+
+    def test_points_red_normalized_to_point_red(self):
+        from tournament_platform.app.services.voice_vocab import TranscriptPostProcessor
+
+        proc = TranscriptPostProcessor()
+        result = proc.process("points red")
+        assert result == "point red"
+
+    def test_point_read_normalized_to_point_red(self):
+        from tournament_platform.app.services.voice_vocab import TranscriptPostProcessor
+
+        proc = TranscriptPostProcessor()
+        result = proc.process("point read")
+        assert result == "point red"
+
+    def test_points_blue_normalized_to_point_blue(self):
+        from tournament_platform.app.services.voice_vocab import TranscriptPostProcessor
+
+        proc = TranscriptPostProcessor()
+        result = proc.process("points blue")
+        assert result == "point blue"
+
+    def test_buying_trend_not_normalized(self):
+        from tournament_platform.app.services.voice_vocab import TranscriptPostProcessor
+
+        proc = TranscriptPostProcessor()
+        result = proc.process("buying trend")
+        assert result == "buying trend"
+
+
+class TestAsrHotwords:
+    """ASR backend hotwords configuration."""
+
+    def test_local_asr_has_hotwords_support(self):
+        from tournament_platform.app.services.voice_asr import LocalASR
+
+        asr = LocalASR()
+        hotwords = asr._get_default_hotwords()
+        assert "point" in hotwords
+        assert "red" in hotwords
+        assert "blue" in hotwords
+
+    def test_local_asr_has_default_initial_prompt(self):
+        from tournament_platform.app.services.voice_asr import LocalASR
+
+        asr = LocalASR()
+        prompt = asr._get_default_initial_prompt()
+        assert "point red" in prompt.lower()
+        assert "point blue" in prompt.lower()

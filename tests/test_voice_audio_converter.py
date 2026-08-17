@@ -8,6 +8,7 @@ These guard against the Streamlit Cloud runtime errors:
   - RuntimeWarning: invalid value encountered in divide (VAD)
 """
 
+import queue
 import numpy as np
 import pytest
 
@@ -152,3 +153,14 @@ class TestVoiceProcessorMissingAsr:
         processor = VoiceAudioProcessor(asr=None)
         processor.stop()
         assert processor._status == "stopped"
+
+    def test_stop_clears_acoustic_capture_state(self):
+        processor = VoiceAudioProcessor(asr=None)
+        processor._active_acoustic_capture = object()
+        processor._acoustic_accumulator = object()
+        processor._measurement_result_queue = queue.LifoQueue()
+        processor._measurement_result_queue.put_nowait(object())
+        processor.stop()
+        assert processor._active_acoustic_capture is None
+        assert processor._acoustic_accumulator is None
+        assert processor._measurement_result_queue.empty()

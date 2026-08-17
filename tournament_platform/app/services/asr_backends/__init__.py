@@ -9,3 +9,10 @@ try:
     __all__.append("SpeechBrainBackend")
 except Exception:
     pass
+
+try:
+    from tournament_platform.app.services.asr_backends.deepgram_backend import DeepgramASRBackend
+
+    __all__.append("DeepgramASRBackend")
+except Exception:
+    pass
