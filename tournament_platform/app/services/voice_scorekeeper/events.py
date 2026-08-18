@@ -117,7 +117,9 @@ class VoiceTranscriptEvent:
     created_at: Optional[float] = None
     calibration_context: Optional[CalibrationCaptureContext] = None
     capture_kind: Optional[CalibrationCaptureKind] = None
-    confidence: float = 1.0
+    confidence: float = 1.0  # Legacy generic confidence
+    acoustic_confidence: Optional[float] = None  # Quick Win 7/8
+    parser_confidence: Optional[float] = None  # Quick Win 7/8
 
     def __post_init__(self) -> None:
         if isinstance(self.source, str):
@@ -246,7 +248,10 @@ class FinalizedUtterance:
     raw_transcript: str
     finalization_reason: str  # "speech_final" | "endpoint" | "finalize_timeout" | "utterance_end"
     source: VoiceTranscriptSource = VoiceTranscriptSource.CONTINUOUS
-    confidence: float = 1.0
+    confidence: float = 1.0  # Legacy generic confidence
+    acoustic_confidence: Optional[float] = None  # Quick Win 7/8
+    parser_confidence: Optional[float] = None  # Quick Win 7/8
+    calibration_context: Optional[CalibrationCaptureContext] = None
     metadata: dict = field(default_factory=dict)
 
 

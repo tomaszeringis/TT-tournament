@@ -154,15 +154,20 @@ class VoiceAudioBuffer:
         self._buffer_start_time: Optional[float] = None
         self._last_speech_time: Optional[float] = None
         self._total_samples: int = 0
+        self._voiced_samples: int = 0  # ACTUAL voiced audio samples (Quick Win 3)
         self._rms_sum: float = 0.0  # accumulated frame RMS for current chunk
         self._rms_frames: int = 0  # frame count for current chunk
         self._speech_segment_started_at: Optional[float] = None
+        self._last_speech_sample_idx: Optional[int] = None
+        self._speech_start_sample_idx: Optional[int] = None
         self._segment_reset_reason: str = ""
+        self._state: str = "IDLE"  # IDLE, SPEECH, HANGOVER (Quick Win 4)
         
         # Calculate samples per duration
         self._samples_per_ms = self.sample_rate / 1000.0
         self._min_speech_samples = int(self.min_speech_duration_ms * self._samples_per_ms)
         self._max_chunk_samples = int(self.max_chunk_duration_ms * self._samples_per_ms)
+        self._max_speech_samples = int(self.max_speech_duration_ms * self._samples_per_ms)
         self._silence_samples = int(self.silence_duration_ms * self._samples_per_ms)
     
     def _compute_rms(self, frame_bytes: bytes) -> float:
@@ -213,14 +218,30 @@ class VoiceAudioBuffer:
             now = time.time()
             frame_duration_ms = self._get_frame_duration_ms(frame_bytes)
             rms = self._compute_rms(frame_bytes)
+
+            # bytes per sample depends on format
+            if self.sample_format == SAMPLE_FORMAT_INT16:
+                bytes_per_sample = 2
+            else:
+                bytes_per_sample = 4  # float32
+            frame_samples = len(frame_bytes) // (bytes_per_sample * self.channels)
+
             if decision is None:
                 passes_noise_gate = self.noise_gate_rms <= 0.0 or rms >= self.noise_gate_rms
                 vad_speech = False
+                
+                # VAD Authority (Quick Win 1): 
+                # If real VAD is available, it should be authoritative.
+                # Noise gate still acts as a pre-filter if configured.
                 if passes_noise_gate and self.vad is not None:
                     vad_speech = self.vad.is_speech(frame_bytes, self.sample_rate)
-                is_speech = vad_speech or (passes_noise_gate and rms > self.silence_threshold)
+                    is_speech = vad_speech
+                else:
+                    # Fallback to amplitude if VAD is missing (or noise gate failed)
+                    is_speech = passes_noise_gate and rms > self.silence_threshold
             else:
                 is_speech = decision.is_speech
+
             # Accumulate RMS for per-chunk mean energy reporting.
             self._rms_sum += rms
             self._rms_frames += 1
@@ -235,12 +256,13 @@ class VoiceAudioBuffer:
             # Add frame to buffer
             self._buffer.append(frame_bytes)
             
-            # Estimate total samples (approximate from frame size)
-            if self.sample_format == SAMPLE_FORMAT_INT16:
-                bytes_per_sample = 2
-            else:
-                bytes_per_sample = 4  # float32
-            self._total_samples += len(frame_bytes) // (bytes_per_sample * self.channels)
+            # Update sample counts (Quick Win 2/3)
+            self._total_samples += frame_samples
+            if is_speech:
+                self._voiced_samples += frame_samples
+                self._last_speech_sample_idx = self._total_samples
+                if self._speech_start_sample_idx is None:
+                    self._speech_start_sample_idx = self._total_samples
             
             # Update last speech time if this frame contains speech
             if is_speech:
@@ -265,46 +287,51 @@ class VoiceAudioBuffer:
         if not self._buffer:
             return None
         
-        # Calculate buffer duration
-        if self._buffer_start_time is None:
-            return None
-        
-        buffer_duration_ms = (now - self._buffer_start_time) * 1000.0
+        # State transitions (Quick Win 4)
+        if self._state == "IDLE" and is_speech:
+            self._state = "SPEECH"
+
+        # Calculate durations using sample clock (Quick Win 2)
+        buffer_samples = self._total_samples
         
         # Condition 0: Max speech duration exceeded (safety cutoff)
-        if self._speech_segment_started_at is not None:
-            speech_segment_duration_ms = (now - self._speech_segment_started_at) * 1000.0
-            if speech_segment_duration_ms >= self.max_speech_duration_ms:
+        if self._speech_start_sample_idx is not None:
+            speech_segment_samples = self._total_samples - self._speech_start_sample_idx
+            if speech_segment_samples >= self._max_speech_samples:
                 logger.debug(
-                    "Emitting chunk: max speech duration exceeded (%.1f ms)",
-                    speech_segment_duration_ms,
+                    "Emitting chunk: max speech duration exceeded (%d samples)",
+                    speech_segment_samples,
                 )
                 self._segment_reset_reason = "max_speech_duration_exceeded"
                 return self._emit_chunk(now)
         
         # Condition 1: Max chunk duration exceeded
-        if buffer_duration_ms >= self.max_chunk_duration_ms:
-            logger.debug("Emitting chunk: max duration exceeded (%.1f ms)", buffer_duration_ms)
+        if buffer_samples >= self._max_chunk_samples:
+            logger.debug("Emitting chunk: max duration exceeded (%d samples)", buffer_samples)
             self._segment_reset_reason = "max_chunk_duration_exceeded"
             return self._emit_chunk(now)
         
-        # Condition 2: Silence after speech
-        if self._last_speech_time is not None and not is_speech:
-            silence_duration_ms = (now - self._last_speech_time) * 1000.0
-            if silence_duration_ms >= self.silence_duration_ms:
-                # Only emit if we have enough speech
-                if buffer_duration_ms >= self.min_speech_duration_ms:
+        # Condition 2: Silence after speech (Hangover / Finalize)
+        if self._last_speech_sample_idx is not None and not is_speech:
+            silence_samples = self._total_samples - self._last_speech_sample_idx
+            if silence_samples >= self._silence_samples:
+                # Use ACTUAL voiced duration for min_speech_duration (Quick Win 3)
+                voiced_duration_ms = (self._voiced_samples / self.sample_rate) * 1000.0
+                if voiced_duration_ms >= self.min_speech_duration_ms:
                     logger.debug(
-                        "Emitting chunk: silence after speech (%.1f ms silence, %.1f ms total)",
-                        silence_duration_ms, buffer_duration_ms,
+                        "Emitting chunk: silence after speech (%d samples silence, %.1f ms voiced)",
+                        silence_samples, voiced_duration_ms,
                     )
                     self._segment_reset_reason = "silence_after_speech"
                     return self._emit_chunk(now)
                 else:
                     logger.debug(
-                        "Not emitting: speech too short (%.1f ms < %.1f ms min)",
-                        buffer_duration_ms, self.min_speech_duration_ms,
+                        "Not emitting: voiced speech too short (%.1f ms < %.1f ms min)",
+                        voiced_duration_ms, self.min_speech_duration_ms,
                     )
+                    # Reset buffer to avoid accumulating noise forever
+                    self.reset()
+                    return None
         
         return None
     
@@ -312,9 +339,13 @@ class VoiceAudioBuffer:
         """Create and return an AudioChunk from the current buffer."""
         # Mean RMS energy across frames in this chunk (0.0 if no frames).
         mean_rms = (self._rms_sum / self._rms_frames) if self._rms_frames else 0.0
+        
+        # Calculate duration using sample clock (Quick Win 2)
+        duration_ms = (self._total_samples / self.sample_rate) * 1000.0
+        
         chunk = AudioChunk(
             frames=self._buffer.copy(),
-            duration_ms=(end_time - self._buffer_start_time) * 1000.0 if self._buffer_start_time else 0.0,
+            duration_ms=duration_ms,
             timestamp=self._buffer_start_time or end_time,
             sample_rate=self.sample_rate,
             channels=self.channels,
@@ -322,19 +353,24 @@ class VoiceAudioBuffer:
             sample_format=self.sample_format,
         )
 
-        # Reset buffer and RMS accumulators
+        # Reset buffer and all trackers (Quick Win 2/3/4)
         self._buffer = []
         self._buffer_start_time = None
         self._last_speech_time = None
         self._total_samples = 0
+        self._voiced_samples = 0
         self._rms_sum = 0.0
         self._rms_frames = 0
         self._speech_segment_started_at = None
+        self._last_speech_sample_idx = None
+        self._speech_start_sample_idx = None
         self._segment_reset_reason = ""
+        self._state = "IDLE"
         
         logger.debug(
-            "Emitted audio chunk: %.1f ms, %d frames",
+            "Emitted audio chunk: %.1f ms (%d samples), %d frames",
             chunk.duration_ms,
+            int(chunk.duration_ms * self._samples_per_ms),
             len(chunk.frames),
         )
         
@@ -361,24 +397,24 @@ class VoiceAudioBuffer:
             self._buffer_start_time = None
             self._last_speech_time = None
             self._total_samples = 0
+            self._voiced_samples = 0
             self._rms_sum = 0.0
             self._rms_frames = 0
             self._speech_segment_started_at = None
+            self._last_speech_sample_idx = None
+            self._speech_start_sample_idx = None
             self._segment_reset_reason = ""
+            self._state = "IDLE"
 
     def get_buffer_duration_ms(self) -> float:
-        """Get current buffer duration in milliseconds."""
+        """Get current buffer duration in milliseconds using sample clock."""
         with self._lock:
-            if self._buffer_start_time is None:
-                return 0.0
-            return (time.time() - self._buffer_start_time) * 1000.0
+            return (self._total_samples / self.sample_rate) * 1000.0
 
     def get_speech_segment_duration_ms(self) -> float:
-        """Get current speech segment duration in milliseconds."""
+        """Get current speech segment duration (ACTUAL voiced duration) in ms."""
         with self._lock:
-            if self._speech_segment_started_at is None:
-                return 0.0
-            return (time.time() - self._speech_segment_started_at) * 1000.0
+            return (self._voiced_samples / self.sample_rate) * 1000.0
 
     def get_segment_reset_reason(self) -> str:
         """Get the reason the last segment was reset, or empty string."""

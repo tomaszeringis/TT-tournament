@@ -30,6 +30,29 @@ from tournament_platform.services.video_scorekeeper import (
     VideoScoreSuggestion,
     SuggestedWinner,
 )
+from tournament_platform.app.services.vision_worker import VisionWorker, VisionWorkerHealth
+from tournament_platform.app.services.vision_calibration import (
+    CalibrationState,
+    compute_homography,
+    validate_calibration,
+    transform_point,
+)
+from tournament_platform.app.services.vision_events import (
+    ArbitrationDecision,
+    ArbitrationDecisionType,
+    CandidateStatus,
+    PointCandidate,
+    VisionEvent,
+    VisionEventType,
+)
+from tournament_platform.app.services.vision_arbitrator import EventArbitrator
+from tournament_platform.app.services.vision_repository import VisionEventRepository
+from tournament_platform.app.services.voice_scorekeeper.scoring_actions import (
+    ScoreAction,
+    ScoreActionType,
+    apply_manual_score_action,
+)
+from tournament_platform.services.settings import VISION_ENABLED, VISION_MODE
 
 # Import live camera component (gracefully handles missing dependencies)
 try:
@@ -68,6 +91,8 @@ if 'video_calibration' not in st.session_state:
     st.session_state.video_calibration = None
 if 'opencv_available' not in st.session_state:
     st.session_state.opencv_available = False
+if 'vision_active_candidate' not in st.session_state:
+    st.session_state.vision_active_candidate = None
 
 
 # Shared match selector component
@@ -312,6 +337,100 @@ def render_current_score() -> None:
         st.rerun()
 
 
+def render_vision_assistant_panel() -> None:
+    """Render the Vision Assistant panel for ASSISTED mode."""
+    if not VISION_ENABLED:
+        return
+
+    if VISION_MODE == "off":
+        return
+
+    st.subheader("🤖 Vision Assistant")
+    st.caption(f"Mode: {VISION_MODE}. Suggestions require operator confirmation.")
+
+    if VISION_MODE == "auto":
+        current_match_id = st.session_state.get("video_selected_match_id")
+        auto_key = f"vision_auto_enabled_{current_match_id or 'none'}"
+        auto_enabled = st.checkbox(
+            "Enable AUTO scoring for current match",
+            key=auto_key,
+            value=st.session_state.get(auto_key, False),
+        )
+        st.session_state[auto_key] = auto_enabled
+        if not auto_enabled:
+            st.info("AUTO is disabled. Confirm suggestions manually.")
+            return
+
+        worker: Optional[VisionWorker] = st.session_state.get("vision_worker")
+        health = worker.get_health() if worker else VisionWorkerHealth()
+        if not health.healthy:
+            st.error("AUTO disabled: vision worker unhealthy.")
+            return
+
+        cal_state: Optional[CalibrationState] = st.session_state.get("vision_calibration_state")
+        if cal_state is None or not cal_state.valid:
+            st.error("AUTO disabled: calibration invalid.")
+            return
+
+        st.info("AUTO is enabled for this match. Approved benchmark and operator confirmation required.")
+
+    candidate: Optional[PointCandidate] = st.session_state.get("vision_active_candidate")
+
+    if candidate is None:
+        st.info("No active vision suggestion.")
+        return
+
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        if st.button("✅ Confirm Point A", key="vision_confirm_a", type="primary", use_container_width=True):
+            action = ScoreAction(
+                action_type=ScoreActionType.ADD_POINT_A,
+                match_id=st.session_state.get("video_selected_match_id"),
+                source="vision",
+                candidate_id=candidate.candidate_id,
+                rally_id=candidate.rally_id,
+                idempotency_key=candidate.candidate_id,
+            )
+            result = apply_manual_score_action(action, st.session_state.match_manager, st.session_state)
+            if result.success:
+                candidate.accept()
+                VisionEventRepository().record_point_candidate(candidate, match_id=action.match_id)
+                st.session_state.vision_active_candidate = None
+                st.success("Point A confirmed via vision.")
+                st.rerun()
+            else:
+                st.error(f"Failed to apply point: {result.message}")
+
+    with col2:
+        if st.button("✅ Confirm Point B", key="vision_confirm_b", type="primary", use_container_width=True):
+            action = ScoreAction(
+                action_type=ScoreActionType.ADD_POINT_B,
+                match_id=st.session_state.get("video_selected_match_id"),
+                source="vision",
+                candidate_id=candidate.candidate_id,
+                rally_id=candidate.rally_id,
+                idempotency_key=candidate.candidate_id,
+            )
+            result = apply_manual_score_action(action, st.session_state.match_manager, st.session_state)
+            if result.success:
+                candidate.accept()
+                VisionEventRepository().record_point_candidate(candidate, match_id=action.match_id)
+                st.session_state.vision_active_candidate = None
+                st.success("Point B confirmed via vision.")
+                st.rerun()
+            else:
+                st.error(f"Failed to apply point: {result.message}")
+
+    with col3:
+        if st.button("❌ Dismiss", key="vision_dismiss", use_container_width=True):
+            candidate.dismiss()
+            VisionEventRepository().record_point_candidate(candidate, match_id=st.session_state.get("video_selected_match_id"))
+            st.session_state.vision_active_candidate = None
+            st.info("Vision suggestion dismissed.")
+            st.rerun()
+
+
 # ============================================================================
 # Page UI
 # ============================================================================
@@ -346,6 +465,11 @@ st.divider()
 if LIVE_CAMERA_AVAILABLE:
     render_live_camera()
     st.divider()
+
+# Vision Assistant Panel (Phase 5)
+render_vision_assistant_panel()
+
+st.divider()
 
 # Suggestion Display
 render_suggestion_ui()

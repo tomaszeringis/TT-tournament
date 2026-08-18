@@ -186,6 +186,10 @@ def _make_fake_session_state() -> dict:
         "voice_selected_player1_id": 1,
         "voice_selected_player2_id": 2,
         "voice_tts_adapter": MagicMock(enabled=False),
+        "voice_continuous_session_id": "current-session",
+        "voice_continuous_session_start": 0.0,
+        "voice_stale_events_ignored": 0,
+        "last_applied_voice_event_ids": [],
         "_voice_debug_last_result": None,
         "_voice_p2p_cache": {},
         "match_complete": False,
@@ -589,12 +593,15 @@ class TestPhase5VadSegmentReset:
             max_speech_duration_ms=500.0,
             sample_format="int16",
         )
-        # Use max-amplitude int16 frames and simulate time passing
+        # Use max-amplitude int16 frames and simulate duration (Quick Win 2)
         frame = b"\xff\x7f" * 480  # max positive int16 (32767), 10ms at 48kHz, 2ch
         buf.push_frame(frame)
-        # Simulate 600ms of speech by manually setting the start time
-        buf._speech_segment_started_at = time.time() - 0.6
-        buf._buffer_start_time = time.time() - 0.6
+        
+        # Simulate 600ms of speech using sample clock
+        samples_600ms = int(600 * 48)
+        buf._speech_start_sample_idx = 0
+        buf._total_samples = samples_600ms
+        
         chunk = buf._check_emit(time.time(), is_speech=True)
         assert chunk is not None
 
@@ -1113,6 +1120,8 @@ class TestContinuousPipelineFixes:
                 transcript="point blue",
                 source="continuous",
                 enable_confirmation=True,
+                acoustic_confidence=None,
+                parser_confidence=None,
             )
 
     def test_processor_callback_increments_frame_count(self):

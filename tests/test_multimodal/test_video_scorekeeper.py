@@ -240,3 +240,125 @@ class TestVideoScorekeeperIntegration:
         assert match_manager.state.sets_a == 1
         assert match_manager.state.score_a == 0
         assert match_manager.state.score_b == 0
+
+
+class TestScoreActionVisionBoundary:
+    """Phase 1: vision scoring must converge through ScoreAction."""
+
+    def test_score_action_accepts_source_metadata(self):
+        """Verify ScoreAction can carry vision source metadata."""
+        from tournament_platform.app.services.voice_scorekeeper.scoring_actions import (
+            ScoreAction,
+            ScoreActionType,
+        )
+
+        action = ScoreAction(
+            action_type=ScoreActionType.ADD_POINT_A,
+            match_id=1,
+            source="vision",
+            candidate_id="cand-123",
+            rally_id="rally-456",
+            idempotency_key="idem-789",
+        )
+
+        assert action.source == "vision"
+        assert action.candidate_id == "cand-123"
+        assert action.rally_id == "rally-456"
+        assert action.idempotency_key == "idem-789"
+
+    def test_apply_manual_score_action_records_source_metadata(self, match_manager):
+        """Verify apply_manual_score_action records source metadata in diagnostics."""
+        from tournament_platform.app.services.voice_scorekeeper.scoring_actions import (
+            ScoreAction,
+            ScoreActionType,
+            apply_manual_score_action,
+        )
+
+        action = ScoreAction(
+            action_type=ScoreActionType.ADD_POINT_A,
+            match_id=1,
+            source="vision",
+            candidate_id="cand-123",
+            rally_id="rally-456",
+            idempotency_key="idem-789",
+        )
+
+        result = apply_manual_score_action(action, match_manager, session_state=None)
+
+        assert result.success is True
+        assert result.diagnostics["action_source"] == "vision"
+        assert result.diagnostics["candidate_id"] == "cand-123"
+        assert result.diagnostics["rally_id"] == "rally-456"
+        assert result.diagnostics["idempotency_key"] == "idem-789"
+        assert result.diagnostics["action_type"] == "add_point_a"
+
+    def test_apply_confirmed_point_routes_through_score_action(self, match_manager, sample_analysis_result, sample_calibration):
+        """Verify apply_confirmed_point uses ScoreAction with source=vision."""
+        from unittest.mock import patch
+        from tournament_platform.app.services.voice_scorekeeper.scoring_actions import (
+            ScoreAction,
+            ScoreActionType,
+            apply_manual_score_action,
+        )
+
+        suggestion = suggest_point_winner(sample_analysis_result, calibration=sample_calibration)
+
+        captured_action = None
+
+        def capture_apply(action, match_mgr, session_state=None):
+            nonlocal captured_action
+            captured_action = action
+            return apply_manual_score_action(action, match_mgr, session_state)
+
+        with patch(
+            "tournament_platform.services.video_scorekeeper.apply_manual_score_action",
+            side_effect=capture_apply,
+        ):
+            confirmed = apply_confirmed_point(
+                match_manager,
+                suggestion,
+                candidate_id="cand-123",
+                rally_id="rally-456",
+                idempotency_key="idem-789",
+            )
+
+        assert captured_action is not None
+        assert captured_action.source == "vision"
+        assert captured_action.candidate_id == "cand-123"
+        assert captured_action.rally_id == "rally-456"
+        assert captured_action.idempotency_key == "idem-789"
+        assert captured_action.action_type == ScoreActionType.ADD_POINT_A
+        assert isinstance(confirmed, ConfirmedPoint)
+
+    def test_apply_confirmed_point_override_routes_through_score_action(self, match_manager, sample_analysis_result):
+        """Verify winner_override still works and routes through ScoreAction."""
+        from unittest.mock import patch
+        from tournament_platform.app.services.voice_scorekeeper.scoring_actions import (
+            apply_manual_score_action as _apply_manual_score_action,
+            ScoreActionType,
+        )
+
+        suggestion = suggest_point_winner(sample_analysis_result)
+
+        captured_action = None
+
+        def capture_apply(action, match_mgr, session_state=None):
+            nonlocal captured_action
+            captured_action = action
+            return _apply_manual_score_action(action, match_mgr, session_state)
+
+        with patch(
+            "tournament_platform.services.video_scorekeeper.apply_manual_score_action",
+            side_effect=capture_apply,
+        ):
+            confirmed = apply_confirmed_point(
+                match_manager,
+                suggestion,
+                winner_override="player_b",
+            )
+
+        assert captured_action is not None
+        assert captured_action.action_type == ScoreActionType.ADD_POINT_B
+        assert captured_action.source == "vision"
+        assert confirmed.winner == "player_b"
+        assert match_manager.state.score_b == 1

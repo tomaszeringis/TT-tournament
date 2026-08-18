@@ -140,10 +140,9 @@ def resolve_calibration_processor_readiness(
         restart_required = True
         restart_reason = f"implementation_version_mismatch_{impl_version}"
 
-    if not getattr(processor, "_asr_ready", False):
-        if not restart_required:
-            restart_required = True
-            restart_reason = "asr_not_ready"
+    # Point 6: ASR readiness is NOT required for calibration.
+    # Calibration measures raw audio levels and VAD effectiveness, not ASR.
+    # We remove the mandatory asr_not_ready check here.
 
     recent_frame = False
     if last_frame_timestamp is not None:
@@ -810,10 +809,12 @@ def _enter_calibration_mode(previous_mode: Optional[str]) -> None:
     if previous_mode is None:
         previous_mode = _compute_post_calibration_runtime_mode().value
     st.session_state["voice_calibration_previous_runtime_mode"] = previous_mode
-    st.session_state["voice_runtime_mode"] = VoiceRuntimeMode.CALIBRATION
-    proc = _get_active_processor()
-    if proc is not None:
-        proc.set_runtime_mode(VoiceRuntimeMode.CALIBRATION)
+    from tournament_platform.app.pages.voice_scorekeeper import _set_voice_runtime_mode
+    _set_voice_runtime_mode(
+        VoiceRuntimeMode.CALIBRATION,
+        reason="calibration_started",
+        caller="_enter_calibration_mode",
+    )
 
 
 def _exit_calibration_mode() -> None:
@@ -821,6 +822,7 @@ def _exit_calibration_mode() -> None:
 
     Falls back to computing the mode from actual user state when the
     stored previous mode is missing or stale.
+    Never restores CALIBRATION — that would suppress live scoring.
     """
     previous = st.session_state.get("voice_calibration_previous_runtime_mode")
     st.session_state.pop("voice_calibration_previous_runtime_mode", None)
@@ -833,11 +835,15 @@ def _exit_calibration_mode() -> None:
     else:
         target_mode = _compute_post_calibration_runtime_mode()
 
-    st.session_state["voice_runtime_mode"] = target_mode
+    if target_mode == VoiceRuntimeMode.CALIBRATION:
+        target_mode = _compute_post_calibration_runtime_mode()
 
-    proc = _get_active_processor()
-    if proc is not None:
-        proc.set_runtime_mode(target_mode)
+    from tournament_platform.app.pages.voice_scorekeeper import _set_voice_runtime_mode
+    _set_voice_runtime_mode(
+        target_mode,
+        reason="calibration_exit",
+        caller="_exit_calibration_mode",
+    )
 
 
 def _derive_current_command(session: Optional[CalibrationSession]) -> Optional[str]:
@@ -2101,6 +2107,7 @@ def exit_calibration_and_restore_live_runtime(
     """
     from tournament_platform.app.pages.voice_scorekeeper import (
         _append_continuous_trace,
+        _set_voice_runtime_mode,
     )
 
     st.session_state["voice_calibration_active_session_id"] = None
@@ -2196,19 +2203,25 @@ def stop_voice_calibration(
 
 def render_voice_calibration(
     calibration_service: VoiceCalibrationService,
+    snapshot: Optional["WebRtcRenderSnapshot"] = None,
 ) -> None:
+    from tournament_platform.app.services.voice_scorekeeper.runtime import WebRtcRenderSnapshot
+    if snapshot is None:
+        snapshot = WebRtcRenderSnapshot.unavailable()
+
     session: Optional[CalibrationSession] = st.session_state.get("voice_calibration_session")
     active_trial_id: Optional[str] = st.session_state.get("voice_calibration_active_trial_id")
-    proc = _get_active_processor()
+    
+    # Authoritative current processor comes from the snapshot
+    proc = snapshot.processor
 
-    from tournament_platform.app.pages.voice_scorekeeper import _get_webrtc_playing_state
     from tournament_platform.app.services.voice_scorekeeper.runtime import (
         VOICE_RUNTIME_IMPLEMENTATION_VERSION,
         VOICE_AUDIO_PROCESSOR_API_VERSION,
     )
 
     resolution = resolve_calibration_processor_readiness(
-        webrtc_playing=_get_webrtc_playing_state(),
+        webrtc_playing=snapshot.playing,
         processor=proc,
         expected_api_version=VOICE_AUDIO_PROCESSOR_API_VERSION,
         expected_implementation_version=VOICE_RUNTIME_IMPLEMENTATION_VERSION,

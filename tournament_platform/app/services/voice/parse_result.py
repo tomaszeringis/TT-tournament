@@ -19,7 +19,9 @@ class VoiceParseResult:
 
     intent: str
     slots: Dict[str, Any] = field(default_factory=dict)
-    confidence: float = 0.0
+    confidence: float = 0.0  # Legacy generic confidence
+    acoustic_confidence: Optional[float] = None  # Quick Win 7/8
+    parser_confidence: Optional[float] = None  # Quick Win 7/8
     safety_level: str = "simple"
     requires_confirmation: bool = False
     raw_transcript: str = ""
@@ -125,6 +127,8 @@ class VoiceParseResult:
             player=player,
             raw_text=self.raw_transcript,
             confidence=self.confidence,
+            acoustic_confidence=self.acoustic_confidence,  # Quick Win 8
+            parser_confidence=self.parser_confidence,  # Quick Win 7
             event_id=self.event_id,
             timestamp=self.timestamp,
             source=self.source,

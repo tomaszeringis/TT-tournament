@@ -200,6 +200,10 @@ class _UtteranceAccumulator:
     speech_started: bool = False
     last_final_ts: float = 0.0
     finalize_deadline: float = 0.0
+    backend: Any = None
+    accumulator_final_segments: int = 0
+    accumulator_seal_attempts: int = 0
+    accumulator_seal_success: int = 0
 
     def on_message(
         self,
@@ -234,10 +238,15 @@ class _UtteranceAccumulator:
             self.segments.append(text)
             self.raw_segments.append(text)
             self.confidences.append(confidence)
+            self.accumulator_final_segments += 1
 
             if speech_final:
+                self.accumulator_seal_attempts += 1
                 self.state = _UtteranceState.SEALED
-                return self._seal(now)
+                result = self._seal(now)
+                if result is not None:
+                    self.accumulator_seal_success += 1
+                return result
 
             self.last_final_ts = now
 
@@ -252,8 +261,12 @@ class _UtteranceAccumulator:
         if self.state in (_UtteranceState.IDLE, _UtteranceState.SEALED,
                           _UtteranceState.DISCARDED, _UtteranceState.DONE):
             return None
+        self.accumulator_seal_attempts += 1
         self.state = _UtteranceState.SEALED
-        return self._seal(time.monotonic())
+        result = self._seal(time.monotonic())
+        if result is not None:
+            self.accumulator_seal_success += 1
+        return result
 
     def check_timeout(self, finalize_timeout_ms: int) -> Optional[tuple[str, float]]:
         if self.state != _UtteranceState.ACCUMULATING:
@@ -450,6 +463,11 @@ class DeepgramASRBackend:
         self._final_segment_count = 0
         self._completed_utterance_count = 0
         self._empty_transcript_count = 0
+        self._accumulator_final_segments = 0
+        self._accumulator_seal_attempts = 0
+        self._accumulator_seal_success = 0
+        self._emit_finalized_calls = 0
+        self._finalized_queue_put_success = 0
         self._connection_start_ts: Optional[float] = None
         self._send_loop_started = False
         self._send_loop_alive = False
@@ -810,6 +828,22 @@ class DeepgramASRBackend:
             "finalized_queue_size": self._finalized_queue.qsize(),
             "interim_queue_size": self._interim_queue.qsize(),
             "finalized_utterances_emitted": self._completed_utterance_count,
+        }
+
+    def get_diagnostics(self) -> dict:
+        """Return backend diagnostics without draining queues."""
+        return {
+            "backend_health": self.health_status(),
+            "audio_queue_size": self._audio_frame_queue.qsize(),
+            "finalized_queue_size": self._finalized_queue.qsize(),
+            "interim_queue_size": self._interim_queue.qsize(),
+            "finalized_utterances_emitted": self._completed_utterance_count,
+            "empty_transcript_count": self._empty_transcript_count,
+            "accumulator_final_segments": self._accumulator_final_segments,
+            "accumulator_seal_attempts": self._accumulator_seal_attempts,
+            "accumulator_seal_success": self._accumulator_seal_success,
+            "emit_finalized_calls": self._emit_finalized_calls,
+            "finalized_queue_put_success": self._finalized_queue_put_success,
         }
 
     def get_errors(self) -> list:
@@ -1239,6 +1273,7 @@ class DeepgramASRBackend:
         self._connection_open_event.clear()
 
     def _emit_finalized(self, text: str, finalization_reason: str = "speech_final", confidence: float = 1.0) -> None:
+        self._emit_finalized_calls += 1
         if not text:
             with self._metrics_lock:
                 self._metrics.empty_transcript_count += 1
@@ -1266,6 +1301,7 @@ class DeepgramASRBackend:
             raw_transcript=raw_text,
             finalization_reason=finalization_reason,
             confidence=confidence,
+            acoustic_confidence=confidence,  # Quick Win 8
         )
 
         with self._metrics_lock:
@@ -1282,6 +1318,7 @@ class DeepgramASRBackend:
 
         try:
             self._finalized_queue.put_nowait(utterance)
+            self._finalized_queue_put_success += 1
         except queue.Full:
             with self._metrics_lock:
                 self._metrics.queue_overflow_count += 1

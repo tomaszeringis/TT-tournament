@@ -153,6 +153,7 @@ from tournament_platform.app.services.voice_scorekeeper.ui_helpers import (
     render_active_match_selector,
     render_selected_match_summary,
 )
+from tournament_platform.app.services.voice_scorekeeper.events import VoiceRuntimeMode
 
 try:
     from tournament_platform.app.services.voice_calibration.models import (
@@ -967,6 +968,26 @@ def _is_continuous_mic_active() -> bool:
     return bool(st.session_state.get("voice_listening")) and _get_webrtc_playing_state()
 
 
+def _set_voice_runtime_mode(
+    target_mode: "VoiceRuntimeMode",
+    *,
+    reason: str = "",
+    caller: str = "",
+) -> None:
+    """Centralized setter for voice runtime mode.
+
+    Keeps session state, processor state, and audit diagnostics synchronized.
+    """
+    st.session_state.voice_runtime_mode = target_mode
+    proc = get_active_voice_processor()
+    if proc is not None and hasattr(proc, "set_runtime_mode"):
+        proc.set_runtime_mode(target_mode)
+    _append_continuous_trace(
+        "runtime_mode_changed",
+        f"mode={target_mode.value} reason={reason} caller={caller}",
+    )
+
+
 def _append_continuous_trace(stage: str, note: str = "") -> None:
     """Append a continuous listening trace event to the audit log."""
     from tournament_platform.app.services.voice_parser import VoiceScoreEvent
@@ -1613,6 +1634,11 @@ def _process_streaming_startup() -> None:
     st.session_state.voice_continuous_session_id = _new_session_id
     st.session_state.voice_listening = True
     st.session_state.voice_events_enabled = True
+    _set_voice_runtime_mode(
+        VoiceRuntimeMode.LIVE,
+        reason="streaming_started",
+        caller="_process_streaming_startup",
+    )
     st.session_state.streaming_processor_id = _proc_id
     st.session_state.streaming_processor_generation = _new_gen
     # Capture canonical identity tuple for validation (plan §7)
@@ -2097,6 +2123,8 @@ def apply_score_event_and_refresh_ui(
     current_score_a: Optional[int] = None,
     current_score_b: Optional[int] = None,
     selected_match_id: Optional[int] = None,
+    acoustic_confidence: Optional[float] = None,
+    parser_confidence: Optional[float] = None,
 ) -> ScoreApplyResult:
     """Canonical function for all voice scoring paths.
 
@@ -2197,8 +2225,17 @@ def apply_score_event_and_refresh_ui(
         current_score_a=current_score_a,
         current_score_b=current_score_b,
     )
+    # Populate separate confidences if provided (Quick Win 7/8)
+    if acoustic_confidence is not None:
+        parsed.acoustic_confidence = acoustic_confidence
+    if parser_confidence is not None:
+        parsed.parser_confidence = parser_confidence
+    
     st.session_state.voice_parser_last_result = f"intent={parsed.intent}, side={getattr(parsed, 'target_side', 'N/A')}"
     st.session_state.voice_last_confidence = parsed.confidence
+    st.session_state.voice_last_acoustic_confidence = parsed.acoustic_confidence
+    st.session_state.voice_last_parser_confidence = parsed.parser_confidence
+    
     parsed.source = source
     parsed.language = language
 
@@ -3109,17 +3146,14 @@ def _get_current_webrtc_processor() -> object | None:
     return None
 
 
-def _create_webrtc_snapshot(webrtc_ctx: object | None, mount_error: str | None = None) -> WebRtcRenderSnapshot:
+def _create_webrtc_snapshot(
+    webrtc_ctx: object | None, 
+    mount_error: str | None = None,
+    requested_constraints: Optional[dict] = None
+) -> WebRtcRenderSnapshot:
     """Create an immutable per-render snapshot of the WebRTC streamer context.
-
-    This is the sole authority for current WebRTC state for the remainder of
-    the render. It is captured immediately after ``webrtc_streamer()`` returns
-    and passed to all downstream functions, eliminating the split-brain problem
-    where different functions read from different sources.
-
-    The ``processor`` field may be None during transient worker/context
-    transitions even when ``playing=True``. This must be treated as
-    "unknown/transitional", NOT as a processor replacement.
+    
+    Requested constraints are included for observability (Quick Win 12).
     """
     from tournament_platform.app.services.voice_scorekeeper.runtime import (
         _voice_lifecycle_events,
@@ -3136,6 +3170,16 @@ def _create_webrtc_snapshot(webrtc_ctx: object | None, mount_error: str | None =
     )
     audio_frames_received = (
         getattr(processor, "_audio_frames_received", 0)
+        if processor is not None
+        else 0
+    )
+    audio_ingress_queue_full = (
+        getattr(processor, "_audio_ingress_queue_full", 0)
+        if processor is not None
+        else 0
+    )
+    dropped_frames = (
+        getattr(processor, "_dropped_frames", 0)
         if processor is not None
         else 0
     )
@@ -3198,6 +3242,9 @@ def _create_webrtc_snapshot(webrtc_ctx: object | None, mount_error: str | None =
         processor_id=processor_id,
         processor_generation=processor_generation,
         audio_frames_received=audio_frames_received,
+        audio_ingress_queue_full=audio_ingress_queue_full,  # Quick Win 11
+        dropped_frames=dropped_frames,  # Quick Win 11
+        requested_constraints=requested_constraints,  # Quick Win 12
         connection_state=connection_state,
         ice_connection_state=ice_connection_state,
         ice_gathering_state=ice_gathering_state,
@@ -3575,7 +3622,11 @@ def _initialize_webrtc_session() -> WebRtcRenderSnapshot:
         ctx = None
 
     # 4. Immediately build WebRtcRenderSnapshot
-    _webrtc_snapshot = _create_webrtc_snapshot(ctx, mount_error=mount_error)
+    _webrtc_snapshot = _create_webrtc_snapshot(
+        ctx, 
+        mount_error=mount_error,
+        requested_constraints=_webrtc_static_config["media_stream_constraints"]
+    )
 
     # Also update the streamlit-webrtc-managed session-state key
     # for backward compatibility with cross-module callers.
@@ -3741,7 +3792,10 @@ def _render_ui() -> None:
     # 2. Drain pending continuous voice events BEFORE rendering the live scoreboard.
     # This ensures accepted commands from background audio callbacks are applied
     # and reflected in the UI on the same render cycle.
-    drain_result = _process_voice_events(snapshot=_webrtc_snapshot)
+    drain_result = _process_voice_events(
+        calibration_service=VoiceCalibrationService() if VoiceCalibrationService else None,
+        snapshot=_webrtc_snapshot
+    )
     _process_tt_sounds_events(snapshot=_webrtc_snapshot)
 
     if consume_calibration_trials is not None and VoiceCalibrationService is not None:
@@ -4656,6 +4710,7 @@ def _render_voice_scoring_settings(snapshot: WebRtcRenderSnapshot | None = None)
         try:
             render_voice_calibration(
                 calibration_service=VoiceCalibrationService(),
+                snapshot=snapshot,
             )
         except Exception as exc:
             logger.exception("Calibration wizard failed")
@@ -5289,11 +5344,12 @@ def _render_voice_scoring_settings(snapshot: WebRtcRenderSnapshot | None = None)
                         ("last success message", _last_success_message or "—"),
                         ("last action taken", _last_action_taken or "—"),
                         ("ASR model loaded", "yes" if (_proc and getattr(_proc, "_asr", None) is not None) else "no"),
-                        ("processor active", _asr_ready),
-                        ("processor status", _proc_status),
-                        ("worker started", "yes" if _worker_diag.get("worker_started") else "no"),
-                        ("worker thread alive", "yes" if _worker_diag.get("worker_thread_alive") else "no"),
-                        ("worker thread name", _worker_diag.get("worker_thread_name") or "—"),
+                        ("Batch ASR worker started", "yes" if _worker_diag.get("worker_started") else "no"),
+                        ("Batch ASR worker thread alive", "yes" if _worker_diag.get("worker_thread_alive") else "no"),
+                        ("Batch ASR worker thread name", _worker_diag.get("worker_thread_name") or "—"),
+                        ("ingress queue full count", str(_proc_diag.get("audio_ingress_queue_full", 0))),
+                        ("dropped ingress frames", str(_proc_diag.get("dropped_frames", 0))),
+                        ("requested browser constraints", str(snapshot.requested_constraints or "—")),
                         ("worker stop event set", "yes" if _worker_diag.get("worker_stop_event_set") else "no"),
                         ("audio queue size", str(_worker_diag.get("audio_queue_size", 0))),
                         ("work items enqueued", str(_worker_diag.get("total_work_items_enqueued", 0))),
@@ -5644,8 +5700,9 @@ def _render_voice_scoring_settings(snapshot: WebRtcRenderSnapshot | None = None)
                 ("Streaming session ID", _streaming_session[:8] + "..." if _streaming_session else "none"),
                 ("Streaming match ID", str(_streaming_match) if _streaming_match else "none"),
                 ("Backend object ID", str(_streaming_diag.get("backend_object_id", "none"))),
-                ("Finalized emitted", str(_streaming_diag.get("finalized_utterances_emitted", 0))),
-                ("Finalized queue depth", str(_streaming_diag.get("finalized_queue_depth", 0))),
+                ("Backend finalized emitted", str(_streaming_diag.get("backend_finalized_emitted", 0))),
+                ("Backend finalized queue depth", str(_streaming_diag.get("backend_finalized_queue_depth", 0))),
+                ("Processor finalized queue depth", str(_streaming_diag.get("processor_finalized_queue_depth", 0))),
                 ("Finalized processed", str(_streaming_diag.get("streaming_finalized_count", 0))),
                 ("Finalized stale", str(_streaming_diag.get("streaming_stale_count", 0))),
                 ("Finalized duplicate", str(_streaming_diag.get("streaming_duplicate_count", 0))),
@@ -5653,7 +5710,7 @@ def _render_voice_scoring_settings(snapshot: WebRtcRenderSnapshot | None = None)
                 ("Finalized invalid", str(_streaming_diag.get("streaming_invalid_count", 0))),
                 ("Finalized failed", str(_streaming_diag.get("streaming_failed_count", 0))),
                 ("Streaming drain calls", str(_streaming_diag.get("streaming_drain_calls", 0))),
-                ("Streaming events drained", str(_streaming_diag.get("streaming_events_drained", 0))),
+                ("Processor streaming events drained", str(_streaming_diag.get("processor_streaming_events_drained", 0))),
                 ("Audio delivery mode", _streaming_diag.get("audio_delivery_mode", "—")),
                 ("Audio enqueued", str(_streaming_diag.get("audio_enqueued", 0))),
                 ("Audio sent", str(_streaming_diag.get("audio_sent", 0))),

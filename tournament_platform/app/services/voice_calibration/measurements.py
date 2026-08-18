@@ -100,7 +100,7 @@ class AcousticAccumulator:
     _sample_frame_count: int = 0
     _near_clipping_count: int = 0
     _hard_clipping_count: int = 0
-    _speech_frame_count: int = 0
+    _speech_sample_count: int = 0
     _is_speech_flags: List[bool] = field(default_factory=list)
     _first_speech_timestamp: Optional[float] = None
     _last_speech_timestamp: Optional[float] = None
@@ -139,9 +139,12 @@ class AcousticAccumulator:
         self._hard_clipping_count += int(np.sum(np.abs(normalized_samples) >= HARD_CLIPPING_THRESHOLD))
 
         self._is_speech_flags.append(is_speech)
+        
+        # Calibration speech duration (Quick Win 5)
+        frame_samples = int(normalized_samples.size) // max(self.channel_count, 1)
 
         if is_speech:
-            self._speech_frame_count += 1
+            self._speech_sample_count += frame_samples
             if self._first_speech_timestamp is None:
                 self._first_speech_timestamp = timestamp
             self._last_speech_timestamp = timestamp
@@ -163,7 +166,7 @@ class AcousticAccumulator:
         peak_dbfs = 20 * math.log10(max(self._peak, DBFS_EPSILON)) if self._peak > 0 else None
 
         duration_ms = self._sample_frame_count / self.sample_rate_hz * 1000.0 if self.sample_rate_hz else 0.0
-        speech_duration_ms = self._speech_frame_count / self.sample_rate_hz * 1000.0
+        speech_duration_ms = self._speech_sample_count / self.sample_rate_hz * 1000.0
 
         warning_codes: List[str] = []
         if self._sample_rate_changed:
@@ -187,7 +190,7 @@ class AcousticAccumulator:
             peak_dbfs=peak_dbfs if self._peak > 0 else None,
             near_clipping_count=self._near_clipping_count,
             hard_clipping_count=self._hard_clipping_count,
-            speech_frame_count=self._speech_frame_count,
+            speech_frame_count=self._speech_sample_count,
             speech_duration_ms=speech_duration_ms,
             complete=self.is_complete,
             warning_codes=tuple(warning_codes),
@@ -216,8 +219,8 @@ def compute_silence_baseline_metrics(
             mad_rms=None,
             transient_count=0,
             contaminated_by_speech=False,
-            speech_frame_count=accumulator._speech_frame_count,
-            speech_duration_ms=accumulator._speech_frame_count / accumulator.sample_rate_hz * 1000.0,
+            speech_frame_count=accumulator._speech_sample_count,
+            speech_duration_ms=accumulator._speech_sample_count / accumulator.sample_rate_hz * 1000.0,
         )
 
     median_rms = float(np.median(frame_rms_values))
@@ -231,10 +234,10 @@ def compute_silence_baseline_metrics(
 
     mad_rms = float(np.median(np.abs(frame_rms_values - median_rms)))
 
-    speech_duration_ms = accumulator._speech_frame_count / accumulator.sample_rate_hz * 1000.0
+    speech_duration_ms = accumulator._speech_sample_count / accumulator.sample_rate_hz * 1000.0
     contaminated = (
         speech_duration_ms >= SPEECH_CONTAMINATION_MIN_DURATION_MS
-        or accumulator._speech_frame_count >= SPEECH_CONTAMINATION_MIN_FRAMES
+        or accumulator._speech_sample_count >= SPEECH_CONTAMINATION_MIN_FRAMES
     )
 
     return SilenceBaselineMetrics(

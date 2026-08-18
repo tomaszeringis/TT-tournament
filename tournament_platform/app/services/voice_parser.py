@@ -26,7 +26,9 @@ class VoiceScoreEvent:
     score_b: Optional[int] = None
     player: Optional[str] = None  # "A" or "B"
     raw_text: str = ""
-    confidence: float = 0.0
+    confidence: float = 0.0  # Legacy generic confidence
+    acoustic_confidence: Optional[float] = None  # Quick Win 8
+    parser_confidence: Optional[float] = None  # Quick Win 7
     # --- Extended metadata (Phase 1 hardening; all optional, non-breaking) ---
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     timestamp: float = field(default_factory=time.time)

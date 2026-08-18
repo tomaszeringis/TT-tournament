@@ -26,6 +26,13 @@ from tournament_platform.app.services.voice_calibration.models import (
     CalibrationCaptureKind,
     CalibrationMeasurementKind,
     CalibrationPhase,
+    CalibrationCaptureContext,
+    CommandTrial,
+    NegativeTrial,
+    TtsEchoTranscript,
+    TrialClassification,
+    NegativeTrialClassification,
+    normalize_calibration_phrase,
 )
 from tournament_platform.app.services.voice_calibration.service import VoiceCalibrationService
 
@@ -38,6 +45,19 @@ logger = logging.getLogger(__name__)
 
 _VOICE_RERUN_KEY = "_voice_needs_rerun"
 _VOICE_RERUN_REASON_KEY = "_voice_rerun_reason"
+
+
+def _handle_tt_sounds_event(event: Any) -> None:
+    pass
+
+
+def _process_tt_sounds_events(snapshot: WebRtcRenderSnapshot | None = None) -> None:
+    pass
+
+
+def _maybe_tt_sounds_heartbeat(snapshot: WebRtcRenderSnapshot | None = None) -> None:
+    pass
+
 
 _CALIBRATION_PROCESSED_IDS: Dict[str, Set[str]] = {}
 _MAX_CALIBRATION_PROCESSED_IDS = 500
@@ -189,6 +209,8 @@ def _process_voice_transcript(
     source: str = "debug",
     enable_confirmation: bool = True,
     selected_match_id: Optional[int] = None,
+    acoustic_confidence: Optional[float] = None,
+    parser_confidence: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Internal delegator to the authoritative application-layer processor."""
     import tournament_platform.app.pages.voice_scorekeeper as vs_page
@@ -198,6 +220,8 @@ def _process_voice_transcript(
         source=source,
         enable_confirmation=enable_confirmation,
         selected_match_id=selected_match_id,
+        acoustic_confidence=acoustic_confidence,
+        parser_confidence=parser_confidence,
     )
     return {
         "success": res_obj.success,
@@ -220,6 +244,9 @@ def _process_voice_events(
         _process_quick_voice_event,
     )
     
+    if not is_voice_scoring_enabled():
+        return VoiceDrainResult()
+
     st.session_state.pop(_VOICE_RERUN_KEY, None)
     st.session_state.pop(_VOICE_RERUN_REASON_KEY, None)
 
@@ -284,7 +311,9 @@ def _process_voice_events(
                     runtime_session_id=utt.voice_session_id,
                     match_id=utt.match_id,
                     created_at=utt.created_at,
-                    confidence=getattr(utt, "confidence", 1.0),
+                    confidence=utt.confidence,
+                    acoustic_confidence=utt.acoustic_confidence,  # Quick Win 8
+                    parser_confidence=utt.parser_confidence,      # Quick Win 7
                 ))
         except Exception as exc:
             logger.debug("Streaming event drain failed: %s", exc)
@@ -313,6 +342,10 @@ def _process_voice_events(
     if "voice_events_skip_unknown_type" not in _ss: _ss.voice_events_skip_unknown_type = 0
 
     for event in raw_events:
+        _acoustic_conf = None
+        _parser_conf = None
+        _cal_ctx = None
+        
         # Uniform attribute extraction with fallbacks
         if isinstance(event, VoiceTranscriptEvent):
             text = event.transcript
@@ -321,6 +354,9 @@ def _process_voice_events(
             _event_ts = event.created_at
             _event_session_id = event.runtime_session_id
             _event_match_id = event.match_id
+            _acoustic_conf = event.acoustic_confidence
+            _parser_conf = event.parser_confidence
+            _cal_ctx = event.calibration_context
         elif isinstance(event, tuple) and len(event) == 3:
             _, text, event_obj = event
             _event_source = getattr(event_obj, 'source', 'batch')
@@ -328,6 +364,7 @@ def _process_voice_events(
             _event_ts = getattr(event_obj, 'timestamp', 0.0)
             _event_session_id = getattr(event_obj, 'session_id', None)
             _event_match_id = getattr(event_obj, 'match_id', None)
+            _cal_ctx = getattr(event_obj, 'calibration_context', None)
         else:
             # Try duck-typing for mocks or other types
             text = getattr(event, 'transcript', None)
@@ -339,9 +376,26 @@ def _process_voice_events(
             _event_ts = getattr(event, 'created_at', getattr(event, 'timestamp', 0.0))
             _event_session_id = getattr(event, 'runtime_session_id', getattr(event, 'session_id', None))
             _event_match_id = getattr(event, 'match_id', None)
+            _acoustic_conf = getattr(event, 'acoustic_confidence', None)
+            _parser_conf = getattr(event, 'parser_confidence', None)
+            _cal_ctx = getattr(event, 'calibration_context', None)
+
+        if _cal_ctx:
+            # Divert to calibration (Quick Win 7 extension)
+            try:
+                _handle_calibration_event(
+                    event_id=_event_id,
+                    transcript=text,
+                    cal_ctx=_cal_ctx,
+                    result=result,
+                    acoustic_conf=_acoustic_conf,
+                )
+            except Exception as exc:
+                logger.error("Calibration event handling failed: %s", exc)
+            continue
 
         if _event_source == "calibration" or _runtime_mode == VoiceRuntimeMode.CALIBRATION:
-            # Handle calibration (simplified for this cleanup)
+            # Legacy suppression
             continue
 
         if st.session_state.get("quick_voice_mode") == "quick":
@@ -363,6 +417,9 @@ def _process_voice_events(
             st.session_state.last_streaming_event_rejection_reason = (
                 f"session_mismatch: event={_event_session_id[:8]} current={_current_session_id[:8]}"
             )
+            st.session_state.last_streaming_event_rejection_reason = (
+                f"session_mismatch: event={_event_session_id[:8]} current={_current_session_id[:8]}"
+            )
         elif _event_ts < _session_start:
             _stale_reason = "stale_event_after_stop"
             st.session_state.last_streaming_event_rejection_reason = (
@@ -379,7 +436,7 @@ def _process_voice_events(
             st.session_state.last_streaming_event_rejection_reason = "webrtc_not_playing"
 
         if _stale_reason:
-            st.session_state.voice_stale_events_ignored = st.session_state.get("voice_stale_events_ignored", 0) + 1
+            st.session_state["voice_stale_events_ignored"] = st.session_state.get("voice_stale_events_ignored", 0) + 1
             _append_continuous_trace("stale_event_ignored", f"{_stale_reason}:{_event_id[:8]}")
             result.events_stale += 1
             continue
@@ -392,6 +449,8 @@ def _process_voice_events(
             transcript=text,
             source="continuous",
             enable_confirmation=VOICE_ENABLE_CONFIRMATION,
+            acoustic_confidence=_acoustic_conf,
+            parser_confidence=_parser_conf,
         )
 
         if (res_dict.get("success") or res_dict.get("reason") == "applied") and _event_id:
@@ -414,6 +473,39 @@ def _process_voice_events(
         else:
             result.events_rejected += 1
             result.last_rejection_reason = res_dict.get("reason") or "unknown"
+
+    if result.calibration_trial_results and calibration_service:
+        session = st.session_state.get("voice_calibration_session")
+        if session:
+            updated = calibration_service.consume_trials(
+                session=session,
+                trials=tuple(result.calibration_trial_results)
+            )
+            st.session_state["voice_calibration_session"] = updated
+            st.session_state[_VOICE_RERUN_KEY] = True
+            st.session_state[_VOICE_RERUN_REASON_KEY] = "calibration_trial_completed"
+
+    if result.calibration_negative_trials and calibration_service:
+        session = st.session_state.get("voice_calibration_session")
+        if session:
+            if hasattr(calibration_service, "consume_negative_trials"):
+                updated = calibration_service.consume_negative_trials(
+                    session=session,
+                    trials=tuple(result.calibration_negative_trials)
+                )
+                st.session_state["voice_calibration_session"] = updated
+                st.session_state[_VOICE_RERUN_KEY] = True
+
+    if result.calibration_measurements and calibration_service:
+        session = st.session_state.get("voice_calibration_session")
+        if session:
+            if hasattr(calibration_service, "consume_measurements"):
+                updated = calibration_service.consume_measurements(
+                    session=session,
+                    measurements=tuple(result.calibration_measurements)
+                )
+                st.session_state["voice_calibration_session"] = updated
+                st.session_state[_VOICE_RERUN_KEY] = True
 
     return result
 
@@ -473,13 +565,129 @@ class ContinuousRuntimeSnapshot:
     pass
 
 
-def _handle_tt_sounds_event(event: Any) -> None:
-    pass
+def _handle_calibration_event(
+    *,
+    event_id: str,
+    transcript: str,
+    cal_ctx: CalibrationCaptureContext,
+    result: VoiceDrainResult,
+    acoustic_conf: Optional[float] = None,
+) -> None:
+    """Handle an ASR event tagged with calibration context."""
+    from tournament_platform.app.services.voice.commands import VoiceCommandGrammar
+    from tournament_platform.app.services.voice.aliases import AliasExpander
+    from tournament_platform.app.services.voice_vocab import TranscriptPostProcessor
+    
+    # Check if already processed to avoid duplicates during heartbeat loops
+    processed_ids = _CALIBRATION_PROCESSED_IDS.setdefault(cal_ctx.calibration_trial_id, set())
+    if event_id in processed_ids:
+        return
+    processed_ids.add(event_id)
+    if len(processed_ids) > 20: # Keep it small per trial
+        # This is a bit simplistic but works for a single render cycle
+        pass
 
+    normalized = normalize_calibration_phrase(transcript)
+    
+    if cal_ctx.capture_kind == CalibrationCaptureKind.COMMAND_TRIAL:
+        # Perform parser check
+        resolved_cmd = None
+        parser_conf = None
+        try:
+            post_processor = TranscriptPostProcessor()
+            # Normalization for grammar check
+            grammar_norm = post_processor.process(transcript)
+            
+            grammar = VoiceCommandGrammar()
+            expander = AliasExpander()
+            expanded = expander.expand(grammar_norm)
+            
+            parsed = grammar.parse(expanded)
+            resolved_cmd = parsed.intent if (parsed and parsed.intent != "unknown_intent") else None
+            parser_conf = parsed.confidence if parsed else None
+        except Exception as exc:
+            logger.debug("Calibration grammar check failed: %s", exc)
+        
+        # Classification
+        classification = TrialClassification.UNKNOWN
+        if resolved_cmd == cal_ctx.expected_command_id:
+            if normalized == normalize_calibration_phrase(cal_ctx.expected_phrase):
+                classification = TrialClassification.EXACT
+            else:
+                classification = TrialClassification.VARIANT
+        elif resolved_cmd is not None:
+            classification = TrialClassification.WRONG_COMMAND
+        elif not normalized:
+            classification = TrialClassification.EMPTY
+            
+        trial = CommandTrial(
+            trial_id=cal_ctx.calibration_trial_id,
+            expected_command_id=cal_ctx.expected_command_id,
+            expected_phrase=cal_ctx.expected_phrase,
+            raw_transcript=transcript,
+            normalized_transcript=normalized,
+            resolved_command_id=resolved_cmd,
+            classification=classification,
+            parser_confidence=parser_conf,
+            rejection_reason=None,
+        )
+        result.calibration_trial_results.append(trial)
+        result.calibration_events_evaluated += 1
 
-def _process_tt_sounds_events(snapshot: WebRtcRenderSnapshot | None = None) -> None:
-    pass
+    elif cal_ctx.capture_kind == CalibrationCaptureKind.NEGATIVE_TRIAL:
+        # Check if grammar WOULD accept it
+        would_accept = False
+        parsed_intent = None
+        parser_conf = None
+        
+        try:
+            post_processor = TranscriptPostProcessor()
+            grammar_norm = post_processor.process(transcript)
+            grammar = VoiceCommandGrammar()
+            expander = AliasExpander()
+            expanded = expander.expand(grammar_norm)
+            parsed = grammar.parse(expanded)
+            
+            would_accept = parsed is not None and parsed.intent != "unknown_intent"
+            parsed_intent = parsed.intent if parsed else None
+            parser_conf = parsed.confidence if parsed else None
+        except Exception as exc:
+            logger.debug("Calibration negative trial grammar check failed: %s", exc)
+        
+        # Simple classification for negative trial
+        classification = NegativeTrialClassification.CORRECTLY_REJECTED
+        if would_accept:
+            # Determine if it was a false point or something else
+            if "score" in (parsed_intent or "") or "point" in (parsed_intent or ""):
+                classification = NegativeTrialClassification.FALSE_POINT_CANDIDATE
+            else:
+                classification = NegativeTrialClassification.WRONG_NON_SCORE_CANDIDATE
+        
+        neg_trial = NegativeTrial(
+            trial_id=cal_ctx.calibration_trial_id,
+            prompt_id=cal_ctx.expected_command_id, # Reused field
+            raw_transcript=transcript,
+            normalized_transcript=normalized,
+            parser_command_id=parsed_intent,
+            parser_confidence=parser_conf,
+            would_accept_live=would_accept,
+            classification=classification,
+            created_at=time.time(),
+        )
+        result.calibration_negative_trials.append(neg_trial)
+        result.calibration_events_evaluated += 1
 
+    elif cal_ctx.capture_kind == CalibrationCaptureKind.TTS_ECHO_TEST:
+        echo = TtsEchoTranscript(
+            transcript_id=event_id,
+            tts_playback_id=cal_ctx.calibration_trial_id,
+            captured_during_playback=True,
+            capture_offset_ms=None,
+            transcript=transcript,
+            normalized_transcript=normalized,
+            tts_source="unknown",
+            created_at=time.time(),
+        )
+        result.calibration_tts_echo_transcripts.append(echo)
+        result.calibration_events_evaluated += 1
 
-def _maybe_tt_sounds_heartbeat(snapshot: WebRtcRenderSnapshot | None = None) -> None:
-    pass

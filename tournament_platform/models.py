@@ -615,11 +615,52 @@ class MatchPointEvent(Base):
     match = relationship("Match", foreign_keys=[match_id])
 
 
+class VisionEvent(Base):
+    """Persisted vision scoring event."""
+    __tablename__ = "vision_events"
+    id = Column(Integer, primary_key=True, index=True)
+    match_id = Column(Integer, ForeignKey("matches.id"), index=True, nullable=True)
+    rally_id = Column(String, index=True, nullable=True)
+    candidate_id = Column(String, index=True, nullable=True)
+    action_id = Column(String, index=True, nullable=True)
+    event_type = Column(String, index=True, nullable=True)
+    suggested_winner = Column(String, nullable=True)
+    confidence = Column(Float, nullable=True)
+    status = Column(String, nullable=True)
+    ball_x = Column(Float, nullable=True)
+    ball_y = Column(Float, nullable=True)
+    monotonic_timestamp = Column(Float, nullable=True)
+    utc_timestamp = Column(DateTime, nullable=True, index=True)
+    detected_events_json = Column(Text, nullable=True)
+    source = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+
+    match = relationship("Match", foreign_keys=[match_id])
+
+
+class VisionBenchmarkResult(Base):
+    """Durable benchmark result for a vision detector backend."""
+    __tablename__ = "vision_benchmark_results"
+    id = Column(Integer, primary_key=True, index=True)
+    model_version = Column(String, nullable=True)
+    detector_backend = Column(String, nullable=True, index=True)
+    algorithm_version = Column(String, nullable=True)
+    dataset_version = Column(String, nullable=True)
+    sample_count = Column(Integer, nullable=True)
+    precision = Column(Float, nullable=True)
+    recall = Column(Float, nullable=True)
+    wrong_award_count = Column(Integer, nullable=True)
+    wrong_award_rate = Column(Float, nullable=True)
+    tested_at = Column(DateTime, nullable=True, index=True)
+    created_at = Column(DateTime, default=datetime.datetime.utcnow, index=True)
+
+
 # Update Match relationships for voice events/commands and commentary events
 Match.voice_events = relationship("VoiceEvent", back_populates="match", cascade="all, delete-orphan")
 Match.voice_commands = relationship("VoiceCommand", back_populates="match", cascade="all, delete-orphan")
 Match.commentary_events = relationship("CommentaryEvent", back_populates="match", cascade="all, delete-orphan")
 Match.point_events = relationship("MatchPointEvent", back_populates="match", cascade="all, delete-orphan")
+Match.vision_events = relationship("VisionEvent", back_populates="match", cascade="all, delete-orphan")
 
 
 def init_db():

@@ -202,16 +202,17 @@ def _extract_player(text: str) -> Optional[str]:
 
 
 _COLOR_ALIAS_PATTERNS = [
-    (r"\b(blue|teal|green)\b", "A"),
-    (r"\b(red|orange|read)\b", "B"),
-    (r"\b(melynas|mėlynas|zalia|žalia|zalias|žalias)\b", "A"),
-    (r"\b(raudonas|raudona|oranzinis|oranžinis)\b", "B"),
+    (r"^\s*(blue|teal|green)\s*$", "A"),
+    (r"^\s*(red|orange|read)\s*$", "B"),
+    (r"^\s*(melynas|mėlynas|zalia|žalia|zalias|žalias)\s*$", "A"),
+    (r"^\s*(raudonas|raudona|oranzinis|oranžinis)\s*$", "B"),
 ]
 
 _POINT_COLOR_PATTERNS = [
     (r"\bpoint\s+(red|blue|teal|green|orange|read)\b", None),
     (r"\bpoints?\s+(red|blue|teal|green|orange|read)\b", None),
-    (r"\b(red|blue|teal|green|orange|read)\s+point\b", None),
+    (r"\b(red|blue|teal|green|orange|read)\s+points?\b", None),
+    (r"\b(red|blue|teal|green|orange|read)\s+scores?\b", None),
     (r"\bpoint\s+to\s+(red|blue|teal|green|orange|read)\b", None),
 ]
 
@@ -270,6 +271,7 @@ class VoiceCommandGrammar:
                     intent=intent,
                     slots=slots,
                     confidence=confidence,
+                    parser_confidence=confidence,  # Quick Win 7
                     safety_level=_SAFETY_MAP.get(intent, "unknown"),
                     raw_transcript=raw,
                     normalized_text=normalized,
@@ -281,6 +283,7 @@ class VoiceCommandGrammar:
                 return VoiceParseResult(
                     intent=intent,
                     confidence=confidence,
+                    parser_confidence=confidence,  # Quick Win 7
                     safety_level=_SAFETY_MAP.get(intent, "safe"),
                     raw_transcript=raw,
                     normalized_text=normalized,
@@ -298,6 +301,7 @@ class VoiceCommandGrammar:
                     intent=intent,
                     slots=slots,
                     confidence=confidence,
+                    parser_confidence=confidence,  # Quick Win 7
                     safety_level=_SAFETY_MAP.get(intent, "medium"),
                     raw_transcript=raw,
                     normalized_text=normalized,
@@ -311,6 +315,7 @@ class VoiceCommandGrammar:
                     intent=intent,
                     slots=slots,
                     confidence=confidence,
+                    parser_confidence=confidence,  # Quick Win 7
                     safety_level=_SAFETY_MAP.get(intent, "read_only"),
                     raw_transcript=raw,
                     normalized_text=normalized,
@@ -322,6 +327,7 @@ class VoiceCommandGrammar:
                 return VoiceParseResult(
                     intent=intent,
                     confidence=confidence,
+                    parser_confidence=confidence,  # Quick Win 7
                     safety_level=_SAFETY_MAP.get(intent, "safe"),
                     raw_transcript=raw,
                     normalized_text=normalized,
@@ -334,6 +340,7 @@ class VoiceCommandGrammar:
                     intent=VoiceIntent.SCORE_POINT,
                     slots={"player": player},
                     confidence=0.85,
+                    parser_confidence=0.85,  # Quick Win 7
                     safety_level=_SAFETY_MAP[VoiceIntent.SCORE_POINT],
                     raw_transcript=raw,
                     normalized_text=normalized,
@@ -350,6 +357,7 @@ class VoiceCommandGrammar:
                         intent=VoiceIntent.SCORE_POINT,
                         slots={"player": player, "target": color},
                         confidence=0.85,
+                        parser_confidence=0.85,  # Quick Win 7
                         safety_level=_SAFETY_MAP[VoiceIntent.SCORE_POINT],
                         raw_transcript=raw,
                         normalized_text=normalized,
@@ -375,7 +383,8 @@ class VoiceCommandGrammar:
                 return VoiceParseResult(
                     intent=VoiceIntent.SCORE_POINT,
                     slots={"player": player},
-                    confidence=0.8,
+                    confidence=0.9,
+                    parser_confidence=0.9,  # Quick Win 7
                     safety_level=_SAFETY_MAP[VoiceIntent.SCORE_POINT],
                     raw_transcript=raw,
                     normalized_text=normalized,
@@ -417,6 +426,7 @@ class VoiceCommandGrammar:
                     slots={},
                     target_side=side,
                     confidence=0.85,
+                    parser_confidence=0.85,  # Quick Win 7
                     safety_level=_SAFETY_MAP[VoiceIntent.SCORE_POINT],
                     raw_transcript=raw,
                     normalized_text=normalized,
@@ -424,10 +434,12 @@ class VoiceCommandGrammar:
 
         # English side patterns (also covers normalized Lithuanian "point left/right")
         _EN_SIDE_PATTERNS = [
-            (r"\bpoint\s+left\b", "LEFT"),
-            (r"\bpoint\s+right\b", "RIGHT"),
-            (r"\bscore\s+left\b", "LEFT"),
-            (r"\bscore\s+right\b", "RIGHT"),
+            (r"^\s*point\s+left\s*$", "LEFT"),
+            (r"^\s*point\s+right\s*$", "RIGHT"),
+            (r"^\s*score\s+left\s*$", "LEFT"),
+            (r"^\s*score\s+right\s*$", "RIGHT"),
+            (r"^\s*left\s*$", "LEFT"),
+            (r"^\s*right\s*$", "RIGHT"),
         ]
         for pattern, side in _EN_SIDE_PATTERNS:
             if re.search(pattern, text):
@@ -436,6 +448,7 @@ class VoiceCommandGrammar:
                     slots={},
                     target_side=side,
                     confidence=0.85,
+                    parser_confidence=0.85,  # Quick Win 7
                     safety_level=_SAFETY_MAP[VoiceIntent.SCORE_POINT],
                     raw_transcript=raw,
                     normalized_text=normalized,
@@ -452,6 +465,7 @@ class VoiceCommandGrammar:
                     intent=VoiceIntent.SCORE_POINT,
                     slots={"player": player},
                     confidence=0.85,
+                    parser_confidence=0.85,  # Quick Win 7
                     safety_level=_SAFETY_MAP[VoiceIntent.SCORE_POINT],
                     raw_transcript=raw,
                     normalized_text=normalized,
@@ -471,6 +485,7 @@ class VoiceCommandGrammar:
                         intent=VoiceIntent.SET_SCORE,
                         slots={"score_a": pair[0], "score_b": pair[1]},
                         confidence=0.9,
+                        parser_confidence=0.9,  # Quick Win 7
                         safety_level=_SAFETY_MAP[VoiceIntent.SET_SCORE],
                         raw_transcript=raw,
                         normalized_text=normalized,
@@ -484,6 +499,7 @@ class VoiceCommandGrammar:
                     intent=VoiceIntent.SET_SCORE,
                     slots={"score_a": current_score_a, "score_b": current_score_b},
                     confidence=0.8,
+                    parser_confidence=0.8,  # Quick Win 7
                     safety_level=_SAFETY_MAP[VoiceIntent.SET_SCORE],
                     raw_transcript=raw,
                     normalized_text=normalized,
@@ -492,6 +508,7 @@ class VoiceCommandGrammar:
             return VoiceParseResult(
                 intent=VoiceIntent.UNKNOWN,
                 confidence=0.3,
+                parser_confidence=0.3,  # Quick Win 7
                 disposition="deuce_not_allowed",
                 raw_transcript=raw,
                 normalized_text=normalized,
@@ -512,7 +529,8 @@ class VoiceCommandGrammar:
                         return VoiceParseResult(
                             intent=VoiceIntent.SET_SCORE,
                             slots={"score_a": score, "score_b": score},
-                            confidence=0.85,
+                            confidence=0.8,
+                            parser_confidence=0.8,  # Quick Win 7
                             safety_level=_SAFETY_MAP[VoiceIntent.SET_SCORE],
                             raw_transcript=raw,
                             normalized_text=normalized,
@@ -525,7 +543,8 @@ class VoiceCommandGrammar:
             return VoiceParseResult(
                 intent=VoiceIntent.SET_SCORE,
                 slots={"score_a": pair[0], "score_b": pair[1]},
-                confidence=0.8,
+                confidence=0.7,
+                parser_confidence=0.7,  # Quick Win 7
                 safety_level=_SAFETY_MAP[VoiceIntent.SET_SCORE],
                 raw_transcript=raw,
                 normalized_text=normalized,

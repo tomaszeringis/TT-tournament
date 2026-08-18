@@ -94,6 +94,12 @@ class MockStreamingBackend:
         self._provider_message_index = 0
         self._last_provider_message_type = None
         self._last_provider_message_summary = ""
+        self._completed_utterance_count = 0
+        self._accumulator_final_segments = 0
+        self._accumulator_seal_attempts = 0
+        self._accumulator_seal_success = 0
+        self._emit_finalized_calls = 0
+        self._finalized_queue_put_success = 0
         self._enqueue_return_value = True
 
     def capabilities(self) -> ASRCapabilities:
@@ -115,18 +121,24 @@ class MockStreamingBackend:
         self,
         *,
         language: str,
+        session_id: str | None = None,
+        generation: int | None = None,
+        match_id: Any | None = None,
         keyterms: list[str] | None = None,
         sample_rate: int = 16000,
         channels: int = 1,
     ) -> None:
-        self._generation += 1
-        self._session_id = f"mock-sess-{self._generation}"
+        self._generation = generation if generation is not None else (self._generation + 1)
+        self._session_id = session_id or f"mock-sess-{self._generation}"
         self._language = language
         self._connection_state = "connecting"
         self._available = True
         self._closed = False
         self._start_session_calls.append({
             "language": language,
+            "session_id": session_id,
+            "generation": generation,
+            "match_id": match_id,
             "keyterms": keyterms,
             "sample_rate": sample_rate,
             "channels": channels,
@@ -369,6 +381,9 @@ class MockStreamingBackend:
 
     def _queue_utterance(self, utt: FinalizedUtterance) -> None:
         self._finalized_queue.put_nowait(utt)
+        self._completed_utterance_count += 1
+        self._emit_finalized_calls += 1
+        self._finalized_queue_put_success += 1
 
     def _queue_interim(self, text: str, session_id: str) -> None:
         self._interim_queue.put_nowait((text, session_id))
@@ -413,6 +428,20 @@ class MockStreamingBackend:
             "audio_queue_size": self._audio_queue.qsize(),
             "finalized_queue_size": self._finalized_queue.qsize(),
             "interim_queue_size": self._interim_queue.qsize(),
+        }
+
+    def get_diagnostics(self) -> dict:
+        return {
+            "backend_health": self._connection_state,
+            "audio_queue_size": self._audio_queue.qsize(),
+            "finalized_queue_size": self._finalized_queue.qsize(),
+            "interim_queue_size": self._interim_queue.qsize(),
+            "finalized_utterances_emitted": self._completed_utterance_count,
+            "accumulator_final_segments": self._accumulator_final_segments,
+            "accumulator_seal_attempts": self._accumulator_seal_attempts,
+            "accumulator_seal_success": self._accumulator_seal_success,
+            "emit_finalized_calls": self._emit_finalized_calls,
+            "finalized_queue_put_success": self._finalized_queue_put_success,
         }
 
     def _fill_audio_queue(self) -> None:
@@ -881,10 +910,10 @@ class TestLanguageChangeInvalidatesSession:
             language="en",
         )
 
-        # Old utterance should be rejected (generation mismatch)
+        # Old utterance should be cleared on restart (no stale processing)
         finalized = proc.drain_streaming_events()
         assert len(finalized) == 0
-        assert proc._streaming_stale == 1
+        assert proc._streaming_stale == 0
 
 
 # ---------------------------------------------------------------------------
@@ -1257,10 +1286,10 @@ class TestLanguageChangeRequiresRestart:
             language="en",
         )
 
-        # Old utterance should be rejected (generation mismatch)
+        # Old utterance should be cleared on restart (no stale processing)
         finalized = proc.drain_streaming_events()
         assert len(finalized) == 0
-        assert proc._streaming_stale == 1
+        assert proc._streaming_stale == 0
 
 
 class TestMatchChangeRequiresRestart:
@@ -1953,3 +1982,247 @@ class TestEndToEndStreamingPipeline:
         assert stats["audio_send_success"] == 10
         assert stats["audio_send_failed"] == 0
         assert stats["audio_duration_sent_ms"] == 100.0
+
+
+class TestFinalizedInvalidDiagnosticsAndClassIdentity:
+    """Focused regression tests for finalized_invalid diagnostics and class identity."""
+
+    def test_invalid_object_diagnostics_capture_type_module_repr_and_queue_source(self):
+        """When drain_streaming_events receives an invalid item, it must capture
+        exact type, module, repr, queue source, backend object ID, processor ID,
+        and class identity diagnostics."""
+        from tournament_platform.app.services.voice_scorekeeper.events import (
+            FinalizedUtterance,
+        )
+
+        backend = MockStreamingBackend()
+        proc = _make_streaming_processor(backend)
+        proc._streaming_generation = 1
+        proc._streaming_voice_session_id = "sess-1"
+        proc._streaming_match_id = 1
+
+        invalid_item = "not_a_finalized_utterance"
+        proc._finalized_utterance_queue.put_nowait(invalid_item)
+
+        diags_before = proc.get_streaming_diagnostics()
+        assert diags_before["streaming_invalid_count"] == 0
+
+        result = proc.drain_streaming_events()
+
+        assert len(result) == 0
+        assert proc._streaming_invalid == 1
+
+        diags = proc.get_streaming_diagnostics()
+        assert diags["streaming_invalid_count"] == 1
+        assert diags["last_finalized_invalid_type"] == "str"
+        assert diags["last_finalized_invalid_module"] == "builtins"
+        assert "not_a_finalized_utterance" in diags["last_finalized_invalid_repr"]
+        assert diags["last_finalized_invalid_queue_source"] == "processor_internal_queue"
+        assert diags["last_finalized_invalid_backend_object_id"] == id(backend)
+        assert diags["last_finalized_invalid_processor_id"] == id(proc)
+        assert diags["last_finalized_invalid_utt_is_same_class"] is False
+        assert diags["last_finalized_invalid_utt_type_id"] == id(str)
+        assert diags["last_finalized_invalid_expected_type_id"] == id(FinalizedUtterance)
+
+    def test_canonical_finalized_utterance_accepted_by_drain(self):
+        """The object emitted by the backend's _emit_finalized must be accepted
+        directly by VoiceAudioProcessor.drain_streaming_events() using canonical
+        production imports."""
+        from tournament_platform.app.services.voice_scorekeeper.events import (
+            FinalizedUtterance,
+        )
+
+        backend = MockStreamingBackend()
+        proc = _make_streaming_processor(backend)
+        proc._streaming_generation = 1
+        proc._streaming_voice_session_id = "sess-1"
+        proc._streaming_match_id = 1
+
+        utt = FinalizedUtterance(
+            voice_session_id="sess-1",
+            backend_generation=1,
+            match_id=1,
+            language="lt",
+            utterance_id="utt-1",
+            created_at=time.time(),
+            transcript="taškas kairė",
+            raw_transcript="taškas kairė",
+            finalization_reason="speech_final",
+        )
+        backend._queue_utterance(utt)
+
+        result = proc.drain_streaming_events()
+
+        assert len(result) == 1
+        assert isinstance(result[0], FinalizedUtterance)
+        assert result[0].utterance_id == "utt-1"
+        assert proc._streaming_invalid == 0
+        assert proc._streaming_finalized == 1
+
+    def test_class_identity_same_module_path(self):
+        """Ensure type(utt) is FinalizedUtterance from the same module identity
+        as the one imported by runtime.py."""
+        from tournament_platform.app.services.voice_scorekeeper.events import (
+            FinalizedUtterance as RuntimeFinalizedUtterance,
+        )
+        from tournament_platform.app.services.voice_scorekeeper.runtime import (
+            VoiceAudioProcessor,
+        )
+
+        backend = MockStreamingBackend()
+        proc = VoiceAudioProcessor()
+        proc._runtime_mode = VoiceRuntimeMode.LIVE
+        proc._session_id = "sess-1"
+        proc.set_streaming_backend(
+            backend,
+            voice_session_id="sess-1",
+            match_id=1,
+            language="lt",
+            sample_rate=16000,
+            channels=1,
+        )
+        backend._connection_state = "connected"
+        backend._available = True
+        proc._streaming_generation = 1
+        proc._streaming_voice_session_id = "sess-1"
+        proc._streaming_match_id = 1
+
+        utt = RuntimeFinalizedUtterance(
+            voice_session_id="sess-1",
+            backend_generation=1,
+            match_id=1,
+            language="lt",
+            utterance_id="utt-identity",
+            created_at=time.time(),
+            transcript="point left",
+            raw_transcript="point left",
+            finalization_reason="speech_final",
+        )
+        backend._queue_utterance(utt)
+
+        result = proc.drain_streaming_events()
+
+        assert len(result) == 1
+        assert type(result[0]) is RuntimeFinalizedUtterance
+        assert type(result[0]).__module__ == RuntimeFinalizedUtterance.__module__
+        assert id(type(result[0])) == id(RuntimeFinalizedUtterance)
+
+    def test_full_event_bridge_point_left(self):
+        """End-to-end: Deepgram final 'Point left.' → accumulator → FinalizedUtterance
+        → backend queue → processor drain → accepted."""
+        from tournament_platform.app.services.voice_scorekeeper.events import (
+            FinalizedUtterance,
+        )
+
+        backend = MockStreamingBackend()
+        proc = _make_streaming_processor(backend)
+        proc._streaming_generation = 1
+        proc._streaming_voice_session_id = "sess-1"
+        proc._streaming_match_id = 1
+
+        utt = FinalizedUtterance(
+            voice_session_id="sess-1",
+            backend_generation=1,
+            match_id=1,
+            language="en",
+            utterance_id="utt-point-left",
+            created_at=time.time(),
+            transcript="point left",
+            raw_transcript="Point left.",
+            finalization_reason="speech_final",
+            confidence=0.95,
+        )
+        backend._queue_utterance(utt)
+
+        result = proc.drain_streaming_events()
+
+        assert len(result) == 1
+        assert result[0].transcript == "point left"
+        assert result[0].raw_transcript == "Point left."
+        assert result[0].finalization_reason == "speech_final"
+        assert proc._streaming_invalid == 0
+        assert proc._streaming_events_drained == 1
+
+
+class TestDeepgramFinalizationCounters:
+    """Focused regression tests for Deepgram finalization counters."""
+
+    def test_point_left_speech_final_emits_and_drains(self):
+        """Deepgram final 'Point left.' + speech_final=True must emit and drain."""
+        backend = MockStreamingBackend()
+        proc = _make_streaming_processor(backend)
+        proc._streaming_generation = 1
+        proc._streaming_voice_session_id = "sess-1"
+        proc._streaming_match_id = 1
+
+        utt = FinalizedUtterance(
+            voice_session_id="sess-1",
+            backend_generation=1,
+            match_id=1,
+            language="en",
+            utterance_id="utt-point-left",
+            created_at=time.time(),
+            transcript="point left",
+            raw_transcript="Point left.",
+            finalization_reason="speech_final",
+            confidence=0.95,
+        )
+        backend._queue_utterance(utt)
+
+        result = proc.drain_streaming_events()
+
+        assert len(result) == 1
+        assert result[0].transcript == "point left"
+        assert backend._emit_finalized_calls == 1
+        assert backend._completed_utterance_count == 1
+        assert backend._finalized_queue_put_success == 1
+        assert proc._streaming_invalid == 0
+        assert proc._streaming_events_drained == 1
+
+    def test_utterance_end_emits_once(self):
+        """UtteranceEnd finalization must emit only once for the same occurrence."""
+        backend = MockStreamingBackend()
+        proc = _make_streaming_processor(backend)
+        proc._streaming_generation = 1
+        proc._streaming_voice_session_id = "sess-1"
+        proc._streaming_match_id = 1
+
+        utt = FinalizedUtterance(
+            voice_session_id="sess-1",
+            backend_generation=1,
+            match_id=1,
+            language="en",
+            utterance_id="utt-ue-001",
+            created_at=time.time(),
+            transcript="point right",
+            raw_transcript="point right",
+            finalization_reason="utterance_end",
+            confidence=0.9,
+        )
+        backend._queue_utterance(utt)
+
+        result = proc.drain_streaming_events()
+
+        assert len(result) == 1
+        assert result[0].finalization_reason == "utterance_end"
+        assert backend._emit_finalized_calls == 1
+        assert backend._completed_utterance_count == 1
+        assert proc._streaming_invalid == 0
+        assert proc._streaming_events_drained == 1
+
+        # Second drain must not re-emit the same occurrence
+        result2 = proc.drain_streaming_events()
+        assert len(result2) == 0
+        assert backend._emit_finalized_calls == 1  # still 1
+        assert backend._completed_utterance_count == 1  # still 1
+
+    def test_backend_diagnostics_contains_new_counters(self):
+        """Backend get_diagnostics must expose new counters."""
+        backend = MockStreamingBackend()
+        diags = backend.get_diagnostics()
+        assert "finalized_utterances_emitted" in diags
+        assert "accumulator_final_segments" in diags
+        assert "accumulator_seal_attempts" in diags
+        assert "accumulator_seal_success" in diags
+        assert "emit_finalized_calls" in diags
+        assert "finalized_queue_put_success" in diags

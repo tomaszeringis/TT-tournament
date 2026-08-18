@@ -495,6 +495,8 @@ class VoiceAudioProcessor(AudioProcessorBase):
         self._chunk_queue: queue.Queue = queue.Queue(maxsize=20)
         self._dropped_chunks = 0
         self._audio_frames_received = 0
+        self._audio_ingress_queue_full = 0  # Quick Win 11
+        self._dropped_frames = 0  # Quick Win 11
         self._chunks_created = 0
         global _processor_generation_counter
         with _factory_diag_lock:
@@ -623,6 +625,18 @@ class VoiceAudioProcessor(AudioProcessorBase):
         self._streaming_applied: int = 0
         self._streaming_failed: int = 0
         self._streaming_drain_calls: int = 0
+        self._streaming_events_drained: int = 0
+
+        # Invalid finalized item diagnostics
+        self._last_finalized_invalid_type: str = ""
+        self._last_finalized_invalid_module: str = ""
+        self._last_finalized_invalid_repr: str = ""
+        self._last_finalized_invalid_queue_source: str = ""
+        self._last_finalized_invalid_backend_object_id: int = 0
+        self._last_finalized_invalid_processor_id: int = 0
+        self._last_finalized_invalid_utt_is_same_class: bool = False
+        self._last_finalized_invalid_utt_type_id: int = 0
+        self._last_finalized_invalid_expected_type_id: int = 0
 
         # Event bridge (plan Â§8B)
         self._finalized_utterance_queue: queue.Queue = queue.Queue(maxsize=50)
@@ -716,6 +730,11 @@ class VoiceAudioProcessor(AudioProcessorBase):
             self._audio_delivery_mode = "stream"
             self._seen_utterance_ids.clear()
             self._runtime_mode = VoiceRuntimeMode.LIVE
+            while not self._finalized_utterance_queue.empty():
+                try:
+                    self._finalized_utterance_queue.get_nowait()
+                except queue.Empty:
+                    break
 
         if prev_backend is not None:
             try:
@@ -2289,6 +2308,7 @@ class VoiceAudioProcessor(AudioProcessorBase):
         if not packet.pcm_bytes:
             return
 
+        self._audio_frames_received += 1
         _frame_idx = self._audio_frames_received
         if _frame_idx % 50 == 0 or _frame_idx == 1:
             self._emit_runtime_audit(
@@ -2565,6 +2585,8 @@ class VoiceAudioProcessor(AudioProcessorBase):
         """Return processor diagnostics for the UI panel."""
         return {
             "audio_frames_received": self._audio_frames_received,
+            "audio_ingress_queue_full": self._audio_ingress_queue_full,  # Quick Win 11
+            "dropped_frames": self._dropped_frames,  # Quick Win 11
             "chunks_created": self._chunks_created,
             "asr_events_enqueued": self._asr_events_enqueued,
             "dropped_chunks": self._dropped_chunks,
@@ -2649,9 +2671,33 @@ class VoiceAudioProcessor(AudioProcessorBase):
         diags["streaming_invalid_count"] = self._streaming_invalid
         diags["streaming_failed_count"] = self._streaming_failed
         diags["streaming_drain_calls"] = self._streaming_drain_calls
-        diags["finalized_queue_depth"] = self._finalized_utterance_queue.qsize()
+        diags["processor_finalized_queue_depth"] = self._finalized_utterance_queue.qsize()
         if self._streaming_backend is not None:
             diags["backend_object_id"] = id(self._streaming_backend)
+            if hasattr(self._streaming_backend, "get_diagnostics"):
+                try:
+                    _backend_diag = self._streaming_backend.get_diagnostics()
+                    diags["backend_finalized_emitted"] = _backend_diag.get(
+                        "finalized_utterances_emitted", 0
+                    )
+                    diags["backend_finalized_queue_depth"] = _backend_diag.get(
+                        "finalized_queue_size", 0
+                    )
+                    diags["expected_finalized_utterance_module"] = (
+                        FinalizedUtterance.__module__
+                    )
+                except Exception:
+                    pass
+        diags["processor_streaming_events_drained"] = self._streaming_events_drained
+        diags["last_finalized_invalid_type"] = self._last_finalized_invalid_type
+        diags["last_finalized_invalid_module"] = self._last_finalized_invalid_module
+        diags["last_finalized_invalid_repr"] = self._last_finalized_invalid_repr
+        diags["last_finalized_invalid_queue_source"] = self._last_finalized_invalid_queue_source
+        diags["last_finalized_invalid_backend_object_id"] = self._last_finalized_invalid_backend_object_id
+        diags["last_finalized_invalid_processor_id"] = self._last_finalized_invalid_processor_id
+        diags["last_finalized_invalid_utt_is_same_class"] = self._last_finalized_invalid_utt_is_same_class
+        diags["last_finalized_invalid_utt_type_id"] = self._last_finalized_invalid_utt_type_id
+        diags["last_finalized_invalid_expected_type_id"] = self._last_finalized_invalid_expected_type_id
         return diags
 
     def drain_streaming_events(self) -> List[FinalizedUtterance]:
@@ -2666,14 +2712,19 @@ class VoiceAudioProcessor(AudioProcessorBase):
         current_session = self._streaming_voice_session_id
         current_gen = self._streaming_generation
         current_match = self._streaming_match_id
+        
+        with self._lock:
+            current_calibration = self._calibration_context
 
         # Collect ALL pending utterances â both from the internal queue
         # (re-queued by has_pending_events) and directly from the backend.
         all_utterances: List[FinalizedUtterance] = []
+        queue_sources: List[str] = []
 
         while not self._finalized_utterance_queue.empty():
             try:
                 all_utterances.append(self._finalized_utterance_queue.get_nowait())
+                queue_sources.append("processor_internal_queue")
             except queue.Empty:
                 break
 
@@ -2681,15 +2732,47 @@ class VoiceAudioProcessor(AudioProcessorBase):
             try:
                 backend_finalized = self._streaming_backend.get_finalized_transcripts()
                 all_utterances.extend(backend_finalized)
+                queue_sources.extend(["backend_finalized_queue"] * len(backend_finalized))
             except Exception as exc:
                 logger.debug("drain_streaming_events: backend drain error: %s", exc)
                 self._streaming_failed += 1
 
         # Validate EVERY utterance — generation, session, match, dedup
         validated: List[FinalizedUtterance] = []
-        for utt in all_utterances:
+        for idx, utt in enumerate(all_utterances):
             if not isinstance(utt, FinalizedUtterance):
                 self._streaming_invalid += 1
+                _invalid_type = type(utt)
+                _queue_source = queue_sources[idx] if idx < len(queue_sources) else "unknown"
+                self._last_finalized_invalid_type = _invalid_type.__name__
+                self._last_finalized_invalid_module = getattr(
+                    _invalid_type, "__module__", ""
+                )
+                self._last_finalized_invalid_repr = repr(utt)[:300]
+                self._last_finalized_invalid_queue_source = _queue_source
+                self._last_finalized_invalid_backend_object_id = (
+                    id(self._streaming_backend) if self._streaming_backend else 0
+                )
+                self._last_finalized_invalid_processor_id = id(self)
+                self._last_finalized_invalid_utt_is_same_class = (
+                    _invalid_type is FinalizedUtterance
+                )
+                self._last_finalized_invalid_utt_type_id = id(_invalid_type)
+                self._last_finalized_invalid_expected_type_id = id(FinalizedUtterance)
+                logger.debug(
+                    "drain_streaming_events: invalid finalized item type=%s module=%s "
+                    "repr=%s queue_source=%s backend_id=%s processor_id=%s "
+                    "is_same_class=%s type_id=%s expected_id=%s",
+                    _invalid_type.__name__,
+                    getattr(_invalid_type, "__module__", ""),
+                    repr(utt)[:300],
+                    _queue_source,
+                    id(self._streaming_backend) if self._streaming_backend else 0,
+                    id(self),
+                    _invalid_type is FinalizedUtterance,
+                    id(_invalid_type),
+                    id(FinalizedUtterance),
+                )
                 continue
 
             # Generation check
@@ -2720,8 +2803,12 @@ class VoiceAudioProcessor(AudioProcessorBase):
                              utt.match_id, current_match)
                 continue
 
-            # Annotate with current match_id
-            utt = dataclasses.replace(utt, match_id=current_match)
+            # Annotate with current match_id and calibration_context
+            utt = dataclasses.replace(
+                utt, 
+                match_id=current_match,
+                calibration_context=current_calibration
+            )
 
             # Duplicate check
             if utt.utterance_id in self._seen_utterance_ids:
@@ -2731,6 +2818,8 @@ class VoiceAudioProcessor(AudioProcessorBase):
             self._seen_utterance_ids.add(utt.utterance_id)
             validated.append(utt)
             self._streaming_finalized += 1
+
+        self._streaming_events_drained = len(validated)
 
         # Bound the seen IDs set
         if len(self._seen_utterance_ids) > self._max_seen_utterance_ids:
@@ -2868,10 +2957,13 @@ class VoiceAudioProcessor(AudioProcessorBase):
                 )
                 return
 
+            # Use occurrence-based ID for dedup (Quick Win 10)
+            event_id = f"batch:{self._session_id}:{self._processor_generation}:{self._chunks_created}"
+            
             event = VoiceTranscriptEvent(
                 transcript=text,
                 raw_transcript=raw_text,
-                event_id=str(uuid.uuid4()),
+                event_id=event_id,
                 source=source,
                 runtime_session_id=work_item.runtime_session_id,
                 match_id=self._streaming_match_id,
@@ -3527,6 +3619,9 @@ class WebRtcRenderSnapshot:
     processor_id: int | None
     processor_generation: int | None
     audio_frames_received: int
+    audio_ingress_queue_full: int = 0  # Quick Win 11
+    dropped_frames: int = 0  # Quick Win 11
+    requested_constraints: Optional[dict] = None  # Quick Win 12
     # Point 5: Detailed connection states
     connection_state: str | None = None
     ice_connection_state: str | None = None

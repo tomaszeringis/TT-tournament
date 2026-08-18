@@ -13,6 +13,12 @@ from enum import Enum
 import logging
 import math
 
+from tournament_platform.app.services.voice_scorekeeper.scoring_actions import (
+    ScoreAction,
+    ScoreActionType,
+    apply_manual_score_action,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -429,41 +435,43 @@ def suggest_point_winner(
 def apply_confirmed_point(
     match_manager,
     suggestion: VideoScoreSuggestion,
-    winner_override: Optional[str] = None
+    winner_override: Optional[str] = None,
+    candidate_id: Optional[str] = None,
+    rally_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+    match_id: Optional[int] = None,
 ) -> ConfirmedPoint:
     """
-    Update local score state with confirmed point.
-    
-    This function only updates in-memory MatchManager state.
-    It does NOT write to the database.
-    
-    Args:
-        match_manager: MatchManager instance from session state
-        suggestion: The confirmed suggestion
-        winner_override: Optional manual override ("player_a" or "player_b")
-        
-    Returns:
-        ConfirmedPoint record
+    Update local score state with a confirmed point.
+
+    Routes through the canonical ScoreAction boundary so that vision-originated
+    points are recorded with source metadata and never bypass MatchManager.
     """
     winner = winner_override or suggestion.suggested_winner.value
-    
+
     if winner not in ("player_a", "player_b"):
         raise ValueError(f"Invalid winner: {winner}")
-    
-    # Update MatchManager state
-    if winner == "player_a":
-        match_manager._add_point("A")
-    else:
-        match_manager._add_point("B")
-    
-    # Create confirmed point record
+
+    action_type = ScoreActionType.ADD_POINT_A if winner == "player_a" else ScoreActionType.ADD_POINT_B
+    action = ScoreAction(
+        action_type=action_type,
+        match_id=match_id or getattr(match_manager.engine, "player_a_id", None),
+        source="vision",
+        candidate_id=candidate_id,
+        rally_id=rally_id,
+        idempotency_key=idempotency_key,
+        transcript=suggestion.reason,
+    )
+
+    apply_manual_score_action(action, match_manager, session_state=None)
+
     point_number = len(match_manager.state.match_history)
-    
+
     return ConfirmedPoint(
-        match_id=0,  # Will be set from session state
+        match_id=match_id or 0,
         point_number=point_number,
         winner=winner,
-        timestamp=0.0,  # Will be set from analysis
+        timestamp=0.0,
         source="manual_override" if winner_override else "ai_suggested",
         evidence=suggestion.detected_events,
     )

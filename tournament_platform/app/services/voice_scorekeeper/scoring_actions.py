@@ -34,6 +34,10 @@ class ScoreAction:
     payload: Optional[Dict[str, Any]] = None
     transcript: Optional[str] = None
     tokens: Optional[List[str]] = None
+    source: Optional[str] = None
+    candidate_id: Optional[str] = None
+    rally_id: Optional[str] = None
+    idempotency_key: Optional[str] = None
 
 
 @dataclass
@@ -64,7 +68,7 @@ class ScoreApplyResult:
 def apply_manual_score_action(
     action: ScoreAction,
     match_manager: Any,
-    session_state: Dict[str, Any],
+    session_state: Optional[Dict[str, Any]] = None,
 ) -> ScoreActionResult:
     """Apply a manual score action through the shared boundary.
 
@@ -72,6 +76,18 @@ def apply_manual_score_action(
     preserves all existing side-effects (toast, cue, commentary, DB
     persistence, rerun). This keeps old wrappers until parity tests pass.
     """
+    idempotency_key = action.idempotency_key or action.candidate_id
+    if idempotency_key and session_state is not None:
+        applied_keys: set = session_state.setdefault("_score_action_applied_keys", set())
+        if idempotency_key in applied_keys:
+            return ScoreActionResult(
+                success=False,
+                message="Duplicate score action suppressed",
+                match_id=action.match_id,
+                applied_event=None,
+                diagnostics={"duplicate_suppressed": True, "idempotency_key": idempotency_key},
+            )
+
     prev_state = copy.deepcopy(match_manager.state)
     success = False
     msg = ""
@@ -110,6 +126,14 @@ def apply_manual_score_action(
 
     diagnostics["prev_state_hash"] = hash(str(prev_state))
     diagnostics["new_state_hash"] = hash(str(match_manager.state))
+    diagnostics["action_source"] = action.source or "unknown"
+    diagnostics["candidate_id"] = action.candidate_id
+    diagnostics["rally_id"] = action.rally_id
+    diagnostics["idempotency_key"] = action.idempotency_key
+    diagnostics["action_type"] = action.action_type.value if isinstance(action.action_type, ScoreActionType) else str(action.action_type)
+
+    if success and idempotency_key and session_state is not None:
+        applied_keys.add(idempotency_key)
 
     return ScoreActionResult(
         success=success,

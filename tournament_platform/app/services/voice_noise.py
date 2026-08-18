@@ -77,20 +77,30 @@ class NoiseProfiler:
             max=max(samples),
         )
 
-    def recommend_threshold(self, margin: float = 2.0) -> float:
+    def recommend_threshold(self, margin: float = 2.0, use_p95: bool = True) -> float:
         """Recommend a speech-energy floor (RMS) above ambient noise.
 
         Args:
-            margin: Multiplier applied to the ambient mean. A value of 2.0
-                suggests a gate roughly twice the average ambient energy.
+            margin: Multiplier applied to the ambient mean or used as dB headroom.
+            use_p95: If True, uses the 95th percentile of ambient noise instead of
+                the mean. This is more robust against transients (Quick Win 6).
 
         Returns:
             Recommended RMS threshold (0.0 if no ambient samples collected).
         """
         if not self.ambient:
             return 0.0
-        mean_ambient = statistics.fmean(self.ambient)
-        return round(mean_ambient * margin, 4)
+        
+        if use_p95:
+            # Use p95 for a more robust baseline (Quick Win 6)
+            import numpy as np
+            baseline = float(np.percentile(self.ambient, 95))
+            # When using p95, a smaller margin is often appropriate
+            # but we'll stick to the provided multiplier for now.
+            return round(baseline * margin, 4)
+        else:
+            mean_ambient = statistics.fmean(self.ambient)
+            return round(mean_ambient * margin, 4)
 
 
 class NoiseFilter:

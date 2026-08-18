@@ -184,6 +184,7 @@ class TestContinuousVoiceRegression:
             "last_applied_voice_event_ids": [],
             "voice_listening": True,
             "voice_events_enabled": True,
+            "voice_scoring_enabled": True,
             "voice_continuous_session_id": "sess-1",
             "voice_continuous_session_start": time.time() - 10,
             "voice_webrtc_streamer_state": {"playing": True}

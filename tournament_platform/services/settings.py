@@ -230,3 +230,11 @@ VOICE_DEEPGRAM_FINALIZE_TIMEOUT_MS: int = _get_env_int("VOICE_DEEPGRAM_FINALIZE_
 VOICE_DEEPGRAM_MAX_UTTERANCE_MS: int = _get_env_int("VOICE_DEEPGRAM_MAX_UTTERANCE_MS", 10000)
 VOICE_MIC_START_TIMEOUT_SECONDS: float = _get_env_float("VOICE_MIC_START_TIMEOUT_SECONDS", 15.0)
 VOICE_PROCESSOR_WAIT_TIMEOUT_SECONDS: float = _get_env_float("VOICE_PROCESSOR_WAIT_TIMEOUT_SECONDS", 10.0)
+
+# ---------------------------------------------------------------------------
+# Vision Umpire — feature flags (all default OFF; assisted-only baseline)
+# ---------------------------------------------------------------------------
+VISION_ENABLED: bool = _get_env_bool("VISION_ENABLED", False)
+VISION_MODE: str = _get_env_str("VISION_MODE", "assisted")  # assisted | auto | off
+VISION_CONFIDENCE_THRESHOLD: float = _get_env_float("VISION_CONFIDENCE_THRESHOLD", 0.7)
+VISION_BENCHMARK_PRECISION: float = _get_env_float("VISION_BENCHMARK_PRECISION", 0.9)
